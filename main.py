@@ -8,7 +8,7 @@ from typing import Optional, Tuple, Dict, List
 
 from astrbot.api import logger
 from astrbot.api.event import filter, AstrMessageEvent
-from astrbot.api.event.filter import PermissionType
+
 from astrbot.api.star import Context, Star
 from astrbot.api.message_components import Reply, Image
 from astrbot.core.config.astrbot_config import AstrBotConfig
@@ -1456,7 +1456,7 @@ class Main(Star):
             elif t == 'reply':
                 parts.append(f"[回复:{d.get('id', '')}]")
             elif t == 'face':
-                parts.append(f"[表情]")
+                parts.append("[表情]")
             else:
                 parts.append(f"[{t}]")
         return ''.join(parts) if parts else '[空消息]'
@@ -2258,7 +2258,7 @@ class Main(Star):
                 if up:
                     result = await _try_provider(up, str(getattr(up, 'provider_name', up)))
                     if result:
-                        logger.info(f"[GroupMgr] LLM审核使用provider_manager")
+                        logger.info("[GroupMgr] LLM审核使用provider_manager")
                         return result
         except Exception as e:
             err_str = str(e)[:120]
@@ -2416,8 +2416,8 @@ class Main(Star):
             return has_text
         return True
 
-    @filter.event_message_type(EventMessageType.ALL_MESSAGE)
-    @filter.platform_adapter_type(PlatformAdapterType.AIOCQHTTP)
+    @filter.event_message_type(filter.EventMessageType.ALL_MESSAGE)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def _handle_message(self, event: AiocqhttpMessageEvent):
         group_id = self._get_group_id(event)
         if not group_id:
