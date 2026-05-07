@@ -1,0 +1,279 @@
+{
+    "enabled": {
+        "description": "插件总开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后插件不注入任何提示词，也不提供任何工具"
+    },
+    "prompt_injection_enabled": {
+        "description": "LLM 提示词注入开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后 LLM 不会收到群管工具的使用说明和权限规则"
+    },
+    "group_white_list": {
+        "description": "群白名单（列表中的群才能使用 LLM 群管工具）",
+        "type": "list",
+        "default": [],
+        "hint": "留空表示所有群都可使用（受黑名单限制）；填写群号则只有白名单群可用"
+    },
+    "group_black_list": {
+        "description": "群黑名单（列表中的群不能使用 LLM 群管工具）",
+        "type": "list",
+        "default": [],
+        "hint": "黑名单优先级高于白名单"
+    },
+    "user_black_list": {
+        "description": "用户黑名单（自动拒绝加群请求）",
+        "type": "list",
+        "default": [],
+        "hint": "列表中的QQ号将被自动拒绝加入任何群"
+    },
+    "admin_list": {
+        "description": "管理员 QQ 号列表",
+        "type": "list",
+        "default": [],
+        "hint": "必须填写！列表中的 QQ 号才能使用管理指令和 LLM 群管工具"
+    },
+    "auto_moderate_enabled": {
+        "description": "自动审核总开关（检测骂人和广告自动撤回）",
+        "type": "bool",
+        "default": true,
+        "hint": "管理员可通过 /auto_moderate on/off 命令随时启停"
+    },
+    "auto_moderate_notice": {
+        "description": "撤回后发送说明消息",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后撤回违规消息时不发送原因说明"
+    },
+    "scan_swear": {
+        "description": "辱骂脏话检测开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不使用正则匹配辱骂/脏话内容"
+    },
+    "scan_ad": {
+        "description": "广告推广检测开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不使用正则匹配广告/推广/引流内容"
+    },
+    "llm_moderation_enabled": {
+        "description": "LLM 二次审核开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后触发规则的消息会由 LLM 二次确认是否违规；关闭则直接按规则处理"
+    },
+    "llm_moderation_ban": {
+        "description": "LLM 审核违规后自动禁言",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后 LLM 判定违规只撤回不禁言"
+    },
+    "moderation_ban_duration": {
+        "description": "自动审核禁言时长（秒）",
+        "type": "int",
+        "default": 1800,
+        "hint": "自动审核触发违规后的禁言时长，单位秒，默认 1800 秒（30分钟）"
+    },
+    "moderation_llm_provider_id": {
+        "description": "审核使用的 LLM Provider",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "留空则自动使用第一个可用的 LLM Provider 做审核"
+    },
+    "ban_notice": {
+        "description": "封禁通知模板",
+        "type": "string",
+        "default": "[群管] {name}({uid}) 的消息已被撤回（违规内容）",
+        "hint": "支持变量：{name} 用户名、{uid} QQ号、{group} 群号"
+    },
+    "ban_enabled": {
+        "description": "禁言功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后禁言功能和 /ban_user 指令均不可用"
+    },
+    "unban_enabled": {
+        "description": "解除禁言功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后解除禁言功能和 /unban_user 指令均不可用"
+    },
+    "kick_enabled": {
+        "description": "踢人功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后踢出群成员功能和 /kick 指令均不可用"
+    },
+    "whole_ban_enabled": {
+        "description": "全体禁言功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后全体禁言功能和 /whole_ban 指令均不可用"
+    },
+    "set_card_enabled": {
+        "description": "修改群名片功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后修改群名片功能和 /set_card 指令均不可用"
+    },
+    "send_announcement_enabled": {
+        "description": "发送群公告功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后发送公告功能和 /send_notice 指令均不可用"
+    },
+    "delete_announcement_enabled": {
+        "description": "删除群公告功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后删除公告功能和 /del_notice 指令均不可用"
+    },
+    "list_announcements_enabled": {
+        "description": "查看群公告列表功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后查看公告功能和 /list_notices 指令均不可用"
+    },
+    "member_list_enabled": {
+        "description": "查看群成员列表功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后查看成员功能和 /group_members 指令均不可用"
+    },
+    "set_admin_enabled": {
+        "description": "设置群管理员功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后设置管理员功能和 /set_admin 指令均不可用"
+    },
+    "set_group_name_enabled": {
+        "description": "修改群名称功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后修改群名功能和 /set_group_name 指令均不可用"
+    },
+    "set_title_enabled": {
+        "description": "设置专属头衔功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后设置头衔功能和 /set_title 指令均不可用"
+    },
+    "banned_list_enabled": {
+        "description": "查看禁言列表功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后查看禁言列表功能和 /shut_list 指令均不可用"
+    },
+    "join_verify_enabled": {
+        "description": "设置加群方式功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后设置加群验证功能和 /set_add_option 指令均不可用"
+    },
+    "recall_enabled": {
+        "description": "撤回消息功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后手动撤回功能和 /recall 指令均不可用（自动审核的撤回不受此控制）"
+    },
+    "essence_enabled": {
+        "description": "精华消息功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后精华消息相关功能和 /set_essence /del_essence 指令均不可用"
+    },
+    "group_files_enabled": {
+        "description": "群文件管理功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后群文件查看/上传/删除/移动/重命名等全部不可用"
+    },
+    "group_honor_enabled": {
+        "description": "群荣誉查看功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后查看群荣誉功能和 /group_honor 指令均不可用"
+    },
+    "at_all_remain_enabled": {
+        "description": "@全体成员剩余次数查询开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后查询 @全体次数功能和 /at_all_remain 指令均不可用"
+    },
+    "ignore_requests_enabled": {
+        "description": "被忽略加群请求查看开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后查看被忽略请求功能和 /ignore_requests 指令均不可用"
+    },
+    "group_msg_history_enabled": {
+        "description": "群消息历史查看开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后查看消息历史功能和 /get_group_msg_history 指令均不可用"
+    },
+    "group_portrait_enabled": {
+        "description": "群头像设置功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后设置群头像功能和 /group_portrait 指令均不可用"
+    },
+    "group_sign_enabled": {
+        "description": "群打卡功能开关",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后群打卡功能和 /group_sign 指令均不可用"
+    },
+    "lexicon_political_enabled": {
+        "description": "外置词库-政治敏感类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测政治敏感关键词"
+    },
+    "lexicon_porn_enabled": {
+        "description": "外置词库-色情淫秽类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测色情淫秽关键词"
+    },
+    "lexicon_violent_enabled": {
+        "description": "外置词库-暴恐内容类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测暴恐内容关键词"
+    },
+    "lexicon_reactionary_enabled": {
+        "description": "外置词库-反动言论类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测反动言论关键词"
+    },
+    "lexicon_weapons_enabled": {
+        "description": "外置词库-涉枪涉爆类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测涉枪涉爆关键词"
+    },
+    "lexicon_corruption_enabled": {
+        "description": "外置词库-贪腐相关类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测贪腐相关关键词"
+    },
+    "lexicon_illegal_url_enabled": {
+        "description": "外置词库-违规网址类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测违规网址（仅匹配词库中的网址）"
+    },
+    "lexicon_other_enabled": {
+        "description": "外置词库-其他违规类检测",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后不检测补充词库、民生敏感、腾讯封禁等其他类别"
+    }
+}
