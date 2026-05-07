@@ -2416,7 +2416,7 @@ class Main(Star):
             return has_text
         return True
 
-    @filter.event_message_type(filter.EventMessageType.ALL_MESSAGE)
+    @filter.event_message_type(filter.EventMessageType.ALL)
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def _handle_message(self, event: AiocqhttpMessageEvent):
         group_id = self._get_group_id(event)
