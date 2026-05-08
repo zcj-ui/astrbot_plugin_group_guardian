@@ -2901,14 +2901,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"撤回失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("禁言")
     async def cmd_ban(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("ban_enabled", "禁言")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -2934,14 +2932,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"禁言失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("解禁")
     async def cmd_unban(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("unban_enabled", "解禁")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -2966,14 +2962,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"解禁失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("踢人")
     async def cmd_kick(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("kick_enabled", "踢人")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -2998,14 +2992,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"踢人失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("全体禁言")
     async def cmd_whole_ban(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("whole_ban_enabled", "全体禁言")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         enable = True
@@ -3031,14 +3023,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"操作失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("设置名片")
     async def cmd_set_card(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("set_card_enabled", "设置名片")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 3:
@@ -3064,14 +3054,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"设置失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("发公告")
     async def cmd_send_notice(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("send_announcement_enabled", "发公告")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         content = event.message_str.replace("/发公告", "").strip()
         if not content:
@@ -3096,14 +3084,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"发送失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("删公告")
     async def cmd_delete_notice(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("delete_announcement_enabled", "删公告")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3194,14 +3180,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"获取失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("删文件")
     async def cmd_delete_file(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("group_files_enabled", "群文件管理")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3287,14 +3271,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"获取失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("群名")
     async def cmd_set_name(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("set_group_name_enabled", "修改群名")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         name = event.message_str.replace("/群名", "").strip()
         if not name:
@@ -3318,14 +3300,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"修改失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("头衔")
     async def cmd_set_title(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("set_title_enabled", "设置头衔")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 3:
@@ -3351,14 +3331,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"设置失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("设精华")
     async def cmd_set_essence(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("essence_enabled", "精华消息")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3383,14 +3361,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"设置失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("取消精华")
     async def cmd_del_essence(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("essence_enabled", "精华消息")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3415,14 +3391,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"取消失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("设置管理")
     async def cmd_set_admin(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("set_admin_enabled", "设置管理员")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -3447,14 +3421,12 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"设置失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("加群方式")
     async def cmd_join_verify(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("join_verify_enabled", "加群验证")
         if not ok:
             yield event.plain_result(msg)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
             return
         args = event.message_str.split()
         method_map = {"需要验证": 1, "允许": 0, "禁止": 2, "免审核": 0}
@@ -3484,11 +3456,9 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"设置失败: {e}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("自动审核")
     async def cmd_auto_moderate(self, event: AstrMessageEvent):
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
-            return
         args = event.message_str.split()
         if len(args) < 2:
             status = "开启" if self.auto_moderate_enabled else "关闭"
@@ -3507,11 +3477,9 @@ class Main(Star):
         self._save_config_safe()
         yield event.plain_result(f"自动审核已{action}")
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("设置管理插件")
     async def cmd_plugin_admin(self, event: AstrMessageEvent):
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可使用此指令")
-            return
         args = event.message_str.split()
         if len(args) < 2:
             admins = self.config.get("admin_list", [])
@@ -3538,6 +3506,7 @@ class Main(Star):
         self.config["admin_list"] = admin_list
         self._save_config_safe()
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("recall_all")
     async def recall_all(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("recall_enabled", "撤回消息")
@@ -3547,9 +3516,6 @@ class Main(Star):
         allowed, reason = self._check_group_access(event)
         if not allowed:
             yield event.plain_result(reason)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可以使用此功能")
             return
         args = event.message_str.split()
         user_id = None
