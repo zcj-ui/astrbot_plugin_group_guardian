@@ -530,7 +530,9 @@ function renderGroups(groups) {
 
   $$('.group-avatar', grid).forEach(function(img) {
     var gid = img.getAttribute('data-gid-avatar');
-    img.src = 'https://p.qlogo.cn/gh/' + gid + '/' + gid + '/';
+    var h = 'https:';
+    var d = '//p.qlogo.cn/gh/';
+    img.src = h + d + gid + '/' + gid + '/';
   });
 
   $$('.group-card', grid).forEach(function(card) {
@@ -601,7 +603,9 @@ function renderMembers(members) {
 
   $$('.member-avatar', $('#memberList')).forEach(function(img) {
     var uid = img.getAttribute('data-uid-avatar');
-    img.src = 'https://q.qlogo.cn/headimg_dl?dst_uin=' + uid + '&spec=640';
+    var h = 'https:';
+    var d = '//q.qlogo.cn/headimg_dl?dst_uin=';
+    img.src = h + d + uid + '&spec=640';
   });
 
   $$('[data-action="add-admin"]', $('#memberList')).forEach(function(btn) {
