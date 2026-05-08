@@ -749,7 +749,7 @@ class Main(Star):
         today_blocked = sum(1 for l in today_logs if "撤回" in l.get("action", ""))
         stats = {
             "plugin_name": _PLUGIN_NAME,
-            "version": "v1.8.0",
+            "version": "v1.8.1",
             "auto_moderate_enabled": self.auto_moderate_enabled,
             "group_white_list_count": len(self.group_white_list),
             "group_black_list_count": len(self.group_black_list),

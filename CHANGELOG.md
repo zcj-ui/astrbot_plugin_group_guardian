@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.8.1] - 2026-05-08
+
+### 修复
+
+#### WebUI 数据不显示
+- **Bridge API 返回格式不匹配**：Bridge SDK 自动解包 `{"status":"success","data":...}` 返回 `data` 部分，但前端检查 `res.status === 'success'` 永远不成立
+- 移除所有 `res.status === 'success'` 检查，改为直接使用返回数据
+- 移除所有 `res.data` 引用，改为直接使用 `res`
+- 错误处理改为检查 `res.status === 'error'`（仅 safeGet/safePost 捕获异常时返回）
+
+#### 头像不显示
+- **群头像**：从 `p.qlogo.cn` 改为外部 API `https://api.mmp.cc/api/qqgroup?text={gid}`
+- **成员头像**：修正为 `http://q1.qlogo.cn/g?b=qq&nk={uid}&s=100`（100x100 非高清）
+
+#### 清理
+- 移除调试用的 `console.log('[DEBUG]')` 代码
+
+---
+
 ## [1.8.0] - 2026-05-07
 
 ### 重大修复

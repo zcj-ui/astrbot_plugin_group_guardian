@@ -223,7 +223,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="logo-icon">G</div>
         <div class="logo-text">
           <span class="logo-title">Group Guardian</span>
-          <span class="logo-ver" id="logoVer">v1.8.0</span>
+          <span class="logo-ver" id="logoVer">v1.8.1</span>
         </div>
       </div>
       <nav class="sidebar-nav">
@@ -473,7 +473,7 @@ async function loadOverview() {
     $('#statUserBlackCount').textContent = d.user_black_list_count != null ? d.user_black_list_count : '--';
     $('#statAdminCount').textContent = d.admin_list_count != null ? d.admin_list_count : '--';
     $('#statTotalLogs').textContent = d.total_logs != null ? d.total_logs : '--';
-    $('#logoVer').textContent = d.version || 'v1.8.0';
+    $('#logoVer').textContent = d.version || 'v1.8.1';
   }
   if (todayRes && todayRes.status !== 'error') {
     renderRanking('groupRanking', todayRes.group_ranking, function(item) {
