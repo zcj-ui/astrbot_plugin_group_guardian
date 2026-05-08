@@ -518,10 +518,8 @@ function renderGroups(groups) {
     if (g.is_white) badges.push('<span class="group-badge badge-white">白名单</span>');
     if (g.is_black) badges.push('<span class="group-badge badge-black">黑名单</span>');
     if (g.is_white && g.today_blocked > 0) badges.push('<span class="group-badge badge-blocked">今日拦截 ' + g.today_blocked + '</span>');
-    var groupAvatarUrl = 'https://p.qlogo.cn/gh/' + g.group_id + '/' + g.group_id + '/';
-    console.log('[群头像] group_id:', g.group_id, 'URL:', groupAvatarUrl);
     return '<div class="group-card ' + cls + '" data-gid="' + esc(g.group_id) + '">' +
-      '<img class="group-avatar" src="' + groupAvatarUrl + '" onerror="console.error(\'[群头像加载失败]\', this.src)" />' +
+      '<img class="group-avatar" data-gid-avatar="' + esc(g.group_id) + '" />' +
       '<div class="group-info"><div class="group-name">' + esc(g.group_name || '未命名群') + '</div>' +
       '<div class="group-meta"><span class="group-id">' + esc(g.group_id) + '</span><span class="group-members">' + g.member_count + ' 人</span>' + badges.join('') + '</div></div>' +
       '<div class="group-actions">' +
@@ -529,6 +527,11 @@ function renderGroups(groups) {
         (g.is_black ? '<button class="btn btn-outline btn-sm" data-action="remove-black" data-gid="' + esc(g.group_id) + '">移出黑名单</button>' : '<button class="btn btn-danger btn-sm" data-action="add-black" data-gid="' + esc(g.group_id) + '">加入黑名单</button>') +
       '</div></div>';
   }).join('');
+
+  $$('.group-avatar', grid).forEach(function(img) {
+    var gid = img.getAttribute('data-gid-avatar');
+    img.src = 'https://p.qlogo.cn/gh/' + gid + '/' + gid + '/';
+  });
 
   $$('.group-card', grid).forEach(function(card) {
     card.addEventListener('click', function(e) {
@@ -588,15 +591,18 @@ function renderMembers(members) {
     var adminBtn = m.is_plugin_admin
       ? '<button class="btn btn-outline btn-sm" data-action="remove-admin" data-uid="' + esc(m.user_id) + '">移除管理</button>'
       : '<button class="btn btn-primary btn-sm" data-action="add-admin" data-uid="' + esc(m.user_id) + '">设为管理</button>';
-    var memberAvatarUrl = 'https://q.qlogo.cn/headimg_dl?dst_uin=' + m.user_id + '&spec=640';
-    console.log('[成员头像] user_id:', m.user_id, 'URL:', memberAvatarUrl);
     return '<div class="member-item">' +
-      '<img class="member-avatar" src="' + memberAvatarUrl + '" onerror="console.error(\'[成员头像加载失败]\', this.src)" />' +
+      '<img class="member-avatar" data-uid-avatar="' + esc(m.user_id) + '" />' +
       '<span class="member-name">' + esc(m.display_name) + '</span>' +
       '<span class="member-role ' + roleCls + '">' + roleName + '</span>' + titleHtml +
       '<span class="member-uid">' + esc(m.user_id) + '</span>' +
       '<span class="member-actions">' + adminBtn + '</span></div>';
   }).join('');
+
+  $$('.member-avatar', $('#memberList')).forEach(function(img) {
+    var uid = img.getAttribute('data-uid-avatar');
+    img.src = 'https://q.qlogo.cn/headimg_dl?dst_uin=' + uid + '&spec=640';
+  });
 
   $$('[data-action="add-admin"]', $('#memberList')).forEach(function(btn) {
     btn.addEventListener('click', async function() {
