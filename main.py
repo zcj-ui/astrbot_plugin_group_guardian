@@ -1010,13 +1010,11 @@ class Main(Star):
                 if is_white:
                     logs = self._moderation_logs
                     today_count = sum(1 for l in logs if str(l.get("group_id", "")) == gid and l.get("ts", 0) >= today_start and "撤回" in l.get("action", ""))
-                avatar_url = f"https://p.qlogo.cn/gh/{gid}/{gid}/"
-                logger.info(f"[GroupGuardian] 群头像URL: {avatar_url}")
                 enriched.append({
                     "group_id": gid,
                     "group_name": g.get("group_name", ""),
                     "member_count": member_count,
-                    "avatar": avatar_url,
+                    "avatar": f"https://p.qlogo.cn/gh/{gid}/{gid}/",
                     "is_white": is_white,
                     "is_black": is_black,
                     "today_blocked": today_count,
@@ -1046,8 +1044,6 @@ class Main(Star):
                 role = m.get("role", "member")
                 title = m.get("title", "") or m.get("special_title", "")
                 is_plugin_admin = uid in admin_set
-                avatar_url = f"https://q.qlogo.cn/headimg_dl?dst_uin={uid}&spec=640"
-                logger.info(f"[GroupGuardian] 成员头像URL: {avatar_url}")
                 enriched.append({
                     "user_id": uid,
                     "nickname": nickname,
@@ -1055,7 +1051,7 @@ class Main(Star):
                     "display_name": card or nickname,
                     "role": role,
                     "title": title,
-                    "avatar": avatar_url,
+                    "avatar": f"https://q.qlogo.cn/headimg_dl?dst_uin={uid}&spec=640",
                     "is_plugin_admin": is_plugin_admin,
                 })
             role_order = {"owner": 0, "admin": 1, "member": 2}
