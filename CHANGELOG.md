@@ -1,5 +1,27 @@
 # Changelog
 
+## [1.8.2] - 2026-05-08
+
+### 修复
+
+#### 配置持久化
+- **所有 WebUI 修改的配置不再丢失**：之前修改白名单/黑名单/管理员/开关等仅修改内存，重启后丢失
+- 新增 `_save_config_safe()` 方法，所有配置修改后自动调用 `self.config.save_config()` 持久化到磁盘
+- 涉及：白名单增删、黑名单增删、用户黑名单增删、管理员增删、设置保存（8处）
+
+#### 日志持久化
+- **审核日志持久化到本地文件**：`moderation_logs.json`，重启后不丢失
+- 新增 `_load_logs()` 启动时从文件加载日志
+- 新增 `_save_logs()` 每次日志变更（新增/删除/清空）后自动保存
+- 移除所有 `getattr(self, "_moderation_logs", [])` 防御式访问，改为 `__init__` 中初始化
+
+#### 头像修复
+- **成员头像**：修正为 HTTPS 协议 `https://q1.qlogo.cn/g?b=qq&nk={uid}&s=100`
+- **群头像**：使用外部 API `https://api.mmp.cc/api/qqgroup?text={gid}`
+- **CSP 策略**：添加 `<meta http-equiv="Content-Security-Policy">` 允许加载外部图片
+
+---
+
 ## [1.8.1] - 2026-05-08
 
 ### 修复
