@@ -1014,7 +1014,7 @@ class Main(Star):
                     "group_id": gid,
                     "group_name": g.get("group_name", ""),
                     "member_count": member_count,
-                    "avatar": f"https://p.qlogo.cn/gh/{gid}/{gid}/640",
+                    "avatar": f"https://p.qlogo.cn/gh/{gid}/{gid}/",
                     "is_white": is_white,
                     "is_black": is_black,
                     "today_blocked": today_count,
@@ -1051,7 +1051,7 @@ class Main(Star):
                     "display_name": card or nickname,
                     "role": role,
                     "title": title,
-                    "avatar": f"https://q1.qlogo.cn/g?b=qq&nk={uid}&s=640",
+                    "avatar": f"https://q.qlogo.cn/headimg_dl?dst_uin={uid}&spec=640",
                     "is_plugin_admin": is_plugin_admin,
                 })
             role_order = {"owner": 0, "admin": 1, "member": 2}
