@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="img-src * data: blob:; default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src *;" />
   <title>Group Guardian - QQ群智能守护者</title>
   <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -223,7 +224,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="logo-icon">G</div>
         <div class="logo-text">
           <span class="logo-title">Group Guardian</span>
-          <span class="logo-ver" id="logoVer">v1.8.1</span>
+          <span class="logo-ver" id="logoVer">v1.8.2</span>
         </div>
       </div>
       <nav class="sidebar-nav">
@@ -473,7 +474,7 @@ async function loadOverview() {
     $('#statUserBlackCount').textContent = d.user_black_list_count != null ? d.user_black_list_count : '--';
     $('#statAdminCount').textContent = d.admin_list_count != null ? d.admin_list_count : '--';
     $('#statTotalLogs').textContent = d.total_logs != null ? d.total_logs : '--';
-    $('#logoVer').textContent = d.version || 'v1.8.1';
+    $('#logoVer').textContent = d.version || 'v1.8.2';
   }
   if (todayRes && todayRes.status !== 'error') {
     renderRanking('groupRanking', todayRes.group_ranking, function(item) {

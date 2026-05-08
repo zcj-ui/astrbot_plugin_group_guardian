@@ -619,7 +619,37 @@ class Main(Star):
         self._compiled_ad = [re.compile(p, re.IGNORECASE) for p in AD_PATTERNS]
         self._lexicon = self._load_lexicon()
         self._compiled_lexicon = self._compile_lexicon()
+        self._moderation_logs = self._load_logs()
         self._register_web_apis()
+
+    def _save_config_safe(self) -> None:
+        try:
+            self.config.save_config()
+        except Exception:
+            logger.exception("save_config failed")
+
+    def _logs_path(self) -> str:
+        return os.path.join(self._get_plugin_dir(), "moderation_logs.json")
+
+    def _load_logs(self) -> list:
+        try:
+            p = self._logs_path()
+            if os.path.exists(p):
+                with open(p, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    return data[-500:]
+        except Exception:
+            logger.exception("load_logs failed")
+        return []
+
+    def _save_logs(self) -> None:
+        try:
+            p = self._logs_path()
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(self._moderation_logs, f, ensure_ascii=False, indent=2)
+        except Exception:
+            logger.exception("save_logs failed")
 
     def _register_web_apis(self):
         try:
@@ -743,13 +773,13 @@ class Main(Star):
 
     async def _web_stats(self):
         from quart import jsonify, request
-        logs = getattr(self, "_moderation_logs", [])
+        logs = self._moderation_logs
         today_start = int(time.time()) - (int(time.time()) % 86400)
         today_logs = [l for l in logs if l.get("ts", 0) >= today_start]
         today_blocked = sum(1 for l in today_logs if "撤回" in l.get("action", ""))
         stats = {
             "plugin_name": _PLUGIN_NAME,
-            "version": "v1.8.1",
+            "version": "v1.8.2",
             "auto_moderate_enabled": self.auto_moderate_enabled,
             "group_white_list_count": len(self.group_white_list),
             "group_black_list_count": len(self.group_black_list),
@@ -860,6 +890,8 @@ class Main(Star):
                 self.config["admin_list"] = [str(a).strip() for a in (al if isinstance(al, list) else [al]) if a]
             if "enabled" in updated:
                 self.config["enabled"] = bool(self.config.get("enabled", True))
+            if updated:
+                self._save_config_safe()
             return jsonify({"status": "success", "updated": updated})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -871,12 +903,12 @@ class Main(Star):
     async def _web_get_logs(self):
         from quart import jsonify, request
         limit = min(int(request.args.get("limit", 50)), 200)
-        logs = getattr(self, "_moderation_logs", [])[-limit:]
+        logs = self._moderation_logs[-limit:]
         return jsonify({"status": "success", "data": logs})
 
     async def _web_get_moderation_users(self):
         from quart import jsonify, request
-        logs = getattr(self, "_moderation_logs", [])
+        logs = self._moderation_logs
         action_filter = request.args.get("action", "").strip()
         filtered = logs
         if action_filter:
@@ -918,9 +950,10 @@ class Main(Star):
             data = await request.get_json(force=True, silent=True) or {}
             ids = data.get("ids", [])
             delete_all = data.get("delete_all", False)
-            logs = getattr(self, "_moderation_logs", [])
+            logs = self._moderation_logs
             if delete_all:
                 self._moderation_logs = []
+                self._save_logs()
                 return jsonify({"status": "success", "deleted": len(logs)})
             if not ids:
                 return jsonify({"status": "error", "message": "未指定要删除的日志ID"})
@@ -929,6 +962,7 @@ class Main(Star):
             self._moderation_logs = [l for l in logs if l.get("id") not in id_set]
             for i, log in enumerate(self._moderation_logs):
                 log["id"] = i
+            self._save_logs()
             return jsonify({"status": "success", "deleted": before - len(self._moderation_logs)})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -936,7 +970,7 @@ class Main(Star):
     async def _web_export_logs(self):
         from quart import jsonify, request
         fmt = request.args.get("format", "json").strip().lower()
-        logs = getattr(self, "_moderation_logs", [])
+        logs = self._moderation_logs
         if fmt == "csv":
             import csv, io
             output = io.StringIO()
@@ -974,7 +1008,7 @@ class Main(Star):
                 is_black = gid in self.group_black_list
                 today_count = 0
                 if is_white:
-                    logs = getattr(self, "_moderation_logs", [])
+                    logs = self._moderation_logs
                     today_count = sum(1 for l in logs if str(l.get("group_id", "")) == gid and l.get("ts", 0) >= today_start and "撤回" in l.get("action", ""))
                 enriched.append({
                     "group_id": gid,
@@ -1017,7 +1051,7 @@ class Main(Star):
                     "display_name": card or nickname,
                     "role": role,
                     "title": title,
-                    "avatar": f"http://q1.qlogo.cn/g?b=qq&nk={uid}&s=100",
+                    "avatar": f"https://q1.qlogo.cn/g?b=qq&nk={uid}&s=100",
                     "is_plugin_admin": is_plugin_admin,
                 })
             role_order = {"owner": 0, "admin": 1, "member": 2}
@@ -1039,6 +1073,7 @@ class Main(Star):
             if group_id not in self.group_white_list:
                 self.group_white_list.append(group_id)
                 self.config["group_white_list"] = self.group_white_list
+            self._save_config_safe()
             return jsonify({"status": "success", "group_id": group_id, "white_list": self.group_white_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1053,6 +1088,7 @@ class Main(Star):
             if group_id in self.group_white_list:
                 self.group_white_list.remove(group_id)
                 self.config["group_white_list"] = self.group_white_list
+            self._save_config_safe()
             return jsonify({"status": "success", "group_id": group_id, "white_list": self.group_white_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1070,6 +1106,7 @@ class Main(Star):
             if group_id not in self.group_black_list:
                 self.group_black_list.append(group_id)
                 self.config["group_black_list"] = self.group_black_list
+            self._save_config_safe()
             return jsonify({"status": "success", "group_id": group_id, "black_list": self.group_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1084,6 +1121,7 @@ class Main(Star):
             if group_id in self.group_black_list:
                 self.group_black_list.remove(group_id)
                 self.config["group_black_list"] = self.group_black_list
+            self._save_config_safe()
             return jsonify({"status": "success", "group_id": group_id, "black_list": self.group_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1098,6 +1136,7 @@ class Main(Star):
             if user_id not in self.user_black_list:
                 self.user_black_list.append(user_id)
                 self.config["user_black_list"] = self.user_black_list
+            self._save_config_safe()
             return jsonify({"status": "success", "user_id": user_id, "user_black_list": self.user_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1112,6 +1151,7 @@ class Main(Star):
             if user_id in self.user_black_list:
                 self.user_black_list.remove(user_id)
                 self.config["user_black_list"] = self.user_black_list
+            self._save_config_safe()
             return jsonify({"status": "success", "user_id": user_id, "user_black_list": self.user_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1130,6 +1170,7 @@ class Main(Star):
             if user_id not in admin_list:
                 admin_list.append(user_id)
                 self.config["admin_list"] = admin_list
+            self._save_config_safe()
             return jsonify({"status": "success", "user_id": user_id, "admin_list": admin_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1148,13 +1189,14 @@ class Main(Star):
             if user_id in admin_list:
                 admin_list.remove(user_id)
                 self.config["admin_list"] = admin_list
+            self._save_config_safe()
             return jsonify({"status": "success", "user_id": user_id, "admin_list": admin_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_today_stats(self):
         from quart import jsonify, request
-        logs = getattr(self, "_moderation_logs", [])
+        logs = self._moderation_logs
         today_start = int(time.time()) - (int(time.time()) % 86400)
         today_logs = [l for l in logs if l.get("ts", 0) >= today_start]
         group_stats = {}
@@ -1462,8 +1504,6 @@ class Main(Star):
         return ''.join(parts) if parts else '[空消息]'
 
     def _log_moderation(self, group_id: str, user_id: str, user_name: str, msg_text: str, action: str, reason: str = ""):
-        if not hasattr(self, "_moderation_logs"):
-            self._moderation_logs = []
         self._moderation_logs.append({
             "id": len(self._moderation_logs),
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1480,6 +1520,7 @@ class Main(Star):
             self._moderation_logs = self._moderation_logs[-400:]
             for i, log in enumerate(self._moderation_logs):
                 log["id"] = i
+        self._save_logs()
 
     # ==================== LLM 群管工具 ====================
     @filter.llm_tool(name="ban_group_member")
