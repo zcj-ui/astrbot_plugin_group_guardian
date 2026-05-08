@@ -1244,6 +1244,17 @@ class Main(Star):
             return False, f"{name}功能已在配置中禁用"
         return True, ""
 
+    def _check_api_result(self, result, action_name: str = "操作") -> Tuple[bool, str]:
+        if result is None:
+            return True, ""
+        if isinstance(result, dict):
+            status = result.get("status", "")
+            retcode = result.get("retcode", 0)
+            if status == "failed" or (retcode != 0 and retcode is not None):
+                msg = result.get("msg", "") or result.get("message", "") or f"错误码: {retcode}"
+                return False, msg
+        return True, ""
+
     def _get_plugin_dir(self) -> str:
         return os.path.dirname(os.path.abspath(__file__))
 
@@ -1552,7 +1563,10 @@ class Main(Star):
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
                 return {"status": "error", "message": "群号或用户QQ号格式无效"}
-            await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=duration_seconds)
+            result = await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=duration_seconds)
+            ok, err = self._check_api_result(result, "禁言")
+            if not ok:
+                return {"status": "error", "message": f"禁言失败: {err}"}
             return {"status": "success", "message": f"已禁言 {user_id} {duration_minutes}分钟"}
         except Exception as e:
             return {"status": "error", "message": f"禁言失败: {e}"}
@@ -1583,7 +1597,10 @@ class Main(Star):
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
                 return {"status": "error", "message": "群号或用户QQ号格式无效"}
-            await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=0)
+            result = await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=0)
+            ok, err = self._check_api_result(result, "解除禁言")
+            if not ok:
+                return {"status": "error", "message": f"解除禁言失败: {err}"}
             return {"status": "success", "message": f"已解除 {user_id} 的禁言"}
         except Exception as e:
             return {"status": "error", "message": f"解除禁言失败: {e}"}
@@ -1614,7 +1631,10 @@ class Main(Star):
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
                 return {"status": "error", "message": "群号或用户QQ号格式无效"}
-            await client.call_action('set_group_kick', group_id=gid, user_id=uid, reject_add_request=False)
+            result = await client.call_action('set_group_kick', group_id=gid, user_id=uid, reject_add_request=False)
+            ok, err = self._check_api_result(result, "踢人")
+            if not ok:
+                return {"status": "error", "message": f"踢人失败: {err}"}
             return {"status": "success", "message": f"已将 {user_id} 踢出群聊"}
         except Exception as e:
             return {"status": "error", "message": f"踢人失败: {e}"}
@@ -1641,7 +1661,10 @@ class Main(Star):
             client = await self._get_client(event)
             if not client:
                 return {"status": "error", "message": "无法获取QQ客户端"}
-            await client.call_action('set_group_whole_ban', group_id=int(group_id), enable=enable)
+            result = await client.call_action('set_group_whole_ban', group_id=int(group_id), enable=enable)
+            ok, err = self._check_api_result(result, "全体禁言")
+            if not ok:
+                return {"status": "error", "message": f"设置全体禁言失败: {err}"}
             return {"status": "success", "message": f"已{'开启' if enable else '关闭'}全体禁言"}
         except Exception as e:
             return {"status": "error", "message": f"设置全体禁言失败: {e}"}
@@ -1673,7 +1696,10 @@ class Main(Star):
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
                 return {"status": "error", "message": "群号或用户QQ号格式无效"}
-            await client.call_action('set_group_card', group_id=gid, user_id=uid, card=card)
+            result = await client.call_action('set_group_card', group_id=gid, user_id=uid, card=card)
+            ok, err = self._check_api_result(result, "设置群名片")
+            if not ok:
+                return {"status": "error", "message": f"设置群名片失败: {err}"}
             return {"status": "success", "message": f"已将 {user_id} 的群名片设为: {card}"}
         except Exception as e:
             return {"status": "error", "message": f"设置群名片失败: {e}"}
@@ -1703,7 +1729,10 @@ class Main(Star):
             gid = self._safe_int(group_id, 0)
             if not gid:
                 return {"status": "error", "message": "群号格式无效"}
-            await client.call_action('_send_group_notice', group_id=gid, content=content)
+            result = await client.call_action('_send_group_notice', group_id=gid, content=content)
+            ok, err = self._check_api_result(result, "发送群公告")
+            if not ok:
+                return {"status": "error", "message": f"发布公告失败: {err}"}
             return {"status": "success", "message": "群公告已发布"}
         except Exception as e:
             return {"status": "error", "message": f"发布公告失败: {e}"}
@@ -1772,7 +1801,10 @@ class Main(Star):
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
                 return {"status": "error", "message": "群号或用户QQ号格式无效"}
-            await client.call_action('set_group_admin', group_id=gid, user_id=uid, enable=enable)
+            result = await client.call_action('set_group_admin', group_id=gid, user_id=uid, enable=enable)
+            ok, err = self._check_api_result(result, "设置管理员")
+            if not ok:
+                return {"status": "error", "message": f"设置管理员失败: {err}"}
             return {"status": "success", "message": f"已{'设为' if enable else '取消'} {user_id} 的管理员"}
         except Exception as e:
             return {"status": "error", "message": f"设置管理员失败: {e}"}
@@ -1802,7 +1834,10 @@ class Main(Star):
             gid = self._safe_int(group_id, 0)
             if not gid:
                 return {"status": "error", "message": "群号格式无效"}
-            await client.call_action('set_group_name', group_id=gid, group_name=group_name)
+            result = await client.call_action('set_group_name', group_id=gid, group_name=group_name)
+            ok, err = self._check_api_result(result, "修改群名称")
+            if not ok:
+                return {"status": "error", "message": f"改群名失败: {err}"}
             return {"status": "success", "message": f"群名已改为: {group_name}"}
         except Exception as e:
             return {"status": "error", "message": f"改群名失败: {e}"}
@@ -1834,7 +1869,10 @@ class Main(Star):
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
                 return {"status": "error", "message": "群号或用户QQ号格式无效"}
-            await client.call_action('set_group_special_title', group_id=gid, user_id=uid, special_title=title)
+            result = await client.call_action('set_group_special_title', group_id=gid, user_id=uid, special_title=title)
+            ok, err = self._check_api_result(result, "设置头衔")
+            if not ok:
+                return {"status": "error", "message": f"设置头衔失败: {err}"}
             return {"status": "success", "message": f"已将 {user_id} 的头衔设为: {title}"}
         except Exception as e:
             return {"status": "error", "message": f"设置头衔失败: {e}"}
@@ -1906,7 +1944,10 @@ class Main(Star):
             gid = self._safe_int(group_id, 0)
             if not gid:
                 return {"status": "error", "message": "群号格式无效"}
-            await client.call_action('set_group_add_option', group_id=gid, add_type=add_type)
+            result = await client.call_action('set_group_add_option', group_id=gid, add_type=add_type)
+            ok, err = self._check_api_result(result, "设置加群方式")
+            if not ok:
+                return {"status": "error", "message": f"设置加群方式失败: {err}"}
             type_text = {"allow": "允许加入", "deny": "拒绝加入", "need_verify": "需审核", "not_allow": "不允许"}.get(verify_type.lower(), verify_type)
             return {"status": "success", "message": f"加群方式已设为: {type_text}"}
         except Exception as e:
@@ -1937,7 +1978,10 @@ class Main(Star):
             mid = self._safe_int(message_id, 0)
             if not mid:
                 return {"status": "error", "message": "消息ID格式无效"}
-            await client.call_action('delete_msg', message_id=mid)
+            result = await client.call_action('delete_msg', message_id=mid)
+            ok, err = self._check_api_result(result, "撤回消息")
+            if not ok:
+                return {"status": "error", "message": f"撤回失败: {err}"}
             return {"status": "success", "message": f"已撤回消息 {message_id}"}
         except Exception as e:
             return {"status": "error", "message": f"撤回失败: {e}"}
@@ -1964,7 +2008,10 @@ class Main(Star):
             mid = self._safe_int(message_id, 0)
             if not mid:
                 return {"status": "error", "message": "消息ID格式无效"}
-            await client.call_action('set_essence_msg', message_id=mid)
+            result = await client.call_action('set_essence_msg', message_id=mid)
+            ok, err = self._check_api_result(result, "设精华")
+            if not ok:
+                return {"status": "error", "message": f"设精华失败: {err}"}
             return {"status": "success", "message": f"已将 {message_id} 设为精华"}
         except Exception as e:
             return {"status": "error", "message": f"设精华失败: {e}"}
@@ -1991,7 +2038,10 @@ class Main(Star):
             mid = self._safe_int(message_id, 0)
             if not mid:
                 return {"status": "error", "message": "消息ID格式无效"}
-            await client.call_action('delete_essence_msg', message_id=mid)
+            result = await client.call_action('delete_essence_msg', message_id=mid)
+            ok, err = self._check_api_result(result, "取消精华")
+            if not ok:
+                return {"status": "error", "message": f"取消精华失败: {err}"}
             return {"status": "success", "message": f"已取消 {message_id} 的精华"}
         except Exception as e:
             return {"status": "error", "message": f"取消精华失败: {e}"}
@@ -2021,7 +2071,10 @@ class Main(Star):
             gid = self._safe_int(group_id, 0)
             if not gid:
                 return {"status": "error", "message": "群号格式无效"}
-            await client.call_action('_del_group_notice', group_id=gid, notice_id=notice_id)
+            result = await client.call_action('_del_group_notice', group_id=gid, notice_id=notice_id)
+            ok, err = self._check_api_result(result, "删除公告")
+            if not ok:
+                return {"status": "error", "message": f"删除公告失败: {err}"}
             return {"status": "success", "message": f"已删除公告 {notice_id}"}
         except Exception as e:
             return {"status": "error", "message": f"删除公告失败: {e}"}
@@ -2092,7 +2145,10 @@ class Main(Star):
             gid = self._safe_int(group_id, 0)
             if not gid:
                 return {"status": "error", "message": "群号格式无效"}
-            await client.call_action('delete_group_file', group_id=gid, file_id=file_id, busid=busid)
+            result = await client.call_action('delete_group_file', group_id=gid, file_id=file_id, busid=busid)
+            ok, err = self._check_api_result(result, "删除文件")
+            if not ok:
+                return {"status": "error", "message": f"删文件失败: {err}"}
             return {"status": "success", "message": f"已删除 {file_id}"}
         except Exception as e:
             return {"status": "error", "message": f"删文件失败: {e}"}
@@ -2844,6 +2900,643 @@ class Main(Star):
             yield event.plain_result(f"已尝试撤回 {recalled} 条消息")
         except Exception as e:
             yield event.plain_result(f"撤回失败: {e}")
+
+    @filter.command("禁言")
+    async def cmd_ban(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("ban_enabled", "禁言")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /禁言 <QQ号> [时长(分钟)]\n示例: /禁言 123456 30")
+            return
+        try:
+            user_id = str(args[1]).strip()
+            duration = min(max(int(args[2]) if len(args) > 2 else 10, 1), 43200)
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_ban', group_id=int(group_id), user_id=int(user_id), duration=duration * 60)
+            ok, err = self._check_api_result(result, "禁言")
+            if not ok:
+                yield event.plain_result(f"禁言失败: {err}")
+                return
+            yield event.plain_result(f"已禁言 {user_id}，时长 {duration} 分钟")
+        except Exception as e:
+            yield event.plain_result(f"禁言失败: {e}")
+
+    @filter.command("解禁")
+    async def cmd_unban(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("unban_enabled", "解禁")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /解禁 <QQ号>\n示例: /解禁 123456")
+            return
+        try:
+            user_id = str(args[1]).strip()
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_ban', group_id=int(group_id), user_id=int(user_id), duration=0)
+            ok, err = self._check_api_result(result, "解禁")
+            if not ok:
+                yield event.plain_result(f"解禁失败: {err}")
+                return
+            yield event.plain_result(f"已解除 {user_id} 的禁言")
+        except Exception as e:
+            yield event.plain_result(f"解禁失败: {e}")
+
+    @filter.command("踢人")
+    async def cmd_kick(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("kick_enabled", "踢人")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /踢人 <QQ号>\n示例: /踢人 123456")
+            return
+        try:
+            user_id = str(args[1]).strip()
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_kick', group_id=int(group_id), user_id=int(user_id))
+            ok, err = self._check_api_result(result, "踢人")
+            if not ok:
+                yield event.plain_result(f"踢人失败: {err}")
+                return
+            yield event.plain_result(f"已将 {user_id} 踢出群聊")
+        except Exception as e:
+            yield event.plain_result(f"踢人失败: {e}")
+
+    @filter.command("全体禁言")
+    async def cmd_whole_ban(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("whole_ban_enabled", "全体禁言")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        enable = True
+        if len(args) >= 2:
+            action = args[1].strip()
+            if action in ("关闭", "off", "0", "取消"):
+                enable = False
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_whole_ban', group_id=int(group_id), enable=enable)
+            ok, err = self._check_api_result(result, "全体禁言")
+            if not ok:
+                yield event.plain_result(f"操作失败: {err}")
+                return
+            yield event.plain_result(f"已{'开启' if enable else '关闭'}全体禁言")
+        except Exception as e:
+            yield event.plain_result(f"操作失败: {e}")
+
+    @filter.command("设置名片")
+    async def cmd_set_card(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("set_card_enabled", "设置名片")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 3:
+            yield event.plain_result("用法: /设置名片 <QQ号> <名片内容>\n示例: /设置名片 123456 管理员")
+            return
+        try:
+            user_id = str(args[1]).strip()
+            card = ' '.join(args[2:])
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_card', group_id=int(group_id), user_id=int(user_id), card=card)
+            ok, err = self._check_api_result(result, "设置名片")
+            if not ok:
+                yield event.plain_result(f"设置失败: {err}")
+                return
+            yield event.plain_result(f"已设置 {user_id} 的群名片为: {card}")
+        except Exception as e:
+            yield event.plain_result(f"设置失败: {e}")
+
+    @filter.command("发公告")
+    async def cmd_send_notice(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("send_announcement_enabled", "发公告")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        content = event.message_str.replace("/发公告", "").strip()
+        if not content:
+            yield event.plain_result("用法: /发公告 <公告内容>")
+            return
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            r = await client.call_action('_send_group_notice', group_id=int(group_id), content=content)
+            api_ok, err = self._check_api_result(r, "发公告")
+            if not api_ok:
+                yield event.plain_result(f"发送失败: {err}")
+                return
+            notice_id = (r or {}).get("notice_id") or (r or {}).get("id") or ""
+            yield event.plain_result(f"公告已发送{f'，ID: {notice_id}' if notice_id else ''}")
+        except Exception as e:
+            yield event.plain_result(f"发送失败: {e}")
+
+    @filter.command("删公告")
+    async def cmd_delete_notice(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("delete_announcement_enabled", "删公告")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /删公告 <公告ID>")
+            return
+        try:
+            notice_id = str(args[1]).strip()
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('_del_group_notice', group_id=int(group_id), notice_id=notice_id)
+            api_ok, err = self._check_api_result(result, "删公告")
+            if not api_ok:
+                yield event.plain_result(f"删除失败: {err}")
+                return
+            yield event.plain_result(f"已删除公告 {notice_id}")
+        except Exception as e:
+            yield event.plain_result(f"删除失败: {e}")
+
+    @filter.command("公告列表")
+    async def cmd_list_notices(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("list_announcements_enabled", "公告列表")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('_get_group_notice', group_id=int(group_id))
+            notices = result.get("notices", []) if isinstance(result, dict) else []
+            if not notices:
+                yield event.plain_result("暂无群公告")
+                return
+            lines = [f"📋 群公告列表 ({len(notices)}条):"]
+            for n in notices[:10]:
+                nid = n.get("notice_id", n.get("id", ""))
+                pub = n.get("publisher", {})
+                name = pub.get("nickname", "未知")
+                title = n.get("title", n.get("content", ""))[:40]
+                lines.append(f"  ID:{nid} | {name}: {title}")
+            yield event.plain_result("\n".join(lines))
+        except Exception as e:
+            yield event.plain_result(f"获取失败: {e}")
+
+    @filter.command("文件列表")
+    async def cmd_list_files(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("group_files_enabled", "群文件管理")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('get_group_root_files', group_id=int(group_id))
+            files = result.get("files", []) if isinstance(result, dict) else []
+            folders = result.get("folders", []) if isinstance(result, dict) else []
+            lines = [f"📁 群文件列表:"]
+            for f in folders[:15]:
+                lines.append(f"  📁 {f.get('folder_name', '?')}")
+            for f in files[:15]:
+                size = f.get('size', 0)
+                unit = "B"
+                if size > 1024 * 1024:
+                    size, unit = round(size / 1048576, 1), "MB"
+                elif size > 1024:
+                    size, unit = round(size / 1024, 1), "KB"
+                lines.append(f"  📄 {f.get('file_name', '?')} ({size}{unit})")
+            if not files and not folders:
+                lines.append("  暂无文件")
+            yield event.plain_result("\n".join(lines))
+        except Exception as e:
+            yield event.plain_result(f"获取失败: {e}")
+
+    @filter.command("删文件")
+    async def cmd_delete_file(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("group_files_enabled", "群文件管理")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /删文件 <file_id>\n提示: 使用 /文件列表 查看 file_id")
+            return
+        try:
+            file_id = str(args[1]).strip()
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('delete_group_file', group_id=int(group_id), file_id=file_id, busid=0)
+            api_ok, err = self._check_api_result(result, "删文件")
+            if not api_ok:
+                yield event.plain_result(f"删除失败: {err}")
+                return
+            yield event.plain_result(f"已删除文件 {file_id}")
+        except Exception as e:
+            yield event.plain_result(f"删除失败: {e}")
+
+    @filter.command("成员列表")
+    async def cmd_member_list(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("member_list_enabled", "成员列表")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('get_group_member_list', group_id=int(group_id))
+            members = result if isinstance(result, list) else []
+            role_count = {"owner": 0, "admin": 0, "member": 0}
+            for m in members:
+                role = m.get("role", "member")
+                role_count[role] = role_count.get(role, 0) + 1
+            total = len(members)
+            lines = [
+                f"👥 群成员列表 ({total}人):",
+                f"  👑 群主: {role_count['owner']}人",
+                f"  ⭐ 管理员: {role_count['admin']}人",
+                f"  👤 成员: {role_count['member']}人",
+            ]
+            yield event.plain_result("\n".join(lines))
+        except Exception as e:
+            yield event.plain_result(f"获取失败: {e}")
+
+    @filter.command("禁言列表")
+    async def cmd_banned_list(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("banned_list_enabled", "禁言列表")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('get_group_shut_list', group_id=int(group_id))
+            banned = result if isinstance(result, list) else []
+            if not banned:
+                yield event.plain_result("当前无人被禁言")
+                return
+            lines = [f"🚫 禁言列表 ({len(banned)}人):"]
+            for b in banned[:20]:
+                uid = b.get("user_id", "?")
+                dur = b.get("duration", 0)
+                lines.append(f"  QQ: {uid}, 剩余: {dur // 60}分钟")
+            yield event.plain_result("\n".join(lines))
+        except Exception as e:
+            yield event.plain_result(f"获取失败: {e}")
+
+    @filter.command("群名")
+    async def cmd_set_name(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("set_group_name_enabled", "修改群名")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        name = event.message_str.replace("/群名", "").strip()
+        if not name:
+            yield event.plain_result("用法: /群名 <新群名>")
+            return
+        try:
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_name', group_id=int(group_id), group_name=name)
+            api_ok, err = self._check_api_result(result, "修改群名")
+            if not api_ok:
+                yield event.plain_result(f"修改失败: {err}")
+                return
+            yield event.plain_result(f"群名已修改为: {name}")
+        except Exception as e:
+            yield event.plain_result(f"修改失败: {e}")
+
+    @filter.command("头衔")
+    async def cmd_set_title(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("set_title_enabled", "设置头衔")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 3:
+            yield event.plain_result("用法: /头衔 <QQ号> <头衔内容>\n示例: /头衔 123456 大佬")
+            return
+        try:
+            user_id = str(args[1]).strip()
+            title = ' '.join(args[2:])
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_special_title', group_id=int(group_id), user_id=int(user_id), special_title=title, duration=-1)
+            api_ok, err = self._check_api_result(result, "设置头衔")
+            if not api_ok:
+                yield event.plain_result(f"设置失败: {err}")
+                return
+            yield event.plain_result(f"已设置 {user_id} 的专属头衔: {title}")
+        except Exception as e:
+            yield event.plain_result(f"设置失败: {e}")
+
+    @filter.command("设精华")
+    async def cmd_set_essence(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("essence_enabled", "精华消息")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /设精华 <message_id>\n回复消息或提供 message_id")
+            return
+        try:
+            msg_id = int(args[1])
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_essence_msg', message_id=msg_id)
+            api_ok, err = self._check_api_result(result, "设精华")
+            if not api_ok:
+                yield event.plain_result(f"设置失败: {err}")
+                return
+            yield event.plain_result(f"已设为精华消息 (ID: {msg_id})")
+        except Exception as e:
+            yield event.plain_result(f"设置失败: {e}")
+
+    @filter.command("取消精华")
+    async def cmd_del_essence(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("essence_enabled", "精华消息")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /取消精华 <message_id>")
+            return
+        try:
+            msg_id = int(args[1])
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('delete_essence_msg', message_id=msg_id)
+            api_ok, err = self._check_api_result(result, "取消精华")
+            if not api_ok:
+                yield event.plain_result(f"取消失败: {err}")
+                return
+            yield event.plain_result(f"已取消精华 (ID: {msg_id})")
+        except Exception as e:
+            yield event.plain_result(f"取消失败: {e}")
+
+    @filter.command("设置管理")
+    async def cmd_set_admin(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("set_admin_enabled", "设置管理员")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            yield event.plain_result("用法: /设置管理 <QQ号>\n示例: /设置管理 123456")
+            return
+        try:
+            user_id = str(args[1]).strip()
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_admin', group_id=int(group_id), user_id=int(user_id), enable=True)
+            api_ok, err = self._check_api_result(result, "设置管理员")
+            if not api_ok:
+                yield event.plain_result(f"设置失败: {err}")
+                return
+            yield event.plain_result(f"已将 {user_id} 设为群管理员")
+        except Exception as e:
+            yield event.plain_result(f"设置失败: {e}")
+
+    @filter.command("加群方式")
+    async def cmd_join_verify(self, event: AstrMessageEvent):
+        ok, msg = self._cfg_check("join_verify_enabled", "加群验证")
+        if not ok:
+            yield event.plain_result(msg)
+            return
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        method_map = {"需要验证": 1, "允许": 0, "禁止": 2, "免审核": 0}
+        if len(args) < 2:
+            yield event.plain_result("用法: /加群方式 <方法>\n方法: 需要验证/允许/禁止\n示例: /加群方式 需要验证")
+            return
+        try:
+            method_str = args[1].strip()
+            method = method_map.get(method_str, -1)
+            if method == -1:
+                yield event.plain_result("无效的方法，请选择: 需要验证/允许/禁止")
+                return
+            group_id = self._get_group_id(event)
+            if not group_id:
+                yield event.plain_result("无法获取群号")
+                return
+            client = await self._get_client(event)
+            if not client:
+                yield event.plain_result("无法获取QQ客户端")
+                return
+            result = await client.call_action('set_group_add_option', group_id=int(group_id), add_type=method)
+            api_ok, err = self._check_api_result(result, "加群方式")
+            if not api_ok:
+                yield event.plain_result(f"设置失败: {err}")
+                return
+            yield event.plain_result(f"加群方式已设置为: {method_str}")
+        except Exception as e:
+            yield event.plain_result(f"设置失败: {e}")
+
+    @filter.command("自动审核")
+    async def cmd_auto_moderate(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            status = "开启" if self.auto_moderate_enabled else "关闭"
+            yield event.plain_result(f"自动审核状态: {status}\n用法: /自动审核 开启|关闭")
+            return
+        action = args[1].strip()
+        if action in ("开启", "on", "1"):
+            self.auto_moderate_enabled = True
+            self.config["auto_moderate_enabled"] = True
+        elif action in ("关闭", "off", "0"):
+            self.auto_moderate_enabled = False
+            self.config["auto_moderate_enabled"] = False
+        else:
+            yield event.plain_result("参数错误，请使用: 开启 或 关闭")
+            return
+        self._save_config_safe()
+        yield event.plain_result(f"自动审核已{action}")
+
+    @filter.command("设置管理插件")
+    async def cmd_plugin_admin(self, event: AstrMessageEvent):
+        if not await self._is_admin(event):
+            yield event.plain_result("仅管理员可使用此指令")
+            return
+        args = event.message_str.split()
+        if len(args) < 2:
+            admins = self.config.get("admin_list", [])
+            yield event.plain_result(f"插件管理员 ({len(admins)}人): {', '.join(str(a) for a in admins) or '无'}\n用法: /设置管理插件 <QQ号> 添加/移除")
+            return
+        user_id = str(args[1]).strip()
+        action = "添加" if len(args) < 3 else args[2].strip()
+        admin_list = self.config.get("admin_list", [])
+        if not isinstance(admin_list, list):
+            admin_list = []
+        admin_list = [str(a).strip() for a in admin_list if a]
+        if action == "移除":
+            if user_id in admin_list:
+                admin_list.remove(user_id)
+                yield event.plain_result(f"已移除插件管理员: {user_id}")
+            else:
+                yield event.plain_result(f"{user_id} 不在管理员列表中")
+        else:
+            if user_id not in admin_list:
+                admin_list.append(user_id)
+                yield event.plain_result(f"已添加插件管理员: {user_id}")
+            else:
+                yield event.plain_result(f"{user_id} 已是插件管理员")
+        self.config["admin_list"] = admin_list
+        self._save_config_safe()
 
     @filter.command("recall_all")
     async def recall_all(self, event: AstrMessageEvent):
