@@ -462,8 +462,9 @@ function initTabs() {
 async function loadOverview() {
   var res = await safeGet('stats');
   var todayRes = await safeGet('today_stats');
-  if (res.status === 'success') {
-    var d = res.data;
+  var d = res;
+  if (d && d.status === 'error') { d = null; }
+  if (d) {
     $('#statTodayBlocked').textContent = d.today_blocked != null ? d.today_blocked : '--';
     $('#statTodayTotal').textContent = d.today_total != null ? d.today_total : '--';
     $('#statTodayPassed').textContent = d.today_passed != null ? d.today_passed : '--';
@@ -474,11 +475,11 @@ async function loadOverview() {
     $('#statTotalLogs').textContent = d.total_logs != null ? d.total_logs : '--';
     $('#logoVer').textContent = d.version || 'v1.8.0';
   }
-  if (todayRes.status === 'success') {
-    renderRanking('groupRanking', todayRes.data.group_ranking, function(item) {
+  if (todayRes && todayRes.status !== 'error') {
+    renderRanking('groupRanking', todayRes.group_ranking, function(item) {
       return '<span class="ranking-name">群 ' + esc(item.group_id) + '</span><span class="ranking-count">' + item.count + '</span>';
     });
-    renderRanking('userRanking', todayRes.data.user_ranking, function(item) {
+    renderRanking('userRanking', todayRes.user_ranking, function(item) {
       return '<span class="ranking-name">' + esc(item.user_name || item.user_id) + '</span><span class="ranking-count">' + item.count + '</span>';
     });
   }
@@ -497,9 +498,9 @@ async function loadGroups() {
   var grid = $('#groupGrid');
   grid.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('groups');
-  if (res.status !== 'success') { grid.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  CONFIG._groups = res.data;
-  renderGroups(res.data);
+  if (res && res.status === 'error') { grid.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  CONFIG._groups = res;
+  renderGroups(res);
 }
 
 function renderGroups(groups) {
@@ -557,8 +558,8 @@ async function openMemberPanel(gid) {
   if (groupGrid) { var card = groupGrid.closest('.card'); if (card) card.style.display = 'none'; }
   if (CACHED_GROUP_ID !== gid) {
     var res = await safeGet('group_members', { group_id: gid });
-    if (res.status !== 'success') { $('#memberList').innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-    CURRENT_MEMBERS = res.data;
+    if (res && res.status === 'error') { $('#memberList').innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+    CURRENT_MEMBERS = res;
     CACHED_GROUP_ID = gid;
   }
   renderMembers(CURRENT_MEMBERS);
@@ -612,8 +613,8 @@ function renderMembers(members) {
 
 async function loadAdmins() {
   var res = await safeGet('config');
-  if (res.status !== 'success') return;
-  CONFIG = Object.assign({}, CONFIG, res.data);
+  if (res && res.status === 'error') return;
+  CONFIG = Object.assign({}, CONFIG, res);
   renderAdmins();
 }
 
@@ -637,8 +638,8 @@ async function loadUsers() {
   var c = $('#userContainer');
   c.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('moderation_users');
-  if (res.status !== 'success') { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  renderUsers(res.data);
+  if (res && res.status === 'error') { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  renderUsers(res);
 }
 
 function renderUsers(users) {
@@ -685,8 +686,8 @@ async function loadLogs() {
   var c = $('#logContainer');
   c.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('logs');
-  if (res.status !== 'success') { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  var logs = res.data || [];
+  if (res && res.status === 'error') { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  var logs = res || [];
   if (!logs.length) { c.innerHTML = '<p class="empty">暂无日志</p>'; return; }
   var rows = logs.slice(0, 100).map(function(l) {
     var a = l.action || '';
@@ -746,8 +747,8 @@ var FEATURE_TOGGLES = [
 
 async function loadSettings() {
   var res = await safeGet('config');
-  if (res.status !== 'success') { toast('加载设置失败', 'error'); return; }
-  CONFIG = Object.assign({}, CONFIG, res.data);
+  if (res && res.status === 'error') { toast('加载设置失败', 'error'); return; }
+  CONFIG = Object.assign({}, CONFIG, res);
   renderToggles('settingsCore', CORE_TOGGLES);
   renderToggles('settingsAudit', AUDIT_TOGGLES);
   renderToggles('settingsLexicon', LEXICON_TOGGLES);
@@ -842,10 +843,10 @@ async function saveSettings() {
   var banNotice = $('#inputBanNotice');
   if (banNotice) payload.ban_notice = banNotice.value.trim();
   var res = await safePost('config', payload);
-  if (res.status === 'success') {
-    toast('设置已保存', 'success');
-  } else {
+  if (res && res.status === 'error') {
     toast('保存失败: ' + (res.message || ''), 'error');
+  } else {
+    toast('设置已保存', 'success');
   }
 }
 
@@ -896,8 +897,8 @@ function init() {
     $('#btnCancelBatchDelete').addEventListener('click', closeModal);
     $('#btnConfirmBatchDelete').addEventListener('click', async function() {
       var allRes = await safeGet('logs/export');
-      if (allRes.status === 'success') {
-        var delIds = (allRes.data || []).filter(function(l) { return ids.indexOf(String(l.user_id)) !== -1; }).map(function(l) { return l.id; }).filter(function(id) { return id !== undefined && id !== null; });
+      if (allRes && allRes.status !== 'error') {
+        var delIds = (allRes || []).filter(function(l) { return ids.indexOf(String(l.user_id)) !== -1; }).map(function(l) { return l.id; }).filter(function(id) { return id !== undefined && id !== null; });
         if (delIds.length) await safePost('logs/delete', { ids: delIds });
       }
       closeModal();
@@ -908,8 +909,8 @@ function init() {
 
   $('#btnExport').addEventListener('click', async function() {
     var res = await safeGet('logs/export');
-    if (res.status !== 'success') { toast('导出失败', 'error'); return; }
-    var data = res.data || [];
+    if (res && res.status === 'error') { toast('导出失败', 'error'); return; }
+    var data = res || [];
     if (!data.length) { toast('暂无数据可导出', 'error'); return; }
     var headers = Object.keys(data[0]);
     var csv = [headers.join(','), data.map(function(r) { return headers.map(function(h) { return '"' + String(r[h] != null ? r[h] : '').replace(/"/g, '""') + '"'; }).join(','); }).join('\n')].join('\n');
@@ -926,15 +927,6 @@ function init() {
 
   loadOverview();
   loadAdmins();
-
-  (async function() {
-    try {
-      var r = await apiGet('stats');
-      console.log('[DEBUG] stats response:', JSON.stringify(r));
-    } catch(e) {
-      console.error('[DEBUG] stats error:', e);
-    }
-  })();
 }
 
 (async function() {
