@@ -741,8 +741,8 @@ class Main(Star):
         except Exception as e:
             logger.warning(f"[GroupMgr] 注册 WebUI API 失败: {e}")
 
-    async def _web_stats(self, request):
-        from quart import jsonify
+    async def _web_stats(self):
+        from quart import jsonify, request
         logs = getattr(self, "_moderation_logs", [])
         today_start = int(time.time()) - (int(time.time()) % 86400)
         today_logs = [l for l in logs if l.get("ts", 0) >= today_start]
@@ -768,8 +768,8 @@ class Main(Star):
         }
         return jsonify({"status": "success", "data": stats})
 
-    async def _web_get_config(self, request):
-        from quart import jsonify
+    async def _web_get_config(self):
+        from quart import jsonify, request
         safe_config = {}
         for k, v in self.config.items():
             if any(sk in k.lower() for sk in ("token", "secret", "password", "key")):
@@ -782,8 +782,8 @@ class Main(Star):
         safe_config["_admin_list"] = self.config.get("admin_list", [])
         return jsonify({"status": "success", "data": safe_config})
 
-    async def _web_update_config(self, request):
-        from quart import jsonify
+    async def _web_update_config(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             bool_keys = [
@@ -864,18 +864,18 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_get_lexicon(self, request):
-        from quart import jsonify
+    async def _web_get_lexicon(self):
+        from quart import jsonify, request
         return jsonify({"status": "success", "data": self._lexicon})
 
-    async def _web_get_logs(self, request):
-        from quart import jsonify
+    async def _web_get_logs(self):
+        from quart import jsonify, request
         limit = min(int(request.args.get("limit", 50)), 200)
         logs = getattr(self, "_moderation_logs", [])[-limit:]
         return jsonify({"status": "success", "data": logs})
 
-    async def _web_get_moderation_users(self, request):
-        from quart import jsonify
+    async def _web_get_moderation_users(self):
+        from quart import jsonify, request
         logs = getattr(self, "_moderation_logs", [])
         action_filter = request.args.get("action", "").strip()
         filtered = logs
@@ -912,8 +912,8 @@ class Main(Star):
         users = sorted(user_map.values(), key=lambda x: x["count"], reverse=True)
         return jsonify({"status": "success", "data": users})
 
-    async def _web_delete_logs(self, request):
-        from quart import jsonify
+    async def _web_delete_logs(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             ids = data.get("ids", [])
@@ -933,8 +933,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_export_logs(self, request):
-        from quart import jsonify
+    async def _web_export_logs(self):
+        from quart import jsonify, request
         fmt = request.args.get("format", "json").strip().lower()
         logs = getattr(self, "_moderation_logs", [])
         if fmt == "csv":
@@ -951,8 +951,8 @@ class Main(Star):
             return output.getvalue(), 200, {"Content-Type": "text/csv; charset=utf-8", "Content-Disposition": "attachment; filename=moderation_logs.csv"}
         return jsonify({"status": "success", "data": logs})
 
-    async def _web_get_groups(self, request):
-        from quart import jsonify
+    async def _web_get_groups(self):
+        from quart import jsonify, request
         client = await self._get_client()
         if not client:
             return jsonify({"status": "error", "message": "无法获取QQ客户端，请确保已连接"})
@@ -989,8 +989,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": f"获取群列表失败: {e}"})
 
-    async def _web_get_group_members(self, request):
-        from quart import jsonify
+    async def _web_get_group_members(self):
+        from quart import jsonify, request
         group_id = request.args.get("group_id", "").strip()
         if not group_id:
             return jsonify({"status": "error", "message": "缺少 group_id 参数"})
@@ -1026,8 +1026,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": f"获取群成员失败: {e}"})
 
-    async def _web_whitelist_add(self, request):
-        from quart import jsonify
+    async def _web_whitelist_add(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
@@ -1043,8 +1043,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_whitelist_remove(self, request):
-        from quart import jsonify
+    async def _web_whitelist_remove(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
@@ -1057,8 +1057,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_blacklist_add(self, request):
-        from quart import jsonify
+    async def _web_blacklist_add(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
@@ -1074,8 +1074,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_blacklist_remove(self, request):
-        from quart import jsonify
+    async def _web_blacklist_remove(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
@@ -1088,8 +1088,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_user_blacklist_add(self, request):
-        from quart import jsonify
+    async def _web_user_blacklist_add(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             user_id = str(data.get("user_id", "")).strip()
@@ -1102,8 +1102,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_user_blacklist_remove(self, request):
-        from quart import jsonify
+    async def _web_user_blacklist_remove(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             user_id = str(data.get("user_id", "")).strip()
@@ -1116,8 +1116,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_admin_add(self, request):
-        from quart import jsonify
+    async def _web_admin_add(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             user_id = str(data.get("user_id", "")).strip()
@@ -1134,8 +1134,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_admin_remove(self, request):
-        from quart import jsonify
+    async def _web_admin_remove(self):
+        from quart import jsonify, request
         try:
             data = await request.get_json(force=True, silent=True) or {}
             user_id = str(data.get("user_id", "")).strip()
@@ -1152,8 +1152,8 @@ class Main(Star):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
-    async def _web_today_stats(self, request):
-        from quart import jsonify
+    async def _web_today_stats(self):
+        from quart import jsonify, request
         logs = getattr(self, "_moderation_logs", [])
         today_start = int(time.time()) - (int(time.time()) % 86400)
         today_logs = [l for l in logs if l.get("ts", 0) >= today_start]
