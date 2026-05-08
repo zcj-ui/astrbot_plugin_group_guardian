@@ -405,12 +405,24 @@ function fmtTime(ts) {
 var ROLE_NAME = { owner: '群主', admin: '管理员', member: '成员' };
 
 async function safeGet(path, params) {
-  try { var r = await apiGet(path, params); return typeof r === 'string' ? JSON.parse(r) : r; }
-  catch(e) { return { status: 'error', message: '请求失败' }; }
+  try {
+    var r = await apiGet(path, params);
+    if (typeof r === 'string') { try { r = JSON.parse(r); } catch(e2) {} }
+    return r;
+  } catch(e) {
+    console.error('[safeGet]', path, e);
+    return { status: 'error', message: String(e) };
+  }
 }
 async function safePost(path, body) {
-  try { var r = await apiPost(path, body); return typeof r === 'string' ? JSON.parse(r) : r; }
-  catch(e) { return { status: 'error', message: '请求失败' }; }
+  try {
+    var r = await apiPost(path, body);
+    if (typeof r === 'string') { try { r = JSON.parse(r); } catch(e2) {} }
+    return r;
+  } catch(e) {
+    console.error('[safePost]', path, e);
+    return { status: 'error', message: String(e) };
+  }
 }
 
 function showModal(title, bodyHtml, footerHtml) {
@@ -914,6 +926,15 @@ function init() {
 
   loadOverview();
   loadAdmins();
+
+  (async function() {
+    try {
+      var r = await apiGet('stats');
+      console.log('[DEBUG] stats response:', JSON.stringify(r));
+    } catch(e) {
+      console.error('[DEBUG] stats error:', e);
+    }
+  })();
 }
 
 (async function() {
