@@ -2664,6 +2664,8 @@ class Main(Star):
             return
         if not self._cfg("enabled"):
             return
+        if await self._is_admin(event):
+            return
         if self.user_black_list:
             user_id = self._try_get_sender_id(event)
             if user_id and user_id in self.user_black_list:
