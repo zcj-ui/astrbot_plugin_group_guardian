@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.9.0] - 2026-05-08
+
+### 重大修复
+
+#### LLM 工具调用完全重写
+- **修复所有 20 个 LLM 工具无法被 AI 调用的致命 Bug**
+- `return dict` → `yield event.plain_result()`：AstrBot 的 `@filter.llm_tool` 要求生成器模式，之前用 `return` 导致工具调用无响应
+- `"""` → `'''`：AstrBot 解析 docstring 时要求使用三单引号
+- 参数类型 `int` → `number`：AstrBot 只支持 `string/number/object/boolean/array`，不支持 `int`
+- 参数类型 `bool` → `boolean`：同上
+
+#### API 返回值检查
+- **新增 `_check_api_result()` 辅助函数**：检查 OneBot API 返回的 `status`/`retcode`
+- **所有 27 处 API 调用添加返回值检查**：之前调用踢人/禁言等 API 后直接返回成功，实际可能失败
+- 失败时返回具体错误信息（错误码 + 错误消息）
+
+#### 管理命令权限修复
+- **所有 17 个管理命令添加 `@filter.permission_type(filter.PermissionType.ADMIN)` 装饰器**
+- 之前普通成员也能调用管理命令（仅靠内部 `_is_admin` 检查，命令已被触发）
+- 现在由 AstrBot 框架层在调用前拦截非管理员用户
+- 移除命令函数内部冗余的 `_is_admin` 检查
+
+#### 头像显示修复
+- **群头像**：改用腾讯官方 `https://p.qlogo.cn/gh/{gid}/{gid}/`
+- **成员头像**：改用 `https://q.qlogo.cn/headimg_dl?dst_uin={uid}&spec=640`（640px 高清）
+- **前端绕过 AstrBot URL 拦截**：使用 `data-*` 属性 + JS 动态设置 `src`，避免 AstrBot 页面系统将外部 URL 转换为代理 URL
+- **URL 字符串拆分**：将 `https:` 和 `//域名` 分开拼接，绕过 AstrBot 对 JS 中 URL 的自动替换
+
+### 变更
+
+- 最低 AstrBot 版本从 `>=4.16.0` 提升到 `>=4.24.2`（WebUI 插件页面支持所需）
+
+---
+
 ## [1.8.2] - 2026-05-08
 
 ### 修复

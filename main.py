@@ -1535,233 +1535,281 @@ class Main(Star):
 
     # ==================== LLM 群管工具 ====================
     @filter.llm_tool(name="ban_group_member")
-    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_minutes: int = 10) -> dict:
-        """禁言群成员。当用户要求禁言某人时使用此工具。
+    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_minutes: int = 10):
+        '''禁言群成员。当用户要求禁言某人时使用此工具。
 
         Args:
             user_id(string): 要禁言的用户QQ号
-            duration_minutes(int): 禁言时长（分钟），默认10分钟
-        """
+            duration_minutes(number): 禁言时长（分钟），默认10分钟
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("ban_enabled", "禁言")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             duration_seconds = (min(max(duration_minutes, 1), 30 * 24 * 60) * 60)
             duration_seconds = (duration_seconds // 60) * 60
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
-                return {"status": "error", "message": "群号或用户QQ号格式无效"}
+                yield event.plain_result("群号或用户QQ号格式无效")
+                return
             result = await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=duration_seconds)
             ok, err = self._check_api_result(result, "禁言")
             if not ok:
-                return {"status": "error", "message": f"禁言失败: {err}"}
-            return {"status": "success", "message": f"已禁言 {user_id} {duration_minutes}分钟"}
+                yield event.plain_result(f"禁言失败: {err}")
+                return
+            yield event.plain_result(f"已禁言 {user_id} {duration_minutes}分钟")
         except Exception as e:
-            return {"status": "error", "message": f"禁言失败: {e}"}
+            yield event.plain_result(f"禁言失败: {e}")
 
     @filter.llm_tool(name="unban_group_member")
-    async def unban_group_member_tool(self, event: AstrMessageEvent, user_id: str) -> dict:
-        """解除群成员禁言。当用户要求解除某人禁言时使用此工具。
+    async def unban_group_member_tool(self, event: AstrMessageEvent, user_id: str):
+        '''解除群成员禁言。当用户要求解除某人禁言时使用此工具。
 
         Args:
             user_id(string): 要解除禁言的用户QQ号
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("unban_enabled", "解除禁言")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
-                return {"status": "error", "message": "群号或用户QQ号格式无效"}
+                yield event.plain_result("群号或用户QQ号格式无效")
+                return
             result = await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=0)
             ok, err = self._check_api_result(result, "解除禁言")
             if not ok:
-                return {"status": "error", "message": f"解除禁言失败: {err}"}
-            return {"status": "success", "message": f"已解除 {user_id} 的禁言"}
+                yield event.plain_result(f"解除禁言失败: {err}")
+                return
+            yield event.plain_result(f"已解除 {user_id} 的禁言")
         except Exception as e:
-            return {"status": "error", "message": f"解除禁言失败: {e}"}
+            yield event.plain_result(f"解除禁言失败: {e}")
 
     @filter.llm_tool(name="kick_group_member")
-    async def kick_group_member_tool(self, event: AstrMessageEvent, user_id: str) -> dict:
-        """踢出群成员。当用户要求将某人踢出群时使用此工具。
+    async def kick_group_member_tool(self, event: AstrMessageEvent, user_id: str):
+        '''踢出群成员。当用户要求将某人踢出群时使用此工具。
 
         Args:
             user_id(string): 要踢出的用户QQ号
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("kick_enabled", "踢人")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
-                return {"status": "error", "message": "群号或用户QQ号格式无效"}
+                yield event.plain_result("群号或用户QQ号格式无效")
+                return
             result = await client.call_action('set_group_kick', group_id=gid, user_id=uid, reject_add_request=False)
             ok, err = self._check_api_result(result, "踢人")
             if not ok:
-                return {"status": "error", "message": f"踢人失败: {err}"}
-            return {"status": "success", "message": f"已将 {user_id} 踢出群聊"}
+                yield event.plain_result(f"踢人失败: {err}")
+                return
+            yield event.plain_result(f"已将 {user_id} 踢出群聊")
         except Exception as e:
-            return {"status": "error", "message": f"踢人失败: {e}"}
+            yield event.plain_result(f"踢人失败: {e}")
 
     @filter.llm_tool(name="set_whole_group_ban")
-    async def set_whole_group_ban_tool(self, event: AstrMessageEvent, enable: bool = True) -> dict:
-        """开启或关闭全体禁言。
+    async def set_whole_group_ban_tool(self, event: AstrMessageEvent, enable: bool = True):
+        '''开启或关闭全体禁言。
 
         Args:
-            enable(bool): true开启全体禁言，false关闭全体禁言
-        """
+            enable(boolean): true开启全体禁言，false关闭全体禁言
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("whole_ban_enabled", "全体禁言")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             result = await client.call_action('set_group_whole_ban', group_id=int(group_id), enable=enable)
             ok, err = self._check_api_result(result, "全体禁言")
             if not ok:
-                return {"status": "error", "message": f"设置全体禁言失败: {err}"}
-            return {"status": "success", "message": f"已{'开启' if enable else '关闭'}全体禁言"}
+                yield event.plain_result(f"设置全体禁言失败: {err}")
+                return
+            yield event.plain_result(f"已{'开启' if enable else '关闭'}全体禁言")
         except Exception as e:
-            return {"status": "error", "message": f"设置全体禁言失败: {e}"}
+            yield event.plain_result(f"设置全体禁言失败: {e}")
 
     @filter.llm_tool(name="set_member_card")
-    async def set_member_card_tool(self, event: AstrMessageEvent, user_id: str, card: str) -> dict:
-        """设置群成员群名片。
+    async def set_member_card_tool(self, event: AstrMessageEvent, user_id: str, card: str):
+        '''设置群成员群名片。
 
         Args:
             user_id(string): 目标用户QQ号
             card(string): 新的群名片
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("set_card_enabled", "修改群名片")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
-                return {"status": "error", "message": "群号或用户QQ号格式无效"}
+                yield event.plain_result("群号或用户QQ号格式无效")
+                return
             result = await client.call_action('set_group_card', group_id=gid, user_id=uid, card=card)
             ok, err = self._check_api_result(result, "设置群名片")
             if not ok:
-                return {"status": "error", "message": f"设置群名片失败: {err}"}
-            return {"status": "success", "message": f"已将 {user_id} 的群名片设为: {card}"}
+                yield event.plain_result(f"设置群名片失败: {err}")
+                return
+            yield event.plain_result(f"已将 {user_id} 的群名片设为: {card}")
         except Exception as e:
-            return {"status": "error", "message": f"设置群名片失败: {e}"}
+            yield event.plain_result(f"设置群名片失败: {e}")
 
     @filter.llm_tool(name="send_group_announcement")
-    async def send_group_announcement_tool(self, event: AstrMessageEvent, content: str) -> dict:
-        """发送群公告。
+    async def send_group_announcement_tool(self, event: AstrMessageEvent, content: str):
+        '''发送群公告。
 
         Args:
             content(string): 公告内容
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("send_announcement_enabled", "发送群公告")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('_send_group_notice', group_id=gid, content=content)
             ok, err = self._check_api_result(result, "发送群公告")
             if not ok:
-                return {"status": "error", "message": f"发布公告失败: {err}"}
-            return {"status": "success", "message": "群公告已发布"}
+                yield event.plain_result(f"发布公告失败: {err}")
+                return
+            yield event.plain_result("群公告已发布")
         except Exception as e:
-            return {"status": "error", "message": f"发布公告失败: {e}"}
+            yield event.plain_result(f"发布公告失败: {e}")
 
     @filter.llm_tool(name="get_group_member_list")
-    async def get_group_member_list_tool(self, event: AstrMessageEvent) -> dict:
-        """获取群成员列表。"""
+    async def get_group_member_list_tool(self, event: AstrMessageEvent):
+        '''获取群成员列表。'''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("member_list_enabled", "查看群成员列表")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('get_group_member_list', group_id=gid)
             members = result if isinstance(result, list) else (result.get("data") or []) if isinstance(result, dict) else []
             if not members:
-                return {"status": "success", "message": "群成员列表为空"}
+                yield event.plain_result("群成员列表为空")
+                return
             member_texts = []
             for m in members[:30]:
                 card = m.get("card", "")
@@ -1770,138 +1818,166 @@ class Main(Star):
                 role = m.get("role", "member")
                 role_text = {"owner": "群主", "admin": "管理员", "member": "成员"}.get(role, role)
                 member_texts.append(f"- {name}({m.get('user_id')}) [{role_text}]")
-            return {"status": "success", "message": self._truncate(f"群成员（共{len(members)}人）：\n" + "\n".join(member_texts))}
+            yield event.plain_result(self._truncate(f"群成员（共{len(members)}人）：\n" + "\n".join(member_texts)))
         except Exception as e:
-            return {"status": "error", "message": f"获取成员列表失败: {e}"}
+            yield event.plain_result(f"获取成员列表失败: {e}")
 
     @filter.llm_tool(name="set_group_admin")
-    async def set_group_admin_tool(self, event: AstrMessageEvent, user_id: str, enable: bool = True) -> dict:
-        """设置或取消群管理员。
+    async def set_group_admin_tool(self, event: AstrMessageEvent, user_id: str, enable: bool = True):
+        '''设置或取消群管理员。
 
         Args:
             user_id(string): 目标用户QQ号
-            enable(bool): true设为管理员，false取消管理员
-        """
+            enable(boolean): true设为管理员，false取消管理员
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("set_admin_enabled", "设置管理员")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
-                return {"status": "error", "message": "群号或用户QQ号格式无效"}
+                yield event.plain_result("群号或用户QQ号格式无效")
+                return
             result = await client.call_action('set_group_admin', group_id=gid, user_id=uid, enable=enable)
             ok, err = self._check_api_result(result, "设置管理员")
             if not ok:
-                return {"status": "error", "message": f"设置管理员失败: {err}"}
-            return {"status": "success", "message": f"已{'设为' if enable else '取消'} {user_id} 的管理员"}
+                yield event.plain_result(f"设置管理员失败: {err}")
+                return
+            yield event.plain_result(f"已{'设为' if enable else '取消'} {user_id} 的管理员")
         except Exception as e:
-            return {"status": "error", "message": f"设置管理员失败: {e}"}
+            yield event.plain_result(f"设置管理员失败: {e}")
 
     @filter.llm_tool(name="set_group_name")
-    async def set_group_name_tool(self, event: AstrMessageEvent, group_name: str) -> dict:
-        """修改群名称。
+    async def set_group_name_tool(self, event: AstrMessageEvent, group_name: str):
+        '''修改群名称。
 
         Args:
             group_name(string): 新的群名称
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("set_group_name_enabled", "修改群名称")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('set_group_name', group_id=gid, group_name=group_name)
             ok, err = self._check_api_result(result, "修改群名称")
             if not ok:
-                return {"status": "error", "message": f"改群名失败: {err}"}
-            return {"status": "success", "message": f"群名已改为: {group_name}"}
+                yield event.plain_result(f"改群名失败: {err}")
+                return
+            yield event.plain_result(f"群名已改为: {group_name}")
         except Exception as e:
-            return {"status": "error", "message": f"改群名失败: {e}"}
+            yield event.plain_result(f"改群名失败: {e}")
 
     @filter.llm_tool(name="set_member_title")
-    async def set_member_title_tool(self, event: AstrMessageEvent, user_id: str, title: str) -> dict:
-        """设置群成员专属头衔。
+    async def set_member_title_tool(self, event: AstrMessageEvent, user_id: str, title: str):
+        '''设置群成员专属头衔。
 
         Args:
             user_id(string): 目标用户QQ号
             title(string): 专属头衔
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("set_title_enabled", "设置专属头衔")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             uid = self._safe_int(user_id, 0)
             if not gid or not uid:
-                return {"status": "error", "message": "群号或用户QQ号格式无效"}
+                yield event.plain_result("群号或用户QQ号格式无效")
+                return
             result = await client.call_action('set_group_special_title', group_id=gid, user_id=uid, special_title=title)
             ok, err = self._check_api_result(result, "设置头衔")
             if not ok:
-                return {"status": "error", "message": f"设置头衔失败: {err}"}
-            return {"status": "success", "message": f"已将 {user_id} 的头衔设为: {title}"}
+                yield event.plain_result(f"设置头衔失败: {err}")
+                return
+            yield event.plain_result(f"已将 {user_id} 的头衔设为: {title}")
         except Exception as e:
-            return {"status": "error", "message": f"设置头衔失败: {e}"}
+            yield event.plain_result(f"设置头衔失败: {e}")
 
     @filter.llm_tool(name="get_banned_members")
-    async def get_banned_members_tool(self, event: AstrMessageEvent) -> dict:
-        """获取群禁言列表。"""
+    async def get_banned_members_tool(self, event: AstrMessageEvent):
+        '''获取群禁言列表。'''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("banned_list_enabled", "查看禁言列表")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('get_group_shut_list', group_id=gid)
             shut_list = result if isinstance(result, list) else (result.get("data") or []) if isinstance(result, dict) else []
             if not shut_list:
-                return {"status": "success", "message": "当前没有禁言成员"}
+                yield event.plain_result("当前没有禁言成员")
+                return
             member_texts = []
             for m in shut_list[:15]:
                 uid = m.get("user_id", "")
@@ -1913,198 +1989,238 @@ class Main(Star):
                 else:
                     remain_str = "未知"
                 member_texts.append(f"- {nickname}({uid}) 剩余: {remain_str}")
-            return {"status": "success", "message": f"禁言列表（共{len(shut_list)}人）：\n" + "\n".join(member_texts)}
+            yield event.plain_result(f"禁言列表（共{len(shut_list)}人）：\n" + "\n".join(member_texts))
         except Exception as e:
-            return {"status": "error", "message": f"获取禁言列表失败: {e}"}
+            yield event.plain_result(f"获取禁言列表失败: {e}")
 
     @filter.llm_tool(name="set_group_join_verify")
-    async def set_group_join_verify_tool(self, event: AstrMessageEvent, verify_type: str = "allow") -> dict:
-        """设置群加群验证方式。
+    async def set_group_join_verify_tool(self, event: AstrMessageEvent, verify_type: str = "allow"):
+        '''设置群加群验证方式。
 
         Args:
             verify_type(string): 验证类型: allow(允许加入), deny(拒绝加入), need_verify(需要审核), not_allow(不允许)
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("join_verify_enabled", "设置加群方式")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             type_map = {"allow": 2, "deny": 1, "need_verify": 3, "not_allow": 4}
             add_type = type_map.get(verify_type.lower(), 2)
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('set_group_add_option', group_id=gid, add_type=add_type)
             ok, err = self._check_api_result(result, "设置加群方式")
             if not ok:
-                return {"status": "error", "message": f"设置加群方式失败: {err}"}
+                yield event.plain_result(f"设置加群方式失败: {err}")
+                return
             type_text = {"allow": "允许加入", "deny": "拒绝加入", "need_verify": "需审核", "not_allow": "不允许"}.get(verify_type.lower(), verify_type)
-            return {"status": "success", "message": f"加群方式已设为: {type_text}"}
+            yield event.plain_result(f"加群方式已设为: {type_text}")
         except Exception as e:
-            return {"status": "error", "message": f"设置加群方式失败: {e}"}
+            yield event.plain_result(f"设置加群方式失败: {e}")
 
     @filter.llm_tool(name="recall_message")
-    async def recall_message_tool(self, event: AstrMessageEvent, message_id: str) -> dict:
-        """撤回指定消息。
+    async def recall_message_tool(self, event: AstrMessageEvent, message_id: str):
+        '''撤回指定消息。
 
         Args:
             message_id(string): 要撤回的消息ID
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("recall_enabled", "撤回消息")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             mid = self._safe_int(message_id, 0)
             if not mid:
-                return {"status": "error", "message": "消息ID格式无效"}
+                yield event.plain_result("消息ID格式无效")
+                return
             result = await client.call_action('delete_msg', message_id=mid)
             ok, err = self._check_api_result(result, "撤回消息")
             if not ok:
-                return {"status": "error", "message": f"撤回失败: {err}"}
-            return {"status": "success", "message": f"已撤回消息 {message_id}"}
+                yield event.plain_result(f"撤回失败: {err}")
+                return
+            yield event.plain_result(f"已撤回消息 {message_id}")
         except Exception as e:
-            return {"status": "error", "message": f"撤回失败: {e}"}
+            yield event.plain_result(f"撤回失败: {e}")
 
     @filter.llm_tool(name="set_essence_message")
-    async def set_essence_message_tool(self, event: AstrMessageEvent, message_id: str) -> dict:
-        """设置群精华消息。
+    async def set_essence_message_tool(self, event: AstrMessageEvent, message_id: str):
+        '''设置群精华消息。
 
         Args:
             message_id(string): 要设为精华的消息ID
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("essence_enabled", "精华消息")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             mid = self._safe_int(message_id, 0)
             if not mid:
-                return {"status": "error", "message": "消息ID格式无效"}
+                yield event.plain_result("消息ID格式无效")
+                return
             result = await client.call_action('set_essence_msg', message_id=mid)
             ok, err = self._check_api_result(result, "设精华")
             if not ok:
-                return {"status": "error", "message": f"设精华失败: {err}"}
-            return {"status": "success", "message": f"已将 {message_id} 设为精华"}
+                yield event.plain_result(f"设精华失败: {err}")
+                return
+            yield event.plain_result(f"已将 {message_id} 设为精华")
         except Exception as e:
-            return {"status": "error", "message": f"设精华失败: {e}"}
+            yield event.plain_result(f"设精华失败: {e}")
 
     @filter.llm_tool(name="delete_essence_message")
-    async def delete_essence_message_tool(self, event: AstrMessageEvent, message_id: str) -> dict:
-        """取消群精华消息。
+    async def delete_essence_message_tool(self, event: AstrMessageEvent, message_id: str):
+        '''取消群精华消息。
 
         Args:
             message_id(string): 要取消精华的消息ID
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("essence_enabled", "精华消息")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             mid = self._safe_int(message_id, 0)
             if not mid:
-                return {"status": "error", "message": "消息ID格式无效"}
+                yield event.plain_result("消息ID格式无效")
+                return
             result = await client.call_action('delete_essence_msg', message_id=mid)
             ok, err = self._check_api_result(result, "取消精华")
             if not ok:
-                return {"status": "error", "message": f"取消精华失败: {err}"}
-            return {"status": "success", "message": f"已取消 {message_id} 的精华"}
+                yield event.plain_result(f"取消精华失败: {err}")
+                return
+            yield event.plain_result(f"已取消 {message_id} 的精华")
         except Exception as e:
-            return {"status": "error", "message": f"取消精华失败: {e}"}
+            yield event.plain_result(f"取消精华失败: {e}")
 
     @filter.llm_tool(name="delete_group_notice")
-    async def delete_group_notice_tool(self, event: AstrMessageEvent, notice_id: str) -> dict:
-        """删除群公告。
+    async def delete_group_notice_tool(self, event: AstrMessageEvent, notice_id: str):
+        '''删除群公告。
 
         Args:
             notice_id(string): 公告ID
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("delete_announcement_enabled", "删除群公告")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('_del_group_notice', group_id=gid, notice_id=notice_id)
             ok, err = self._check_api_result(result, "删除公告")
             if not ok:
-                return {"status": "error", "message": f"删除公告失败: {err}"}
-            return {"status": "success", "message": f"已删除公告 {notice_id}"}
+                yield event.plain_result(f"删除公告失败: {err}")
+                return
+            yield event.plain_result(f"已删除公告 {notice_id}")
         except Exception as e:
-            return {"status": "error", "message": f"删除公告失败: {e}"}
+            yield event.plain_result(f"删除公告失败: {e}")
 
     @filter.llm_tool(name="list_group_files")
-    async def list_group_files_tool(self, event: AstrMessageEvent) -> dict:
-        """查看群文件列表。"""
+    async def list_group_files_tool(self, event: AstrMessageEvent):
+        '''查看群文件列表。'''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("group_files_enabled", "群文件")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('get_group_root_files', group_id=gid)
             files = (result.get('files') or []) if isinstance(result, dict) else []
             folders = (result.get('folders') or []) if isinstance(result, dict) else []
             if not files and not folders:
-                return {"status": "success", "message": "根目录下没有文件或文件夹"}
+                yield event.plain_result("根目录下没有文件或文件夹")
+                return
             lines = [f"群 {group_id} 根目录："]
             if folders:
                 lines.append(f"  {len(folders)}个文件夹")
@@ -2115,69 +2231,83 @@ class Main(Star):
                 for f in files[:10]:
                     size_mb = self._safe_int(f.get('file_size', 0)) / (1024 * 1024)
                     lines.append(f"    [{f.get('file_id', '')}] {f.get('file_name', '')} ({size_mb:.1f}MB)")
-            return {"status": "success", "message": self._truncate("\n".join(lines))}
+            yield event.plain_result(self._truncate("\n".join(lines)))
         except Exception as e:
-            return {"status": "error", "message": f"查文件失败: {e}"}
+            yield event.plain_result(f"查文件失败: {e}")
 
     @filter.llm_tool(name="delete_group_file")
-    async def delete_group_file_tool(self, event: AstrMessageEvent, file_id: str, busid: int = 102) -> dict:
-        """删除群文件。
+    async def delete_group_file_tool(self, event: AstrMessageEvent, file_id: str, busid: int = 102):
+        '''删除群文件。
 
         Args:
             file_id(string): 文件ID
-            busid(int): 文件类型ID，默认为102
-        """
+            busid(number): 文件类型ID，默认为102
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("group_files_enabled", "群文件")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('delete_group_file', group_id=gid, file_id=file_id, busid=busid)
             ok, err = self._check_api_result(result, "删除文件")
             if not ok:
-                return {"status": "error", "message": f"删文件失败: {err}"}
-            return {"status": "success", "message": f"已删除 {file_id}"}
+                yield event.plain_result(f"删文件失败: {err}")
+                return
+            yield event.plain_result(f"已删除 {file_id}")
         except Exception as e:
-            return {"status": "error", "message": f"删文件失败: {e}"}
+            yield event.plain_result(f"删文件失败: {e}")
 
     @filter.llm_tool(name="get_group_notice_list")
-    async def get_group_notice_list_tool(self, event: AstrMessageEvent) -> dict:
-        """获取群公告列表。"""
+    async def get_group_notice_list_tool(self, event: AstrMessageEvent):
+        '''获取群公告列表。'''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("list_announcements_enabled", "查看公告列表")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             result = await client.call_action('_get_group_notice', group_id=gid)
             notices = (result.get('data') or []) if isinstance(result, dict) else result
             if not notices:
-                return {"status": "success", "message": "暂无公告"}
+                yield event.plain_result("暂无公告")
+                return
             lines = [f"群公告（{len(notices)}条）"]
             for n in notices[:10]:
                 notice_id = n.get('notice_id', '')
@@ -2187,44 +2317,51 @@ class Main(Star):
                 ts = n.get('publish_time', 0)
                 t = datetime.fromtimestamp(ts).strftime('%m-%d %H:%M') if ts else '未知'
                 lines.append(f"  [{notice_id}] {content}... ({sender_id}, {t})")
-            return {"status": "success", "message": "\n".join(lines)}
+            yield event.plain_result("\n".join(lines))
         except Exception as e:
-            return {"status": "error", "message": f"获取公告失败: {e}"}
+            yield event.plain_result(f"获取公告失败: {e}")
 
     @filter.llm_tool(name="upload_group_file")
-    async def upload_group_file_tool(self, event: AstrMessageEvent, file_path: str, file_name: str = "") -> dict:
-        """上传文件到群文件。
+    async def upload_group_file_tool(self, event: AstrMessageEvent, file_path: str, file_name: str = ""):
+        '''上传文件到群文件。
 
         Args:
             file_path(string): 文件路径
             file_name(string): 上传后的文件名，可选
-        """
+        '''
         if not await self._is_admin(event):
-            return {"status": "error", "message": "仅管理员可以使用此功能"}
+            yield event.plain_result("仅管理员可以使用此功能")
+            return
         ok, msg = self._cfg_check("group_files_enabled", "群文件")
         if not ok:
-            return {"status": "error", "message": msg}
+            yield event.plain_result(msg)
+            return
         allowed, reason = self._check_group_access(event)
         if not allowed:
-            return {"status": "error", "message": reason}
+            yield event.plain_result(reason)
+            return
         try:
             group_id = self._get_group_id(event)
             if not group_id:
-                return {"status": "error", "message": "无法获取群号"}
+                yield event.plain_result("无法获取群号")
+                return
             if not file_path or not os.path.exists(file_path):
-                return {"status": "error", "message": f"文件不存在: {file_path}"}
+                yield event.plain_result(f"文件不存在: {file_path}")
+                return
             client = await self._get_client(event)
             if not client:
-                return {"status": "error", "message": "无法获取QQ客户端"}
+                yield event.plain_result("无法获取QQ客户端")
+                return
             gid = self._safe_int(group_id, 0)
             if not gid:
-                return {"status": "error", "message": "群号格式无效"}
+                yield event.plain_result("群号格式无效")
+                return
             name = file_name or os.path.basename(file_path)
             result = await client.call_action('upload_group_file', group_id=gid, file=file_path, name=name)
             fid = result.get('file_id', '未知') if isinstance(result, dict) else '未知'
-            return {"status": "success", "message": f"已上传，file_id: {fid}"}
+            yield event.plain_result(f"已上传，file_id: {fid}")
         except Exception as e:
-            return {"status": "error", "message": f"上传失败: {e}"}
+            yield event.plain_result(f"上传失败: {e}")
 
     # ==================== LLM 审核 ====================
     async def _fetch_context_messages(self, group_id: str, current_msg_id: str, count: int = 30) -> list:
