@@ -607,6 +607,7 @@ class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
         self.config = config or {}
+        self._sync_astrbot_admins()
         self._client = None
         _gwl = self.config.get("group_white_list", [])
         self.group_white_list = [str(g).strip() for g in (_gwl if isinstance(_gwl, list) else [_gwl]) if g]
@@ -621,6 +622,25 @@ class Main(Star):
         self._compiled_lexicon = self._compile_lexicon()
         self._moderation_logs = self._load_logs()
         self._register_web_apis()
+
+    def _sync_astrbot_admins(self) -> None:
+        try:
+            ab_config = getattr(self.context, 'astrbot_config', None)
+            if not ab_config:
+                return
+            astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
+            if not astrbot_admin_ids:
+                return
+            plugin_admins = self.config.get("admin_list", [])
+            plugin_admins = [str(a).strip() for a in (plugin_admins if isinstance(plugin_admins, list) else [plugin_admins]) if a]
+            new_admins = [a for a in astrbot_admin_ids if a not in plugin_admins]
+            if new_admins:
+                plugin_admins.extend(new_admins)
+                self.config["admin_list"] = plugin_admins
+                self._save_config_safe()
+                logger.info(f"[GroupMgr] 自动同步AstrBot管理员到插件admin_list: {new_admins}")
+        except Exception:
+            pass
 
     def _save_config_safe(self) -> None:
         try:
@@ -1420,9 +1440,17 @@ class Main(Star):
             logger.warning(f"[GroupMgr] _is_admin 无法获取user_id from {type(event).__name__}")
             return False
 
+        astrbot_admin_ids = []
+        try:
+            ab_config = getattr(self.context, 'astrbot_config', None)
+            if ab_config:
+                astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
+        except Exception:
+            pass
         try:
             config_admins = self.config.get("admin_list", [])
-            if config_admins and user_id in [str(a).strip() for a in config_admins]:
+            all_admins = set(astrbot_admin_ids) | set([str(a).strip() for a in config_admins if a])
+            if user_id in all_admins:
                 return True
         except Exception as e:
             logger.warning(f"[GroupMgr] 读取config admin_list失败: {e}")
@@ -2824,7 +2852,7 @@ class Main(Star):
         except Exception as e:
             logger.warning(f"[GroupMgr] 禁言失败: {e}")
 
-    @filter.command("word_count")
+    @filter.command("字数统计")
     async def word_count(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("word_count_enabled", "字数统计")
         if not ok:
@@ -2836,18 +2864,19 @@ class Main(Star):
             return
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法: /word_count <关键词> [天数] [类型]\n类型: swear(脏话), ad(广告), sensitive(敏感词), black(黑名单)\n示例: /word_count 傻逼 7 swear")
+            yield event.plain_result("用法: /字数统计 <关键词> [天数] [类型]\n类型: 脏话/广告/敏感词/黑名单\n示例: /字数统计 傻逼 7 脏话")
             return
         keyword = args[1]
         days = 7
         search_type = "all"
+        type_map = {"脏话": "swear", "广告": "ad", "敏感词": "sensitive", "黑名单": "black"}
         if len(args) >= 3:
             try:
                 days = int(args[2])
             except ValueError:
-                search_type = args[2].lower()
+                search_type = type_map.get(args[2], args[2].lower())
         if len(args) >= 4:
-            search_type = args[3].lower()
+            search_type = type_map.get(args[3], args[3].lower())
         days = max(1, min(days, 90))
         group_id = self._get_group_id(event)
         if not group_id:
@@ -2911,7 +2940,7 @@ class Main(Star):
                 continue
         return count, sample_messages
 
-    @filter.command("group_stats")
+    @filter.command("群统计")
     async def group_stats(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("group_stats_enabled", "群统计")
         if not ok:
@@ -2947,7 +2976,7 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"获取统计失败: {e}")
 
-    @filter.command("search_member")
+    @filter.command("搜索成员")
     async def search_member(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("member_list_enabled", "查看群成员")
         if not ok:
@@ -2959,7 +2988,7 @@ class Main(Star):
             return
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法: /search_member <关键词>")
+            yield event.plain_result("用法: /搜索成员 <关键词>")
             return
         keyword = args[1]
         group_id = self._get_group_id(event)
@@ -2995,7 +3024,8 @@ class Main(Star):
         except Exception as e:
             yield event.plain_result(f"搜索失败: {e}")
 
-    @filter.command("recall_last")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("撤回最新消息")
     async def recall_last(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("recall_enabled", "撤回消息")
         if not ok:
@@ -3646,7 +3676,8 @@ class Main(Star):
         self._save_config_safe()
 
     @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("recall_all")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("批量撤回")
     async def recall_all(self, event: AstrMessageEvent):
         ok, msg = self._cfg_check("recall_enabled", "撤回消息")
         if not ok:
