@@ -564,12 +564,10 @@ async function openMemberPanel(gid) {
   $('#memberList').innerHTML = '<p class="empty">加载中...</p>';
   var groupGrid = $('#groupGrid');
   if (groupGrid) { var card = groupGrid.closest('.card'); if (card) card.style.display = 'none'; }
-  if (CACHED_GROUP_ID !== gid) {
-    var res = await safeGet('group_members', { group_id: gid });
-    if (res && res.status === 'error') { $('#memberList').innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-    CURRENT_MEMBERS = res;
-    CACHED_GROUP_ID = gid;
-  }
+  var res = await safeGet('group_members', { group_id: gid });
+  if (res && res.status === 'error') { $('#memberList').innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  CURRENT_MEMBERS = res;
+  CACHED_GROUP_ID = gid;
   renderMembers(CURRENT_MEMBERS);
 }
 

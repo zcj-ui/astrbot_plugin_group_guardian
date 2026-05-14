@@ -1053,7 +1053,7 @@ class Main(Star):
             return jsonify({"status": "error", "message": "无法获取QQ客户端"})
         try:
             gid = int(group_id)
-            result = await client.call_action('get_group_member_list', group_id=gid)
+            result = await client.call_action('get_group_member_list', group_id=gid, no_cache=True)
             members = result if isinstance(result, list) else (result.get("data") or []) if isinstance(result, dict) else []
             enriched = []
             admin_set = set(str(a).strip() for a in self.config.get("admin_list", []) if a)
