@@ -296,10 +296,10 @@
         "hint": "必须手动选择一个支持视觉/图片理解的Provider，未配置则OCR功能不生效"
     },
     "ocr_prompt_template": {
-        "description": "OCR提示词模板",
+        "description": "OCR提示词模板（default/strict/text_only）",
         "type": "string",
         "default": "default",
-        "hint": "可选: default(通用识别)、strict(严格审核)、text_only(纯文字转录)；自定义提示词时此项无效"
+        "hint": "可选值: default(通用识别)、strict(严格审核)、text_only(纯文字转录)；自定义提示词时此项无效"
     },
     "ocr_custom_system_prompt": {
         "description": "OCR自定义系统提示词",
