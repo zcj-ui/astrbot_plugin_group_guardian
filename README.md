@@ -2,7 +2,7 @@
 
 AstrBot 综合群管理插件，集 **28项群管功能**、**AI智能审核** 与 **WebUI 管理面板** 于一体，让机器人成为真正的群聊守护者。
 
-> 当前版本：**v1.9.0** | 最低 AstrBot 版本：**>=4.24.2**
+> 当前版本：**v2.0.0** | 最低 AstrBot 版本：**>=4.24.2**
 
 ***
 
@@ -112,6 +112,9 @@ AI 可通过以下工具自动执行群管操作，无需手动输入指令：
 - 用户黑名单（自动拒绝加群）
 - 每个功能独立开关
 - 可指定审核专用LLM Provider
+- **合并转发消息审核**：解析合并转发消息内容，不再遗漏转发消息中的违规内容
+- **OCR识图审核**：使用LLM视觉模型识别图片内容，支持3种内置提示词模板（通用识别/严格审核/纯文字转录）和自定义提示词
+- **QQ收藏自动撤回**：检测到QQ收藏转发的消息自动撤回
 
 ***
 
@@ -195,6 +198,13 @@ git clone https://github.com/zcj-ui/astrbot_plugin_group_guardian.git
 | `auto_moderate_enabled`      | 自动审核开关              | `true` |
 | `auto_moderate_notice`       | 撤回后发送说明             | `true` |
 | `moderation_llm_provider_id` | 审核专用LLM Provider ID | 默认     |
+| `scan_forward_msg`           | 合并转发消息审核开关          | `true` |
+| `ocr_enabled`                | OCR识图审核开关           | `false` |
+| `ocr_provider_id`            | OCR视觉LLM Provider   | 自动选择   |
+| `ocr_prompt_template`        | OCR提示词模板            | `default` |
+| `ocr_custom_system_prompt`   | OCR自定义系统提示词         | 空      |
+| `ocr_custom_user_prompt`     | OCR自定义用户提示词         | 空      |
+| `recall_qq_favorite_enabled` | QQ收藏自动撤回开关          | `true` |
 | `lexicon_*_enabled`          | 各类词库独立开关            | `true` |
 | `*_enabled`                  | 各群管功能独立开关           | `true` |
 
@@ -285,6 +295,25 @@ AI: 已开启全体禁言
 1. 确认 `lexicon.json` 存在于插件目录
 2. 检查JSON格式是否正确
 3. 查看日志中的具体错误信息
+
+### OCR识图不生效
+
+1. 确认 `ocr_enabled` 已开启
+2. 确认已配置支持视觉/图片理解的LLM模型（如 GPT-4o、Gemini Pro Vision 等）
+3. 在 `ocr_provider_id` 中选择对应的 Provider，或留空自动选择
+4. 查看日志中是否有 `[GroupMgr] OCR识别失败` 或 `[GroupMgr] OCR LLM调用失败` 错误
+
+### 合并转发消息审核不生效
+
+1. 确认 `scan_forward_msg` 已开启（默认开启）
+2. 确认协议端（NapCat/LLOneBot等）支持 `get_forward_msg` API
+3. 查看日志中是否有 `[GroupMgr] 获取转发消息内容失败` 错误
+
+### QQ收藏撤回不生效
+
+1. 确认 `recall_qq_favorite_enabled` 已开启（默认开启）
+2. 确认机器人为群管理员
+3. QQ收藏消息的发送者昵称需包含"QQ收藏"字样才会被识别
 
 ***
 

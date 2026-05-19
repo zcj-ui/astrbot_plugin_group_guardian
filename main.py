@@ -692,6 +692,12 @@ class Main(Star):
                 "更新配置"
             )
             self.context.register_web_api(
+                f"/{_PLUGIN_NAME}/providers",
+                self._web_get_providers,
+                ["GET"],
+                "获取可用LLM Provider列表"
+            )
+            self.context.register_web_api(
                 f"/{_PLUGIN_NAME}/lexicon",
                 self._web_get_lexicon,
                 ["GET"],
@@ -818,6 +824,23 @@ class Main(Star):
         }
         return jsonify({"status": "success", "data": stats})
 
+    async def _web_get_providers(self):
+        from quart import jsonify
+        providers = []
+        try:
+            ps = (self.context.get_all_providers() if hasattr(self.context, 'get_all_providers') else []) or []
+            for p in ps:
+                try:
+                    meta = p.meta() if hasattr(p, 'meta') else None
+                    pid = getattr(meta, 'id', '') if meta else ''
+                    pname = getattr(meta, 'model', '') or pid
+                    providers.append({"id": pid, "name": pname, "model": getattr(meta, 'model', '')})
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return jsonify(providers)
+
     async def _web_get_config(self):
         from quart import jsonify, request
         safe_config = {}
@@ -856,13 +879,16 @@ class Main(Star):
                 "group_honor_enabled", "at_all_remain_enabled",
                 "ignore_requests_enabled", "group_msg_history_enabled",
                 "group_portrait_enabled", "group_sign_enabled",
+                "scan_forward_msg", "ocr_enabled", "recall_qq_favorite_enabled",
             ]
             list_keys = [
                 "group_white_list", "group_black_list",
                 "user_black_list", "admin_list",
             ]
             int_keys = ["moderation_ban_duration"]
-            str_keys = ["moderation_llm_provider_id", "ban_notice"]
+            str_keys = ["moderation_llm_provider_id", "ban_notice",
+                        "ocr_provider_id", "ocr_prompt_template",
+                        "ocr_custom_system_prompt", "ocr_custom_user_prompt"]
             updated = []
             for key in bool_keys:
                 if key in data:
@@ -1538,6 +1564,8 @@ class Main(Star):
                 parts.append(f"[回复:{d.get('id', '')}]")
             elif t == 'face':
                 parts.append("[表情]")
+            elif t == 'forward':
+                parts.append('[合并转发消息]')
             else:
                 parts.append(f"[{t}]")
         return ''.join(parts) if parts else '[空消息]'
@@ -2667,16 +2695,270 @@ class Main(Star):
             if sub_type in ('anonymous', 'notice'):
                 return False
             chain = event.get_messages()
-            has_text = False
             for seg in (chain or []):
                 if not isinstance(seg, dict):
-                    has_text = True
-                    break
-                if seg.get('type') == 'text' and seg.get('data', {}).get('text', '').strip():
-                    has_text = True
-                    break
-            return has_text
+                    return True
+                seg_type = seg.get('type', '')
+                if seg_type == 'text' and seg.get('data', {}).get('text', '').strip():
+                    return True
+                if seg_type == 'forward':
+                    return True
+                if seg_type == 'image' and self._cfg("ocr_enabled", False):
+                    return True
+            return False
         return True
+
+    async def _extract_forward_text(self, event: AiocqhttpMessageEvent) -> str:
+        client = await self._get_client(event)
+        if not client:
+            return ""
+        chain = event.get_messages() or []
+        forward_ids = []
+        for seg in chain:
+            if isinstance(seg, dict) and seg.get('type') == 'forward':
+                fid = seg.get('data', {}).get('id', '')
+                if fid:
+                    forward_ids.append(fid)
+        if not forward_ids:
+            return ""
+        all_texts = []
+        for fid in forward_ids:
+            try:
+                result = await client.call_action('get_forward_msg', message_id=fid)
+                if not isinstance(result, dict):
+                    continue
+                messages = result.get('messages', []) or result.get('message', [])
+                if isinstance(messages, dict):
+                    messages = messages.get('message', [])
+                for msg in messages:
+                    if not isinstance(msg, dict):
+                        continue
+                    sender = msg.get('sender', {})
+                    nickname = sender.get('nickname', '未知') if isinstance(sender, dict) else '未知'
+                    content = msg.get('message', '')
+                    if isinstance(content, list):
+                        parts = []
+                        for c_seg in content:
+                            if isinstance(c_seg, dict):
+                                ct = c_seg.get('type', '')
+                                cd = c_seg.get('data', {}) or {}
+                                if ct == 'text':
+                                    parts.append(cd.get('text', ''))
+                                elif ct == 'image':
+                                    parts.append('[图片]')
+                                elif ct == 'forward':
+                                    parts.append('[嵌套转发]')
+                                else:
+                                    parts.append(f'[{ct}]')
+                            else:
+                                parts.append(str(c_seg))
+                        content_text = ''.join(parts)
+                    else:
+                        content_text = str(content)
+                    if content_text.strip():
+                        all_texts.append(f"[转发]{nickname}: {content_text.strip()}")
+            except Exception as e:
+                logger.debug(f"[GroupMgr] 获取转发消息内容失败: {e}")
+                all_texts.append("[转发消息获取失败]")
+        return '\n'.join(all_texts)
+
+    async def _check_qq_favorite(self, event: AiocqhttpMessageEvent) -> bool:
+        client = await self._get_client(event)
+        if not client:
+            return False
+        raw = getattr(event, 'raw_event', None)
+        if isinstance(raw, dict):
+            msg_list = raw.get('message', [])
+            if isinstance(msg_list, list):
+                for seg in msg_list:
+                    if not isinstance(seg, dict):
+                        continue
+                    if seg.get('type') == 'forward':
+                        fid = seg.get('data', {}).get('res_id', '') or seg.get('data', {}).get('id', '')
+                        if fid:
+                            try:
+                                result = await client.call_action('get_forward_msg', message_id=fid)
+                                if not isinstance(result, dict):
+                                    continue
+                                messages = result.get('messages', []) or result.get('message', [])
+                                if isinstance(messages, dict):
+                                    messages = messages.get('message', [])
+                                for msg in messages:
+                                    if not isinstance(msg, dict):
+                                        continue
+                                    sender = msg.get('sender', {})
+                                    if isinstance(sender, dict):
+                                        nickname = sender.get('nickname', '') or ''
+                                        card = sender.get('card', '') or ''
+                                        if 'QQ收藏' in nickname or 'QQ收藏' in card or 'qq收藏' in nickname.lower() or 'qq收藏' in card.lower():
+                                            return True
+                                    content = msg.get('message', '')
+                                    if isinstance(content, list):
+                                        for c_seg in content:
+                                            if not isinstance(c_seg, dict):
+                                                continue
+                                            if c_seg.get('type') == 'app':
+                                                app_content = c_seg.get('data', {}).get('content', '')
+                                                if isinstance(app_content, str) and ('QQ收藏' in app_content or 'qq收藏' in app_content.lower()):
+                                                    return True
+                                    elif isinstance(content, str) and ('QQ收藏' in content or 'qq收藏' in content.lower()):
+                                        return True
+                            except Exception as e:
+                                logger.debug(f"[GroupMgr] 检查QQ收藏失败: {e}")
+                    elif seg.get('type') == 'app':
+                        app_content = seg.get('data', {}).get('content', '')
+                        if isinstance(app_content, str) and ('QQ收藏' in app_content or 'qq收藏' in app_content.lower()):
+                            return True
+        chain = event.get_messages() or []
+        for seg in chain:
+            if isinstance(seg, dict) and seg.get('type') == 'forward':
+                fid = seg.get('data', {}).get('id', '')
+                if not fid:
+                    continue
+                try:
+                    result = await client.call_action('get_forward_msg', message_id=fid)
+                    if not isinstance(result, dict):
+                        continue
+                    messages = result.get('messages', []) or result.get('message', [])
+                    if isinstance(messages, dict):
+                        messages = messages.get('message', [])
+                    for msg in messages:
+                        if not isinstance(msg, dict):
+                            continue
+                        sender = msg.get('sender', {})
+                        if isinstance(sender, dict):
+                            nickname = sender.get('nickname', '') or ''
+                            card = sender.get('card', '') or ''
+                            if 'QQ收藏' in nickname or 'QQ收藏' in card or 'qq收藏' in nickname.lower() or 'qq收藏' in card.lower():
+                                return True
+                        content = msg.get('message', '')
+                        if isinstance(content, list):
+                            for c_seg in content:
+                                if not isinstance(c_seg, dict):
+                                    continue
+                                if c_seg.get('type') == 'app':
+                                    app_content = c_seg.get('data', {}).get('content', '')
+                                    if isinstance(app_content, str) and ('QQ收藏' in app_content or 'qq收藏' in app_content.lower()):
+                                        return True
+                        elif isinstance(content, str) and ('QQ收藏' in content or 'qq收藏' in content.lower()):
+                            return True
+                except Exception as e:
+                    logger.debug(f"[GroupMgr] 检查QQ收藏失败: {e}")
+        return False
+
+    _OCR_PROMPT_TEMPLATES = {
+        "default": {
+            "system": "你是一个图片内容识别助手。请仔细观察图片，用文字详细描述图片中的所有内容。如果图片中有文字，请完整转录所有文字内容。如果图片是广告、推广、违规内容，请特别说明。只输出图片内容描述，不要输出其他内容。",
+            "prompt": "请识别并描述这张图片的内容，特别注意图片中的文字。"
+        },
+        "strict": {
+            "system": "你是一个严格的内容审核图片识别助手。你的任务是识别图片中是否存在违规内容。请仔细检查：1.图片中是否有广告推广信息（联系方式、二维码、引流链接）2.是否有色情或低俗内容 3.是否有政治敏感内容 4.是否有暴恐或违法信息 5.是否有赌博或诈骗信息。如果图片中有文字，请完整转录。最后给出明确结论：该图片是否包含违规内容。",
+            "prompt": "请严格审核这张图片，识别并描述所有可能违规的内容，完整转录图片中的文字。"
+        },
+        "text_only": {
+            "system": "你是一个OCR文字识别助手。请将图片中的所有文字完整转录出来，保持原始格式和排版。如果图片中没有文字，请回复"图片中无文字"。只输出识别到的文字内容，不要添加任何分析或评论。",
+            "prompt": "请将这张图片中的所有文字完整转录出来。"
+        }
+    }
+
+    async def _ocr_images(self, event: AiocqhttpMessageEvent, image_urls: list) -> str:
+        if not image_urls:
+            return ""
+        all_ocr_texts = []
+        for img_url in image_urls[:3]:
+            try:
+                ocr_text = await self._call_llm_ocr(img_url)
+                if ocr_text and ocr_text.strip():
+                    all_ocr_texts.append(ocr_text.strip())
+            except Exception as e:
+                logger.debug(f"[GroupMgr] OCR识别失败: {e}")
+        return '\n'.join(all_ocr_texts)
+
+    async def _call_llm_ocr(self, image_url: str) -> str:
+        configured_id = str(self.config.get("ocr_provider_id", "")).strip()
+        template_key = str(self.config.get("ocr_prompt_template", "default")).strip()
+        custom_system = str(self.config.get("ocr_custom_system_prompt", "")).strip()
+        custom_user = str(self.config.get("ocr_custom_user_prompt", "")).strip()
+
+        if custom_system and custom_user:
+            system_prompt = custom_system
+            prompt = custom_user
+        else:
+            template = self._OCR_PROMPT_TEMPLATES.get(template_key, self._OCR_PROMPT_TEMPLATES["default"])
+            system_prompt = template["system"]
+            prompt = template["prompt"]
+
+        try:
+            if hasattr(self.context, 'llm_generate'):
+                kwargs = {
+                    'prompt': prompt,
+                    'system_prompt': system_prompt,
+                    'image_urls': [image_url],
+                }
+                if configured_id:
+                    kwargs['chat_provider_id'] = configured_id
+
+                try:
+                    resp = await self.context.llm_generate(**kwargs)
+                    if resp:
+                        return self._extract_llm_text(resp)
+                except TypeError:
+                    pass
+
+            if configured_id and hasattr(self.context, 'get_provider_by_id'):
+                prov = self.context.get_provider_by_id(configured_id)
+                if prov and hasattr(prov, 'text_chat'):
+                    try:
+                        r = await prov.text_chat(
+                            system_prompt=system_prompt,
+                            prompt=prompt,
+                            image_urls=[image_url],
+                        )
+                        if r:
+                            return str(r)
+                    except TypeError:
+                        pass
+                    try:
+                        r = await prov.text_chat(
+                            system_prompt + "\n\n图片URL: " + image_url + "\n\n" + prompt,
+                        )
+                        if r:
+                            return str(r)
+                    except Exception:
+                        pass
+
+            ps = (self.context.get_all_providers() if hasattr(self.context, 'get_all_providers') else []) or []
+            for p in ps:
+                try:
+                    meta = p.meta()
+                    pid = meta.id
+                    prov = self.context.get_provider_by_id(pid) if hasattr(self.context, 'get_provider_by_id') else p
+                    if hasattr(prov, 'text_chat'):
+                        try:
+                            r = await prov.text_chat(
+                                system_prompt=system_prompt,
+                                prompt=prompt,
+                                image_urls=[image_url],
+                            )
+                            if r:
+                                return str(r)
+                        except TypeError:
+                            pass
+                        try:
+                            r = await prov.text_chat(
+                                system_prompt + "\n\n图片URL: " + image_url + "\n\n" + prompt,
+                            )
+                            if r:
+                                return str(r)
+                        except Exception:
+                            pass
+                except Exception:
+                    continue
+
+            return ""
+        except Exception as e:
+            logger.debug(f"[GroupMgr] OCR LLM调用失败: {e}")
+            return ""
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
@@ -2706,17 +2988,74 @@ class Main(Star):
                 except Exception as e:
                     logger.warning(f"[GroupMgr] 黑名单执行出错: {e}")
                 return
+        if self._cfg("recall_qq_favorite_enabled", True):
+            raw = getattr(event, 'raw_event', None)
+            has_forward = False
+            if isinstance(raw, dict):
+                msg_list = raw.get('message', [])
+                if isinstance(msg_list, list):
+                    for seg in msg_list:
+                        if isinstance(seg, dict) and seg.get('type') == 'forward':
+                            has_forward = True
+                            break
+            if not has_forward:
+                chain_check = event.get_messages() or []
+                for seg in chain_check:
+                    if isinstance(seg, dict) and seg.get('type') == 'forward':
+                        has_forward = True
+                        break
+            if has_forward:
+                is_qq_favorite = await self._check_qq_favorite(event)
+                if is_qq_favorite:
+                    try:
+                        msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
+                        if msg_id:
+                            await self._recall_msg(event, msg_id)
+                            user_name = event.get_sender_name()
+                            user_id = self._try_get_sender_id(event)
+                            yield event.plain_result(f"[群管] 检测到QQ收藏内容，已自动撤回")
+                            self._log_moderation(group_id, user_id, user_name, "[QQ收藏消息]", "撤回", "QQ收藏内容自动撤回")
+                            event.stop_event()
+                    except Exception as e:
+                        logger.warning(f"[GroupMgr] QQ收藏撤回失败: {e}")
+                    return
         if not self.auto_moderate_enabled:
             return
         chain = event.get_messages()
         raw_text_parts = []
+        image_urls = []
+        has_forward = False
         for seg in (chain or []):
             if isinstance(seg, dict):
-                if seg.get('type') == 'text':
+                seg_type = seg.get('type', '')
+                if seg_type == 'text':
                     raw_text_parts.append(seg.get('data', {}).get('text', ''))
+                elif seg_type == 'forward':
+                    has_forward = True
+                elif seg_type == 'image':
+                    img_url = seg.get('data', {}).get('url', '') or seg.get('data', {}).get('file', '')
+                    if img_url:
+                        image_urls.append(img_url)
             else:
                 raw_text_parts.append(getattr(seg, 'text', '') or '')
         text = ''.join(raw_text_parts).strip()
+
+        if has_forward and self._cfg("scan_forward_msg", True):
+            forward_text = await self._extract_forward_text(event)
+            if forward_text:
+                if text:
+                    text = text + '\n' + forward_text
+                else:
+                    text = forward_text
+
+        if image_urls and self._cfg("ocr_enabled", False):
+            ocr_text = await self._ocr_images(event, image_urls)
+            if ocr_text:
+                if text:
+                    text = text + '\n[OCR识图内容]\n' + ocr_text
+                else:
+                    text = '[OCR识图内容]\n' + ocr_text
+
         if not text:
             return
         group_id = self._get_group_id(event)

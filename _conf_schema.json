@@ -275,5 +275,48 @@
         "type": "bool",
         "default": true,
         "hint": "关闭后不检测补充词库、民生敏感、腾讯封禁等其他类别"
+    },
+    "scan_forward_msg": {
+        "description": "合并转发消息审核开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后会解析合并转发消息内容进行审核"
+    },
+    "ocr_enabled": {
+        "description": "OCR识图审核开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后会使用LLM视觉模型识别图片内容进行审核，需要配置支持视觉的LLM"
+    },
+    "ocr_provider_id": {
+        "description": "OCR使用的视觉LLM Provider",
+        "type": "string",
+        "_special": "select_provider",
+        "default": "",
+        "hint": "留空则自动使用第一个可用的LLM Provider；建议选择支持视觉/图片理解的模型"
+    },
+    "ocr_prompt_template": {
+        "description": "OCR提示词模板",
+        "type": "string",
+        "default": "default",
+        "hint": "可选: default(通用识别)、strict(严格审核)、text_only(纯文字转录)；自定义提示词时此项无效"
+    },
+    "ocr_custom_system_prompt": {
+        "description": "OCR自定义系统提示词",
+        "type": "text",
+        "default": "",
+        "hint": "留空使用模板提示词；填写后将覆盖模板的system_prompt（需同时填写用户提示词）"
+    },
+    "ocr_custom_user_prompt": {
+        "description": "OCR自定义用户提示词",
+        "type": "text",
+        "default": "",
+        "hint": "留空使用模板提示词；填写后将覆盖模板的user_prompt（需同时填写系统提示词）"
+    },
+    "recall_qq_favorite_enabled": {
+        "description": "QQ收藏内容自动撤回开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后检测到QQ收藏转发的消息会自动撤回"
     }
 }

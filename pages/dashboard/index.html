@@ -349,6 +349,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="settings-grid">
           <div class="card"><div class="card-header"><h2>核心设置</h2></div><div class="settings-list" id="settingsCore"></div></div>
           <div class="card"><div class="card-header"><h2>审核设置</h2></div><div class="settings-list" id="settingsAudit"></div></div>
+          <div class="card"><div class="card-header"><h2>OCR识图设置</h2></div><div class="settings-list" id="settingsOcr"></div></div>
           <div class="card"><div class="card-header"><h2>词库设置</h2></div><div class="settings-list" id="settingsLexicon"></div></div>
           <div class="card"><div class="card-header"><h2>功能开关</h2></div><div class="settings-list" id="settingsFeatures"></div></div>
           <div class="card card-full"><div class="card-header"><h2>高级设置</h2></div><div class="settings-list" id="settingsExtra"></div></div>
@@ -721,6 +722,11 @@ var AUDIT_TOGGLES = [
   { key: 'llm_moderation_enabled', label: 'AI审核', desc: '使用LLM进行深度审核' },
   { key: 'llm_moderation_ban', label: 'AI审核后禁言', desc: 'AI判定违规后自动禁言' },
   { key: 'prompt_injection_enabled', label: '防注入检测', desc: '检测恶意Prompt注入' },
+  { key: 'scan_forward_msg', label: '合并转发审核', desc: '解析合并转发消息内容进行审核' },
+  { key: 'recall_qq_favorite_enabled', label: 'QQ收藏撤回', desc: '检测到QQ收藏转发内容自动撤回' },
+];
+var OCR_TOGGLES = [
+  { key: 'ocr_enabled', label: 'OCR识图审核', desc: '使用LLM视觉模型识别图片内容进行审核' },
 ];
 var LEXICON_TOGGLES = [
   { key: 'lexicon_political_enabled', label: '政治敏感' },
@@ -764,10 +770,13 @@ async function loadSettings() {
   CONFIG = Object.assign({}, CONFIG, res);
   renderToggles('settingsCore', CORE_TOGGLES);
   renderToggles('settingsAudit', AUDIT_TOGGLES);
+  renderToggles('settingsOcr', OCR_TOGGLES);
   renderToggles('settingsLexicon', LEXICON_TOGGLES);
   renderToggles('settingsFeatures', FEATURE_TOGGLES);
   renderListSettings();
   renderExtraSettings();
+  renderOcrSettings();
+  loadProviderList();
 }
 
 function renderToggles(containerId, items) {
@@ -844,6 +853,53 @@ function renderExtraSettings() {
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">封禁通知模板</div><div class="setting-desc">支持变量：{name} 用户名、{uid} QQ号、{group} 群号</div></div><input type="text" class="input-sm" id="inputBanNotice" value="' + esc(banNotice) + '" style="width:260px" /></div>';
 }
 
+var PROVIDER_LIST = [];
+async function loadProviderList() {
+  try {
+    var res = await safeGet('providers');
+    PROVIDER_LIST = (res && !res.status) ? res : [];
+  } catch(e) {
+    PROVIDER_LIST = [];
+  }
+  renderOcrSettings();
+}
+
+function renderOcrSettings() {
+  var c = $('#settingsOcr');
+  if (!c) return;
+  var ocrProviderId = CONFIG.ocr_provider_id || '';
+  var ocrTemplate = CONFIG.ocr_prompt_template || 'default';
+  var ocrSystemPrompt = CONFIG.ocr_custom_system_prompt || '';
+  var ocrUserPrompt = CONFIG.ocr_custom_user_prompt || '';
+
+  var providerOptions = '<option value="">自动选择（第一个可用Provider）</option>';
+  PROVIDER_LIST.forEach(function(p) {
+    var pid = p.id || p.provider_id || '';
+    var pname = p.name || p.model || pid;
+    var sel = pid === ocrProviderId ? ' selected' : '';
+    providerOptions += '<option value="' + esc(pid) + '"' + sel + '>' + esc(pname) + '</option>';
+  });
+
+  var templateOptions = [
+    { value: 'default', label: '通用识别 - 识别图片内容并转录文字，标注广告/违规内容' },
+    { value: 'strict', label: '严格审核 - 重点检查广告、色情、政治、暴恐等违规内容' },
+    { value: 'text_only', label: '纯文字转录 - 仅转录图片中的文字，不做分析' },
+  ].map(function(t) {
+    var sel = t.value === ocrTemplate ? ' selected' : '';
+    return '<option value="' + t.value + '"' + sel + '>' + t.label + '</option>';
+  }).join('');
+
+  var togglesHtml = c.querySelectorAll('.setting-item');
+  var existingToggles = '';
+  togglesHtml.forEach(function(el) { existingToggles += el.outerHTML; });
+
+  c.innerHTML = existingToggles +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">OCR 视觉模型</div><div class="setting-desc">选择用于识图的LLM Provider，需支持图片理解（如GPT-4o、Gemini Pro Vision）</div></div><select class="input-sm" id="inputOcrProviderId" style="width:220px">' + providerOptions + '</select></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">OCR 提示词模板</div><div class="setting-desc">选择内置提示词模板，自定义提示词时此项无效</div></div><select class="input-sm" id="inputOcrTemplate" style="width:300px">' + templateOptions + '</select></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">自定义系统提示词</div><div class="setting-desc">留空使用模板；填写后覆盖模板（需同时填写用户提示词）</div></div><textarea class="input-md" id="inputOcrSystemPrompt" rows="2" style="width:100%;max-width:400px" placeholder="留空使用模板提示词...">' + esc(ocrSystemPrompt) + '</textarea></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">自定义用户提示词</div><div class="setting-desc">留空使用模板；填写后覆盖模板（需同时填写系统提示词）</div></div><textarea class="input-md" id="inputOcrUserPrompt" rows="2" style="width:100%;max-width:400px" placeholder="留空使用模板提示词...">' + esc(ocrUserPrompt) + '</textarea></div>';
+}
+
 async function saveSettings() {
   var payload = {};
   $$('input[data-key]').forEach(function(inp) {
@@ -855,6 +911,14 @@ async function saveSettings() {
   if (providerId) payload.moderation_llm_provider_id = providerId.value.trim();
   var banNotice = $('#inputBanNotice');
   if (banNotice) payload.ban_notice = banNotice.value.trim();
+  var ocrProviderId = $('#inputOcrProviderId');
+  if (ocrProviderId) payload.ocr_provider_id = ocrProviderId.value;
+  var ocrTemplate = $('#inputOcrTemplate');
+  if (ocrTemplate) payload.ocr_prompt_template = ocrTemplate.value;
+  var ocrSystemPrompt = $('#inputOcrSystemPrompt');
+  if (ocrSystemPrompt) payload.ocr_custom_system_prompt = ocrSystemPrompt.value.trim();
+  var ocrUserPrompt = $('#inputOcrUserPrompt');
+  if (ocrUserPrompt) payload.ocr_custom_user_prompt = ocrUserPrompt.value.trim();
   var res = await safePost('config', payload);
   if (res && res.status === 'error') {
     toast('保存失败: ' + (res.message || ''), 'error');
