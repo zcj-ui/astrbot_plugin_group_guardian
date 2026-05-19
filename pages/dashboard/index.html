@@ -847,9 +847,18 @@ function renderExtraSettings() {
   var banDuration = CONFIG.moderation_ban_duration != null ? CONFIG.moderation_ban_duration : 1800;
   var providerId = CONFIG.moderation_llm_provider_id || '';
   var banNotice = CONFIG.ban_notice || '[群管] {name}({uid}) 的消息已被撤回（违规内容）';
+
+  var providerOptions = '<option value="">留空使用默认</option>';
+  PROVIDER_LIST.forEach(function(p) {
+    var pid = p.id || p.provider_id || '';
+    var pname = p.name || p.model || pid;
+    var sel = pid === providerId ? ' selected' : '';
+    providerOptions += '<option value="' + esc(pid) + '"' + sel + '>' + esc(pname) + '</option>';
+  });
+
   c.innerHTML =
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">禁言时长（秒）</div><div class="setting-desc">违规用户自动禁言时长，默认 1800 秒（30分钟）</div></div><input type="number" class="input-sm" id="inputBanDuration" value="' + banDuration + '" min="60" max="2592000" style="width:100px" /></div>' +
-    '<div class="setting-item"><div class="setting-info"><div class="setting-label">LLM Provider ID</div><div class="setting-desc">用于 AI 审核的 LLM 提供商 ID（留空使用默认）</div></div><input type="text" class="input-sm" id="inputProviderId" value="' + esc(providerId) + '" placeholder="留空使用默认" style="width:160px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">审核 LLM 模型</div><div class="setting-desc">用于 AI 审核的 LLM 提供商（留空使用默认）</div></div><select class="input-sm" id="inputProviderId" style="width:220px">' + providerOptions + '</select></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">封禁通知模板</div><div class="setting-desc">支持变量：{name} 用户名、{uid} QQ号、{group} 群号</div></div><input type="text" class="input-sm" id="inputBanNotice" value="' + esc(banNotice) + '" style="width:260px" /></div>';
 }
 
@@ -861,6 +870,7 @@ async function loadProviderList() {
   } catch(e) {
     PROVIDER_LIST = [];
   }
+  renderExtraSettings();
   renderOcrSettings();
 }
 
@@ -872,7 +882,7 @@ function renderOcrSettings() {
   var ocrSystemPrompt = CONFIG.ocr_custom_system_prompt || '';
   var ocrUserPrompt = CONFIG.ocr_custom_user_prompt || '';
 
-  var providerOptions = '<option value="">自动选择（第一个可用Provider）</option>';
+  var providerOptions = '<option value="">请选择视觉模型（未选择则OCR不生效）</option>';
   PROVIDER_LIST.forEach(function(p) {
     var pid = p.id || p.provider_id || '';
     var pname = p.name || p.model || pid;
@@ -908,7 +918,7 @@ async function saveSettings() {
   var banDuration = $('#inputBanDuration');
   if (banDuration) payload.moderation_ban_duration = parseInt(banDuration.value, 10) || 1800;
   var providerId = $('#inputProviderId');
-  if (providerId) payload.moderation_llm_provider_id = providerId.value.trim();
+  if (providerId) payload.moderation_llm_provider_id = providerId.value;
   var banNotice = $('#inputBanNotice');
   if (banNotice) payload.ban_notice = banNotice.value.trim();
   var ocrProviderId = $('#inputOcrProviderId');

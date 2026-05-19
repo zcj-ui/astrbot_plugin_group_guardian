@@ -2876,6 +2876,9 @@ class Main(Star):
 
     async def _call_llm_ocr(self, image_url: str) -> str:
         configured_id = str(self.config.get("ocr_provider_id", "")).strip()
+        if not configured_id:
+            return ""
+
         template_key = str(self.config.get("ocr_prompt_template", "default")).strip()
         custom_system = str(self.config.get("ocr_custom_system_prompt", "")).strip()
         custom_user = str(self.config.get("ocr_custom_user_prompt", "")).strip()
@@ -2894,10 +2897,8 @@ class Main(Star):
                     'prompt': prompt,
                     'system_prompt': system_prompt,
                     'image_urls': [image_url],
+                    'chat_provider_id': configured_id,
                 }
-                if configured_id:
-                    kwargs['chat_provider_id'] = configured_id
-
                 try:
                     resp = await self.context.llm_generate(**kwargs)
                     if resp:
@@ -2905,7 +2906,7 @@ class Main(Star):
                 except TypeError:
                     pass
 
-            if configured_id and hasattr(self.context, 'get_provider_by_id'):
+            if hasattr(self.context, 'get_provider_by_id'):
                 prov = self.context.get_provider_by_id(configured_id)
                 if prov and hasattr(prov, 'text_chat'):
                     try:
@@ -2926,34 +2927,6 @@ class Main(Star):
                             return str(r)
                     except Exception:
                         pass
-
-            ps = (self.context.get_all_providers() if hasattr(self.context, 'get_all_providers') else []) or []
-            for p in ps:
-                try:
-                    meta = p.meta()
-                    pid = meta.id
-                    prov = self.context.get_provider_by_id(pid) if hasattr(self.context, 'get_provider_by_id') else p
-                    if hasattr(prov, 'text_chat'):
-                        try:
-                            r = await prov.text_chat(
-                                system_prompt=system_prompt,
-                                prompt=prompt,
-                                image_urls=[image_url],
-                            )
-                            if r:
-                                return str(r)
-                        except TypeError:
-                            pass
-                        try:
-                            r = await prov.text_chat(
-                                system_prompt + "\n\n图片URL: " + image_url + "\n\n" + prompt,
-                            )
-                            if r:
-                                return str(r)
-                        except Exception:
-                            pass
-                except Exception:
-                    continue
 
             return ""
         except Exception as e:

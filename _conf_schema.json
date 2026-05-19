@@ -289,11 +289,11 @@
         "hint": "开启后会使用LLM视觉模型识别图片内容进行审核，需要配置支持视觉的LLM"
     },
     "ocr_provider_id": {
-        "description": "OCR使用的视觉LLM Provider",
+        "description": "OCR使用的视觉LLM Provider（必填）",
         "type": "string",
         "_special": "select_provider",
         "default": "",
-        "hint": "留空则自动使用第一个可用的LLM Provider；建议选择支持视觉/图片理解的模型"
+        "hint": "必须手动选择一个支持视觉/图片理解的Provider，未配置则OCR功能不生效"
     },
     "ocr_prompt_template": {
         "description": "OCR提示词模板",
