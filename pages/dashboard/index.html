@@ -1301,22 +1301,25 @@ function init() {
 
 (async function() {
   bridge = window.AstrBotPluginPage;
-  if (!bridge) {
-    document.getElementById('statusText').textContent = 'Bridge 未加载';
-    document.getElementById('statusDot').style.background = 'var(--danger)';
-    return;
+  if (bridge && bridge.apiGet) apiGet = bridge.apiGet.bind(bridge);
+  if (bridge && bridge.apiPost) apiPost = bridge.apiPost.bind(bridge);
+  if (bridge && bridge.ready) {
+    try {
+      await Promise.race([
+        bridge.ready(),
+        new Promise(function(_, reject) { setTimeout(function() { reject(new Error('timeout')); }, 5000); })
+      ]);
+    } catch(e) {
+      console.warn('[GG] bridge.ready() failed or timed out:', e);
+    }
   }
-  try {
-    if (bridge.ready) await bridge.ready();
-  } catch(e) {
-    console.warn('[GG] bridge.ready() failed:', e);
-  }
-  if (bridge.apiGet) apiGet = bridge.apiGet.bind(bridge);
-  if (bridge.apiPost) apiPost = bridge.apiPost.bind(bridge);
   if (apiGet && apiPost) {
     init();
-  } else {
+  } else if (bridge) {
     document.getElementById('statusText').textContent = 'API 不可用';
+    document.getElementById('statusDot').style.background = 'var(--danger)';
+  } else {
+    document.getElementById('statusText').textContent = 'Bridge 未加载';
     document.getElementById('statusDot').style.background = 'var(--danger)';
   }
 })();
