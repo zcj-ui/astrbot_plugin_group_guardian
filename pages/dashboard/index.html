@@ -844,8 +844,9 @@ function renderUsers(users) {
       '<div class="user-records">' +
         '<table class="record-table"><thead><tr><th>时间</th><th>群</th><th>消息</th><th>原因</th><th>操作</th></tr></thead><tbody>' +
         u.records.map(function(r) {
+          var msgFull = esc(r.msg_text || r.msg_preview || '').replace(/"/g, '&quot;');
           var msgCell = (r.msg_preview && r.msg_preview.length > 20) ?
-            '<td><span class="lin-msg-truncated">' + esc(r.msg_preview.slice(0, 20)) + '</span> <a href="javascript:void(0)" class="lin-msg-action" data-lin-full="' + esc(r.msg_preview).replace(/"/g, '&quot;') + '"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span class="lin-msg-action-text">查看</span></a></td>' :
+            '<td><span class="lin-msg-truncated">' + esc(r.msg_preview.slice(0, 20)) + '</span> <a href="javascript:void(0)" class="lin-msg-action" data-lin-full="' + msgFull + '"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span class="lin-msg-action-text">查看</span></a></td>' :
             '<td>' + esc(r.msg_preview || '') + '</td>';
           return '<tr><td>' + fmtTime(r.ts) + '</td><td>' + esc(r.group_id) + '</td>' + msgCell + '<td>' + esc((r.reason || '').slice(0, 20)) + '</td><td><button class="btn btn-danger btn-sm" data-del="' + esc(r.id) + '">删除</button></td></tr>';
         }).join('') + '</tbody></table></div></div>';
@@ -889,8 +890,9 @@ async function loadLogs() {
   var rows = logs.slice(0, 100).map(function(l) {
     var a = l.action || '';
     var cls = a.indexOf('撤回') !== -1 ? 'badge-danger' : a.indexOf('放行') !== -1 ? 'badge-success' : a.indexOf('提醒') !== -1 ? 'badge-warning' : 'badge-default';
+    var msgFull = esc(l.msg_text || l.msg_preview || '').replace(/"/g, '&quot;');
     var msgHtml = (l.msg_preview && l.msg_preview.length > 28) ?
-      '<span class="lin-msg-truncated">' + esc(l.msg_preview.slice(0, 28)) + '</span><a href="javascript:void(0)" class="lin-msg-action" data-lin-full="' + esc(l.msg_preview).replace(/"/g, '&quot;') + '"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span class="lin-msg-action-text">查看</span></a>' :
+      '<span class="lin-msg-truncated">' + esc(l.msg_preview.slice(0, 28)) + '</span><a href="javascript:void(0)" class="lin-msg-action" data-lin-full="' + msgFull + '"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span class="lin-msg-action-text">查看</span></a>' :
       esc(l.msg_preview || '');
     return '<tr><td>' + fmtTime(l.ts) + '</td><td>' + esc(l.group_id) + '</td><td>' + esc(l.user_name) + '<br><span style="font-size:10px;color:var(--text-muted)">' + esc(l.user_id) + '</span></td><td>' + msgHtml + '</td><td><span class="badge ' + cls + '">' + esc(a) + '</span></td><td class="reason-cell" title="' + esc(l.reason) + '">' + esc((l.reason || '').slice(0, 30)) + '</td></tr>';
   }).join('');

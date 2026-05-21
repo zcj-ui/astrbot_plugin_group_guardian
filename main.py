@@ -1018,7 +1018,7 @@ class Main(Star):
             "group_id": group_id,
             "user_id": user_id,
             "user_name": user_name,
-            "msg_text": msg_text[:500],
+            "msg_text": msg_text[:2000],
             "msg_preview": msg_text[:100],
             "action": action,
             "reason": reason,
