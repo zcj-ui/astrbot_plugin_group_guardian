@@ -893,7 +893,7 @@ function renderUsers(users) {
         });
       }
       var bodyHtml = (imgHtml ? '<div style="margin-bottom:12px">' + imgHtml + '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">图片链接可能随时间过期，点击图片可在新窗口查看原图</div></div>' : '') +
-        '<div style="white-space:pre-wrap;word-break:break-word;line-height:1.7;font-size:13px;color:var(--text-primary);max-height:400px;overflow-y:auto">' + esc(fullText) + '</div>';
+        '<div style="white-space:pre-wrap;word-break:break-word;line-height:1.7;font-size:13px;color:var(--text-primary)">' + esc(fullText) + '</div>';
       showModal('消息详情', bodyHtml, '<button class="btn btn-ghost btn-sm" id="btnMsgClose2">关闭</button>');
       $('#btnMsgClose2').addEventListener('click', closeModal);
     });
@@ -936,7 +936,7 @@ async function loadLogs() {
         });
       }
       var bodyHtml = (imgHtml ? '<div style="margin-bottom:12px">' + imgHtml + '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">图片链接可能随时间过期，点击图片可在新窗口查看原图</div></div>' : '') +
-        '<div style="white-space:pre-wrap;word-break:break-word;line-height:1.7;font-size:13px;color:var(--text-primary);max-height:400px;overflow-y:auto">' + esc(fullText) + '</div>';
+        '<div style="white-space:pre-wrap;word-break:break-word;line-height:1.7;font-size:13px;color:var(--text-primary)">' + esc(fullText) + '</div>';
       showModal('消息详情', bodyHtml, '<button class="btn btn-ghost btn-sm" id="btnMsgClose">关闭</button>');
       $('#btnMsgClose').addEventListener('click', closeModal);
     });
@@ -1187,7 +1187,7 @@ async function saveSettings() {
   }
 }
 
-function init() {
+async function init() {
   initTabs();
 
   $('#btnRefreshAll').addEventListener('click', loadOverview);
@@ -1292,6 +1292,7 @@ function init() {
     toast('导出成功', 'success');
   });
 
+  try { var _cfgRes = await safeGet('config'); if (_cfgRes && _cfgRes.status !== 'error') CONFIG = Object.assign({}, CONFIG, _cfgRes); } catch(e) {}
   var savedTheme = ls.getItem('gg_theme');
   if (!savedTheme) savedTheme = (CONFIG.webui_dark_mode === true) ? 'dark' : 'light';
   document.documentElement.setAttribute('data-theme', savedTheme);
