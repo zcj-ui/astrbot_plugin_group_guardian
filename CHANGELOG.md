@@ -29,6 +29,10 @@
 - **`list.remove()` 安全化**：新增 `_safe_list_remove` 辅助方法，所有 `list.remove()` 调用替换为安全版本，避免 `ValueError` 异常
 - **`_web_delete_logs` ID 转换安全化**：`int()` 转换添加异常捕获，非法 ID 不再导致整个删除操作失败
 - **命令方法大规模重构**：提取 `_check_admin_cfg_access`、`_get_group_client`、`_call_group_api` 三个辅助方法，消除 20+ 个命令方法中重复的权限检查+获取客户端+调用API模式，减少约 300 行重复代码
+- **第一批 llm_tool 方法重构**：`ban_group_member`、`unban_group_member`、`kick_group_member`、`set_whole_group_ban`、`set_member_card`、`send_group_announcement`、`get_group_member_list`、`set_group_admin`、`set_group_name`、`set_member_title`、`get_banned_members` 共 11 个方法使用辅助方法重构
+- **查询类命令重构**：`字数统计`、`群统计`、`搜索成员`、`公告列表`、`文件列表`、`成员列表`、`禁言列表`、`删文件` 共 8 个命令使用辅助方法重构
+- **`_get_group_client` 返回值解包 Bug 修复**：`_, client, _` 解包后用 `_` 作为错误消息会导致取到错误值，全部改为 `err` 变量名
+- **`搜索成员` 命令添加 ADMIN 权限**：该命令可搜索成员信息，属于敏感操作，添加 `@filter.permission_type(ADMIN)` 装饰器
 
 ### 文件清理
 
