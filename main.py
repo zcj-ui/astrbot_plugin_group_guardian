@@ -206,7 +206,7 @@ class Main(Star):
             today_blocked = 0
             today_passed = 0
             today_total = 0
-            for l in self._moderation_logs:
+            for l in list(self._moderation_logs):
                 if l.get("ts", 0) >= today_start:
                     today_total += 1
                     action = l.get("action", "")
@@ -430,7 +430,7 @@ class Main(Star):
             today_start = self._today_start()
             white_set = self._group_white_set
             today_blocked_map = {}
-            for l in self._moderation_logs:
+            for l in list(self._moderation_logs):
                 if l.get("ts", 0) >= today_start and "撤回" in l.get("action", ""):
                     gid = str(l.get("group_id", ""))
                     if gid in white_set:
@@ -643,7 +643,7 @@ class Main(Star):
             blocked_today = 0
             passed_today = 0
             total_today = 0
-            for l in self._moderation_logs:
+            for l in list(self._moderation_logs):
                 uid = str(l.get("user_id", ""))
                 if uid and uid not in user_names:
                     user_names[uid] = l.get("user_name", "")
@@ -1914,9 +1914,9 @@ class Main(Star):
 
     # ==================== LLM 审核 ====================
     async def _fetch_context_messages(self, group_id: str, current_msg_id: str, count: int = 30) -> list:
-        client = self._client or await self._get_client()
-        if not client:
+        if not self._client:
             return []
+        client = self._client
         try:
             gid = int(group_id)
         except (ValueError, TypeError):
@@ -2363,48 +2363,6 @@ class Main(Star):
             elif seg_cls in ('App',) or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'app'):
                 if self._is_qq_favorite_text(getattr(seg, 'content', '')):
                     return True
-        return False
-
-    async def _check_qq_favorite(self, event: AiocqhttpMessageEvent) -> bool:
-        client = await self._get_client(event)
-        raw = getattr(event, 'raw_event', None)
-        chain = event.get_messages() or []
-
-        if isinstance(raw, dict):
-            msg_list = raw.get('message', [])
-            if isinstance(msg_list, list):
-                for seg in msg_list:
-                    if not isinstance(seg, dict):
-                        continue
-                    seg_type = seg.get('type', '')
-                    seg_data = seg.get('data', {}) or {}
-                    if seg_type == 'forward':
-                        fid = seg_data.get('res_id', '') or seg_data.get('id', '')
-                        if await self._check_forward_msg_qq_favorite(client, fid):
-                            return True
-                    elif self._check_dict_seg_qq_favorite(seg):
-                        return True
-
-        for seg in chain:
-            if isinstance(seg, dict):
-                continue
-            seg_cls = type(seg).__name__
-            if seg_cls in ('Json',) or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'json'):
-                json_data = getattr(seg, 'data', '') or ''
-                if self._is_qq_favorite_text(json_data):
-                    return True
-                if isinstance(json_data, dict) and self._is_qq_favorite_text(str(json_data)):
-                    return True
-            elif seg_cls in ('Forward',) or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'forward'):
-                fid = getattr(seg, 'id', '') or ''
-                if not fid and hasattr(seg, 'data') and isinstance(getattr(seg, 'data', None), dict):
-                    fid = getattr(seg, 'data', {}).get('id', '')
-                if await self._check_forward_msg_qq_favorite(client, fid):
-                    return True
-            elif seg_cls in ('App',) or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'app'):
-                if self._is_qq_favorite_text(getattr(seg, 'content', '')):
-                    return True
-
         return False
 
     _OCR_PROMPT_TEMPLATES = {
@@ -3470,7 +3428,10 @@ class Main(Star):
             yield event.plain_result("用法: /设精华 <message_id>\n回复消息或提供 message_id")
             return
         try:
-            msg_id = int(args[1])
+            msg_id = self._safe_int(args[1], 0)
+            if not msg_id:
+                yield event.plain_result("消息ID格式无效")
+                return
             group_id = self._get_group_id(event)
             if not group_id:
                 yield event.plain_result("无法获取群号")
@@ -3501,7 +3462,10 @@ class Main(Star):
             yield event.plain_result("用法: /取消精华 <message_id>")
             return
         try:
-            msg_id = int(args[1])
+            msg_id = self._safe_int(args[1], 0)
+            if not msg_id:
+                yield event.plain_result("消息ID格式无效")
+                return
             group_id = self._get_group_id(event)
             if not group_id:
                 yield event.plain_result("无法获取群号")

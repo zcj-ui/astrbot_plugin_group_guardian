@@ -14,6 +14,9 @@
 - **LLM 审核 JSON 提取优化**：优先匹配含 `"violation"` 键的 JSON 对象，避免误匹配 LLM 返回中其他花括号内容
 - **前端 XSS 防护**：图片 URL 插入 `src` 属性时使用 `escAttr` 转义，防止恶意 URL 注入
 - **死代码清理**：移除未使用的 `has_sticker` 变量
+- **`_web_today_stats`/`_web_stats` 并发安全修复**：遍历 `_moderation_logs` 改为 `list()` 快照
+- **`设精华`/`取消精华` 命令修复**：`int(args[1])` 改为 `_safe_int()`，非法消息ID不再导致命令崩溃
+- **`_fetch_context_messages` 修复**：`_get_client()` 无参数调用改为直接使用 `self._client`，避免 TypeError
 
 ### 代码优化与维护
 
