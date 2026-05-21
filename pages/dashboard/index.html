@@ -886,13 +886,12 @@ function renderUsers(users) {
       showModal('消息详情', '<p style="color:var(--text-muted)">加载中...</p>', '<button class="btn btn-ghost btn-sm" id="btnMsgClose2">关闭</button>');
       $('#btnMsgClose2').addEventListener('click', closeModal);
       try {
-        var r = await fetch('/astrbot_plugin_group_guardian/log_raw_text?id=' + encodeURIComponent(lid));
-        var fullText = await r.text();
-        console.log('[GG] log_raw_text id=' + lid + ' len=' + fullText.length + ' ok=' + r.ok);
-        if (!r.ok) { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(fullText || '获取失败') + '</p>'; return; }
         var detail = await safeGet('log_detail', { id: lid });
-        console.log('[GG] log_detail id=' + lid, JSON.stringify(detail).slice(0, 200));
+        console.log('[GG] log_detail raw:', JSON.stringify(detail).length, JSON.stringify(detail).slice(0, 300));
+        if (detail && detail.status === 'error') { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(detail.message || '获取失败') + '</p>'; return; }
         var d = (detail && detail.data) ? detail.data : {};
+        var fullText = d.msg_text || '';
+        console.log('[GG] msg_text len=' + fullText.length + ' last50=' + fullText.slice(-50));
         var imgUrls = d.image_urls || [];
         var imgHtml = '';
         if (imgUrls.length) {
@@ -903,7 +902,7 @@ function renderUsers(users) {
         var bodyHtml = (imgHtml ? '<div style="margin-bottom:12px">' + imgHtml + '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">图片链接可能随时间过期，点击图片可在新窗口查看原图</div></div>' : '') +
           '<div style="white-space:pre-wrap;word-break:break-word;line-height:1.7;font-size:13px;color:var(--text-primary)">' + esc(fullText) + '</div>';
         $('#modalBody').innerHTML = bodyHtml;
-      } catch(ex) { console.error('[GG] fetch error', ex); $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">加载失败: ' + esc(String(ex)) + '</p>'; }
+      } catch(ex) { console.error('[GG] detail error', ex); $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">加载失败: ' + esc(String(ex)) + '</p>'; }
     });
   });
 }
@@ -937,13 +936,12 @@ async function loadLogs() {
       showModal('消息详情', '<p style="color:var(--text-muted)">加载中...</p>', '<button class="btn btn-ghost btn-sm" id="btnMsgClose">关闭</button>');
       $('#btnMsgClose').addEventListener('click', closeModal);
       try {
-        var r = await fetch('/astrbot_plugin_group_guardian/log_raw_text?id=' + encodeURIComponent(lid));
-        var fullText = await r.text();
-        console.log('[GG] log_raw_text id=' + lid + ' len=' + fullText.length + ' ok=' + r.ok);
-        if (!r.ok) { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(fullText || '获取失败') + '</p>'; return; }
         var detail = await safeGet('log_detail', { id: lid });
-        console.log('[GG] log_detail id=' + lid, JSON.stringify(detail).slice(0, 200));
+        console.log('[GG] log_detail raw:', JSON.stringify(detail).length, JSON.stringify(detail).slice(0, 300));
+        if (detail && detail.status === 'error') { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(detail.message || '获取失败') + '</p>'; return; }
         var d = (detail && detail.data) ? detail.data : {};
+        var fullText = d.msg_text || '';
+        console.log('[GG] msg_text len=' + fullText.length + ' last50=' + fullText.slice(-50));
         var imgUrls = d.image_urls || [];
         var imgHtml = '';
         if (imgUrls.length) {
@@ -954,7 +952,7 @@ async function loadLogs() {
         var bodyHtml = (imgHtml ? '<div style="margin-bottom:12px">' + imgHtml + '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">图片链接可能随时间过期，点击图片可在新窗口查看原图</div></div>' : '') +
           '<div style="white-space:pre-wrap;word-break:break-word;line-height:1.7;font-size:13px;color:var(--text-primary)">' + esc(fullText) + '</div>';
         $('#modalBody').innerHTML = bodyHtml;
-      } catch(ex) { console.error('[GG] fetch error', ex); $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">加载失败: ' + esc(String(ex)) + '</p>'; }
+      } catch(ex) { console.error('[GG] detail error', ex); $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">加载失败: ' + esc(String(ex)) + '</p>'; }
     });
   });
 }
