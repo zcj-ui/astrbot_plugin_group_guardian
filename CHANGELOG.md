@@ -33,6 +33,10 @@
 - **查询类命令重构**：`字数统计`、`群统计`、`搜索成员`、`公告列表`、`文件列表`、`成员列表`、`禁言列表`、`删文件` 共 8 个命令使用辅助方法重构
 - **`_get_group_client` 返回值解包 Bug 修复**：`_, client, _` 解包后用 `_` 作为错误消息会导致取到错误值，全部改为 `err` 变量名
 - **`搜索成员` 命令添加 ADMIN 权限**：该命令可搜索成员信息，属于敏感操作，添加 `@filter.permission_type(ADMIN)` 装饰器
+- **删除死代码方法**：移除从未被调用的 `_get_image_file_from_event`（15行）和 `_check_forward_msg_qq_favorite`（30行），其功能已被其他方法覆盖
+- **删除未使用的 import**：移除 `Reply` 和 `Image`（仅在死代码方法中使用）
+- **`_should_scan_message` 移除不可达分支**：移除始终为 True 的 `isinstance` 检查和不可达的 `return True`
+- **`int()` 转换安全化**：`_kick_member`、`_mute_member`、`_search_keyword_in_messages`、`_web_get_moderation_users`、批量撤回等方法中的 `int(group_id)` 改为 `_safe_int()`，防止 ValueError
 
 ### 文件清理
 

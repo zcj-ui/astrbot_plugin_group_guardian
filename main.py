@@ -14,7 +14,6 @@ from typing import Optional, Tuple, Dict, List
 from astrbot.api import logger
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.star import Context, Star, StarTools, register
-from astrbot.api.message_components import Reply, Image
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
@@ -462,7 +461,7 @@ class Main(Star):
         if not client:
             return jsonify({"status": "error", "message": "无法获取QQ客户端"})
         try:
-            gid = int(group_id)
+            gid = self._safe_int(group_id, 0)
             result = await client.call_action('get_group_member_list', group_id=gid, no_cache=True)
             members = result if isinstance(result, list) else (result.get("data") or []) if isinstance(result, dict) else []
             enriched = []
@@ -1001,22 +1000,6 @@ class Main(Star):
             return True, ""
         except Exception as e:
             return False, str(e)
-
-    async def _get_image_file_from_event(self, event: AiocqhttpMessageEvent) -> Optional[str]:
-        chain = event.get_messages() or []
-        for seg in chain:
-            if isinstance(seg, Reply):
-                chain = seg.chain or []
-                break
-        for seg in chain:
-            if isinstance(seg, Image):
-                return getattr(seg, 'file', None) or getattr(seg, 'url', None) or getattr(seg, 'path', None)
-        raw = getattr(event, 'message_obj', None)
-        if raw:
-            raw_msg = getattr(raw, 'raw_message', None)
-            if raw_msg and hasattr(raw_msg, 'image') and raw_msg.image:
-                return raw_msg.image
-        return None
 
     def _truncate(self, text: str, max_chars: int = 2000) -> str:
         if len(text) <= max_chars:
@@ -1943,41 +1926,39 @@ class Main(Star):
         return any(p.search(text) for p in self._compiled_ad)
 
     def _should_scan_message(self, event: AiocqhttpMessageEvent) -> bool:
-        if isinstance(event, AiocqhttpMessageEvent):
-            sub_type = ''
-            raw = getattr(event, 'raw_event', None)
-            if isinstance(raw, dict):
-                sub_type = str(raw.get('sub_type', '')).lower()
-            if sub_type in ('anonymous', 'notice'):
-                return False
-            chain = event.get_messages()
-            for seg in (chain or []):
-                if isinstance(seg, dict):
-                    seg_type = seg.get('type', '')
-                    if seg_type == 'text' and seg.get('data', {}).get('text', '').strip():
-                        return True
-                    if seg_type == 'forward':
-                        return True
-                    if seg_type == 'image':
-                        return True
-                    if seg_type == 'market_face':
-                        return True
-                else:
-                    seg_cls = type(seg).__name__
-                    if seg_cls == 'Plain' and getattr(seg, 'text', '').strip():
-                        return True
-                    if seg_cls == 'Forward' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'forward'):
-                        return True
-                    if seg_cls == 'Image' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'image'):
-                        return True
-                    if seg_cls == 'MarketFace' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'market_face'):
-                        return True
-                    if seg_cls == 'Json' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'json'):
-                        return True
-                    if seg_cls == 'App' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'app'):
-                        return True
+        sub_type = ''
+        raw = getattr(event, 'raw_event', None)
+        if isinstance(raw, dict):
+            sub_type = str(raw.get('sub_type', '')).lower()
+        if sub_type in ('anonymous', 'notice'):
             return False
-        return True
+        chain = event.get_messages()
+        for seg in (chain or []):
+            if isinstance(seg, dict):
+                seg_type = seg.get('type', '')
+                if seg_type == 'text' and seg.get('data', {}).get('text', '').strip():
+                    return True
+                if seg_type == 'forward':
+                    return True
+                if seg_type == 'image':
+                    return True
+                if seg_type == 'market_face':
+                    return True
+            else:
+                seg_cls = type(seg).__name__
+                if seg_cls == 'Plain' and getattr(seg, 'text', '').strip():
+                    return True
+                if seg_cls == 'Forward' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'forward'):
+                    return True
+                if seg_cls == 'Image' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'image'):
+                    return True
+                if seg_cls == 'MarketFace' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'market_face'):
+                    return True
+                if seg_cls == 'Json' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'json'):
+                    return True
+                if seg_cls == 'App' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'app'):
+                    return True
+        return False
 
     async def _resolve_forward_messages(self, event: AiocqhttpMessageEvent) -> Tuple[str, bool]:
         client = await self._get_client(event)
@@ -2070,37 +2051,6 @@ class Main(Star):
             return Main._is_qq_favorite_text(seg_data.get('data', ''))
         if seg_type == 'app':
             return Main._is_qq_favorite_text(seg_data.get('content', ''))
-        return False
-
-    async def _check_forward_msg_qq_favorite(self, client, fid: str) -> bool:
-        if not client or not fid:
-            return False
-        try:
-            result = await client.call_action('get_forward_msg', message_id=fid)
-            if not isinstance(result, dict):
-                return False
-            messages = result.get('messages', []) or result.get('message', [])
-            if isinstance(messages, dict):
-                messages = messages.get('message', [])
-            for msg in messages:
-                if not isinstance(msg, dict):
-                    continue
-                sender = msg.get('sender', {})
-                if isinstance(sender, dict):
-                    nickname = sender.get('nickname', '') or ''
-                    card = sender.get('card', '') or ''
-                    if self._is_qq_favorite_text(nickname) or self._is_qq_favorite_text(card):
-                        return True
-                content = msg.get('message', '')
-                if isinstance(content, list):
-                    for c_seg in content:
-                        if isinstance(c_seg, dict) and c_seg.get('type') == 'app':
-                            if self._is_qq_favorite_text(c_seg.get('data', {}).get('content', '')):
-                                return True
-                elif self._is_qq_favorite_text(content):
-                    return True
-        except Exception as e:
-            logger.debug(f"[GroupMgr] 检查转发QQ收藏失败: {e}")
         return False
 
     async def _check_qq_favorite_non_forward(self, event: AiocqhttpMessageEvent) -> bool:
@@ -2490,8 +2440,12 @@ class Main(Star):
         client = await self._get_client(event)
         if not client:
             return
+        gid = self._safe_int(group_id, 0)
+        uid = self._safe_int(user_id, 0)
+        if not gid or not uid:
+            return
         try:
-            await client.call_action('set_group_kick', group_id=int(group_id), user_id=int(user_id))
+            await client.call_action('set_group_kick', group_id=gid, user_id=uid)
         except Exception as e:
             logger.warning(f"[GroupMgr] 踢人失败: {e}")
             self._client = None
@@ -2504,9 +2458,13 @@ class Main(Star):
         client = await self._get_client(event)
         if not client:
             return
+        gid = self._safe_int(group_id, 0)
+        uid = self._safe_int(user_id, 0)
+        if not gid or not uid:
+            return
         ban_duration = duration if duration is not None else int(self.config.get("moderation_ban_duration", 1800))
         try:
-            await client.call_action('set_group_ban', group_id=int(group_id), user_id=int(user_id), duration=ban_duration)
+            await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=ban_duration)
         except Exception as e:
             logger.warning(f"[GroupMgr] 禁言失败: {e}")
             self._client = None
@@ -2557,7 +2515,7 @@ class Main(Star):
         if not client:
             return 0, []
         try:
-            result = await client.call_action('get_group_msg_history', group_id=int(group_id), count=100)
+            result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=100)
             messages = result.get('messages', []) if isinstance(result, dict) else []
         except Exception as e:
             logger.warning(f"[GroupMgr] 获取历史消息失败: {e}")
@@ -2699,7 +2657,7 @@ class Main(Star):
             yield event.plain_result("无法获取QQ客户端")
             return
         try:
-            result = await client.call_action('get_group_msg_history', group_id=int(group_id), count=count + 1)
+            result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=count + 1)
             messages = result.get('messages', []) if isinstance(result, dict) else []
             recalled = 0
             for msg in messages[-count:]:
@@ -3291,7 +3249,7 @@ class Main(Star):
             yield event.plain_result("无法获取QQ客户端")
             return
         try:
-            result = await client.call_action('get_group_msg_history', group_id=int(group_id), count=100)
+            result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=100)
             messages = result.get('messages', []) if isinstance(result, dict) else []
             recalled = 0
             for msg in messages:
