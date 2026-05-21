@@ -257,6 +257,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
 #disclaimerBanner{background:var(--warning-light)!important;border-color:var(--warning)!important;color:var(--warning)!important}
 #disclaimerBanner a{color:var(--primary)!important}
 #disclaimerBanner strong{color:inherit}
+.mobile-nav{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--surface);border-top:1px solid var(--border);z-index:100;padding:4px 0 env(safe-area-inset-bottom,4px);justify-content:space-around}
+.mobile-nav-item{display:flex;flex-direction:column;align-items:center;gap:2px;padding:6px 0;flex:1;color:var(--text-muted);text-decoration:none;font-size:10px;font-weight:500;transition:color .15s}
+.mobile-nav-item svg{width:20px;height:20px;fill:currentColor}
+.mobile-nav-item.active{color:var(--primary)}
 @media(max-width:900px){
   .sidebar{width:60px}
   .sidebar-header .logo-text,.nav-item span,.sidebar-footer .status-text,.sidebar-footer .theme-label,.sidebar-footer .theme-toggle span:not(.theme-icon-light):not(.theme-icon-dark){display:none}
@@ -270,7 +274,50 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
 }
 @media(max-width:600px){
   .sidebar{display:none}
-  .stats-row{grid-template-columns:1fr}
+  .mobile-nav{display:flex}
+  .main-content{padding:12px 12px 72px}
+  .stats-row{grid-template-columns:1fr 1fr}
+  .stat-card{padding:12px 14px}
+  .stat-value{font-size:17px}
+  .page-header h1{font-size:16px}
+  .card-header{padding:10px 14px;flex-wrap:wrap;gap:8px}
+  .card-header h2{font-size:13px}
+  .header-actions{width:100%}
+  .header-actions .input-sm{width:100%}
+  .group-grid{padding:12px;gap:8px}
+  .group-card{padding:10px;flex-wrap:wrap}
+  .group-actions{flex-direction:row;width:100%;gap:6px}
+  .group-actions .btn{flex:1;text-align:center;justify-content:center}
+  .lin-disclaimer-card{padding:16px 18px}
+  .lin-actions-row{flex-wrap:wrap;gap:12px}
+  .lin-description{max-width:100%}
+  .log-container{padding:0;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .log-table{font-size:11px;min-width:560px}
+  .log-table th,.log-table td{padding:5px 6px}
+  .record-table{font-size:11px;min-width:480px}
+  .record-table th,.record-table td{padding:5px 6px}
+  .user-container{padding:8px}
+  .member-list{padding:4px}
+  .member-item{padding:6px 8px;gap:8px}
+  .member-name{font-size:12px;max-width:80px}
+  .member-uid{display:none}
+  .member-title{display:none}
+  .settings-list{padding:4px 12px}
+  .setting-item{padding:8px 0}
+  .setting-label{font-size:12px}
+  .setting-desc{font-size:10px}
+  .list-manage{padding:12px}
+  .admin-manage{padding:12px}
+  .admin-add-row{flex-direction:column}
+  .admin-add-row .input-sm{width:100%}
+  .list-add-row{flex-direction:column}
+  .list-add-row .input-sm{width:100%}
+  .modal{width:95vw;max-height:85vh}
+  .toast-container{top:12px;right:12px;left:12px}
+  .toast{min-width:auto;width:100%}
+  .ranking-container{padding:12px}
+  .ranking-item{padding:6px 0}
+  #disclaimerBanner{font-size:12px;padding:10px 14px}
 }
   </style>
 </head>
@@ -463,6 +510,25 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
   </div>
   <div class="toast-container" id="toastContainer"></div>
 
+  <nav class="mobile-nav" id="mobileNav">
+    <a class="mobile-nav-item active" data-tab="overview">
+      <svg viewBox="0 0 24 24"><path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z"/></svg>
+      <span>总览</span>
+    </a>
+    <a class="mobile-nav-item" data-tab="groups">
+      <svg viewBox="0 0 24 24"><path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/></svg>
+      <span>群管理</span>
+    </a>
+    <a class="mobile-nav-item" data-tab="records">
+      <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg>
+      <span>违规</span>
+    </a>
+    <a class="mobile-nav-item" data-tab="settings">
+      <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
+      <span>设置</span>
+    </a>
+  </nav>
+
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <script>
 var bridge = null;
@@ -531,28 +597,33 @@ function showModal(title, bodyHtml, footerHtml) {
 }
 function closeModal() { $('#modalOverlay').style.display = 'none'; }
 
+function switchTab(tabName) {
+  $$('.nav-item').forEach(function(i) { i.classList.toggle('active', i.dataset.tab === tabName); });
+  $$('.mobile-nav-item').forEach(function(i) { i.classList.toggle('active', i.dataset.tab === tabName); });
+  $$('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
+  $('#tab-' + tabName).classList.add('active');
+  if (tabName === 'overview') loadOverview();
+  if (tabName === 'groups') {
+    $('#memberPanel').style.display = 'none';
+    var groupCard = $('#groupGrid');
+    if (groupCard) groupCard = groupCard.closest('.card');
+    if (groupCard) groupCard.style.display = '';
+    CURRENT_GROUP = null;
+    CACHED_GROUP_ID = null;
+    CURRENT_MEMBERS = [];
+    loadGroups();
+    loadAdmins();
+  }
+  if (tabName === 'records') { loadUsers(); loadLogs(); }
+  if (tabName === 'settings') loadSettings();
+}
+
 function initTabs() {
   $$('.nav-item').forEach(function(item) {
-    item.addEventListener('click', function() {
-      $$('.nav-item').forEach(function(i) { i.classList.remove('active'); });
-      $$('.tab-panel').forEach(function(p) { p.classList.remove('active'); });
-      item.classList.add('active');
-      $('#tab-' + item.dataset.tab).classList.add('active');
-      if (item.dataset.tab === 'overview') loadOverview();
-      if (item.dataset.tab === 'groups') {
-        $('#memberPanel').style.display = 'none';
-        var groupCard = $('#groupGrid');
-        if (groupCard) groupCard = groupCard.closest('.card');
-        if (groupCard) groupCard.style.display = '';
-        CURRENT_GROUP = null;
-        CACHED_GROUP_ID = null;
-        CURRENT_MEMBERS = [];
-        loadGroups();
-        loadAdmins();
-      }
-      if (item.dataset.tab === 'records') { loadUsers(); loadLogs(); }
-      if (item.dataset.tab === 'settings') loadSettings();
-    });
+    item.addEventListener('click', function() { switchTab(item.dataset.tab); });
+  });
+  $$('.mobile-nav-item').forEach(function(item) {
+    item.addEventListener('click', function() { switchTab(item.dataset.tab); });
   });
 }
 
@@ -1108,8 +1179,7 @@ function init() {
   $('#btnSaveSettings').addEventListener('click', saveSettings);
   $('#btnModalClose').addEventListener('click', closeModal);
   $('#goSettingsFromBanner').addEventListener('click', function() {
-    var settingsTab = document.querySelector('.nav-item[data-tab="settings"]');
-    if (settingsTab) settingsTab.click();
+    switchTab('settings');
   });
   $('#openDisclaimer').addEventListener('click', function() {
     var url = 'https://mianze.0n.pub';
