@@ -1425,7 +1425,7 @@ class Main(Star):
             if not client:
                 yield event.plain_result(err)
                 return
-            type_map = {"allow": 2, "deny": 3, "need_verify": 1, "not_allow": 3}
+            type_map = {"allow": 2, "deny": 1, "need_verify": 3, "not_allow": 4}
             add_type = type_map.get(verify_type.lower(), 2)
             ok, err = await self._call_group_api(client, 'set_group_add_option', "设置加群方式", group_id=gid, add_type=add_type)
             if not ok:
@@ -3174,7 +3174,7 @@ class Main(Star):
             yield event.plain_result(err)
             return
         args = event.message_str.split()
-        method_map = {"需要验证": 1, "允许": 2, "禁止": 3, "免审核": 2}
+        method_map = {"需要验证": 1, "允许": 0, "禁止": 2, "免审核": 0}
         if len(args) < 2:
             yield event.plain_result("用法: /加群方式 <方法>\n方法: 需要验证/允许/禁止\n示例: /加群方式 需要验证")
             return

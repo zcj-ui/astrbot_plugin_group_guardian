@@ -48,7 +48,6 @@
 - **`.gitignore` 修复**：修正 `-/.git/` 和 `-` 错误条目为 `.git/`
 - **`_log_moderation` 简化**：`valid_urls` 过滤逻辑从 5 行循环简化为列表推导式
 - **QQ收藏消息识别逻辑修复**：转发消息中的QQ收藏检测不再依赖发送者昵称包含"QQ收藏"字样，改为统一使用 `_is_qq_favorite_text` 和 `_check_dict_seg_qq_favorite` 检测消息内容特征（`sharechain.qq.com`、JSON/app数据中的收藏标识），新增 `json` 类型消息段的收藏检测
-- **加群方式映射值修复**：LLM工具和命令工具的 `set_group_add_option` 映射值不一致，统一为 OneBot 标准（1=需要验证，2=允许，3=禁止）
 - **`sender`/`publisher` None安全修复**：5处 `.get('sender', {})` 和 `.get('publisher', {})` 改为 `.get('sender') or {}`，防止 API 返回 `null` 值时 AttributeError 崩溃
 - **禁言列表解析统一**：`cmd_banned_list` 的 `get_group_shut_list` 结果解析与 LLM 工具统一，支持 dict 返回值
 - **公告列表解析统一**：两处 `_get_group_notice` 结果解析统一，同时兼容 `data` 和 `notices` 字段
