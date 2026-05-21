@@ -889,7 +889,7 @@ function renderUsers(users) {
         var detail = await safeGet('log_detail', { id: lid });
         console.log('[GG] log_detail raw:', JSON.stringify(detail).length, JSON.stringify(detail).slice(0, 300));
         if (detail && detail.status === 'error') { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(detail.message || '获取失败') + '</p>'; return; }
-        var d = (detail && detail.data) ? detail.data : {};
+        var d = detail || {};
         var fullText = d.msg_text || '';
         console.log('[GG] msg_text len=' + fullText.length + ' last50=' + fullText.slice(-50));
         var imgUrls = d.image_urls || [];
@@ -939,7 +939,7 @@ async function loadLogs() {
         var detail = await safeGet('log_detail', { id: lid });
         console.log('[GG] log_detail raw:', JSON.stringify(detail).length, JSON.stringify(detail).slice(0, 300));
         if (detail && detail.status === 'error') { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(detail.message || '获取失败') + '</p>'; return; }
-        var d = (detail && detail.data) ? detail.data : {};
+        var d = detail || {};
         var fullText = d.msg_text || '';
         console.log('[GG] msg_text len=' + fullText.length + ' last50=' + fullText.slice(-50));
         var imgUrls = d.image_urls || [];
