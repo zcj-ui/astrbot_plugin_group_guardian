@@ -15,6 +15,16 @@
 - **前端 XSS 防护**：图片 URL 插入 `src` 属性时使用 `escAttr` 转义，防止恶意 URL 注入
 - **死代码清理**：移除未使用的 `has_sticker` 变量
 
+### 代码优化与维护
+
+- **WebUI 显示所有 OCR 图片**：`_log_moderation` 不再过滤表情包图片 URL，所有被审核的图片（包括表情包/商城表情）均可在 WebUI 查看弹窗中展示
+- **版本号统一管理**：新增 `_PLUGIN_VERSION` 常量，`@register` 装饰器和 `_web_stats` API 均引用该常量，避免版本号硬编码多处不一致
+- **移除未使用的 `import struct`**：该导入从未被使用
+- **移除未使用的 `_log_lock`**：`asyncio.Lock()` 创建后从未使用，已清理
+- **`import csv, io` 移至文件顶部**：符合 PEP 8 规范，避免方法内延迟导入
+- **`list.remove()` 安全化**：新增 `_safe_list_remove` 辅助方法，所有 `list.remove()` 调用替换为安全版本，避免 `ValueError` 异常
+- **`_web_delete_logs` ID 转换安全化**：`int()` 转换添加异常捕获，非法 ID 不再导致整个删除操作失败
+
 ### 文件清理
 
 - 删除根目录 `index.html`（旧版 WebUI 残留）

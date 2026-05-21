@@ -4,7 +4,8 @@ import os
 import re
 import time
 import asyncio
-import struct
+import csv
+import io
 import tempfile
 from collections import deque
 from datetime import datetime
@@ -26,9 +27,10 @@ except ImportError:
 from .patterns import _POLITICAL_WHITELIST, SWEAR_PATTERNS, AD_PATTERNS
 
 _PLUGIN_NAME = "astrbot_plugin_group_guardian"
+_PLUGIN_VERSION = "v1.9.8"
 
 
-@register("astrbot_plugin_group_guardian", "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", "v1.9.8", "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
+@register("astrbot_plugin_group_guardian", "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", _PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
 class Main(Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -55,7 +57,6 @@ class Main(Star):
         self._admin_role_cache: Dict[str, Tuple[bool, float]] = {}
         self._admin_role_cache_ttl = 300.0
         self._stats_cache = {"today_start": 0, "blocked": 0, "passed": 0, "total": 0, "group_stats": {}, "user_stats": {}}
-        self._log_lock = asyncio.Lock()
         self._llm_semaphore = asyncio.Semaphore(5)
         self._register_web_apis()
 
@@ -216,7 +217,7 @@ class Main(Star):
             sc.update(today_start=today_start, blocked=today_blocked, passed=today_passed, total=today_total)
         stats = {
             "plugin_name": _PLUGIN_NAME,
-            "version": "v1.9.7",
+            "version": _PLUGIN_VERSION,
             "disclaimer_agreed": self.config.get("disclaimer_agreed", False),
             "auto_moderate_enabled": self.auto_moderate_enabled,
             "group_white_list_count": len(self.group_white_list),
@@ -386,7 +387,12 @@ class Main(Star):
                 return jsonify({"status": "success", "deleted": count})
             if not ids:
                 return jsonify({"status": "error", "message": "未指定要删除的日志ID"})
-            id_set = set(int(i) for i in ids)
+            id_set = set()
+            for i in ids:
+                try:
+                    id_set.add(int(i))
+                except (ValueError, TypeError):
+                    continue
             before = len(self._moderation_logs)
             new_logs = deque((l for l in self._moderation_logs if l.get("id") not in id_set), maxlen=500)
             for i, log in enumerate(new_logs):
@@ -402,7 +408,6 @@ class Main(Star):
         fmt = quart_request.args.get("format", "json").strip().lower()
         logs = list(self._moderation_logs)
         if fmt == "csv":
-            import csv, io
             output = io.StringIO()
             writer = csv.writer(output)
             writer.writerow(["ID", "时间", "群号", "用户ID", "用户名", "消息内容", "操作", "原因"])
@@ -492,7 +497,7 @@ class Main(Star):
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
             if group_id in self._group_black_set:
-                self.group_black_list.remove(group_id)
+                self._safe_list_remove(self.group_black_list, group_id)
                 self._group_black_set.discard(group_id)
                 self.config["group_black_list"] = self.group_black_list
             if group_id not in self._group_white_set:
@@ -511,7 +516,7 @@ class Main(Star):
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
             if group_id in self._group_white_set:
-                self.group_white_list.remove(group_id)
+                self._safe_list_remove(self.group_white_list, group_id)
                 self._group_white_set.discard(group_id)
                 self.config["group_white_list"] = self.group_white_list
             self._save_config_safe()
@@ -526,7 +531,7 @@ class Main(Star):
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
             if group_id in self._group_white_set:
-                self.group_white_list.remove(group_id)
+                self._safe_list_remove(self.group_white_list, group_id)
                 self._group_white_set.discard(group_id)
                 self.config["group_white_list"] = self.group_white_list
             if group_id not in self._group_black_set:
@@ -545,7 +550,7 @@ class Main(Star):
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
             if group_id in self._group_black_set:
-                self.group_black_list.remove(group_id)
+                self._safe_list_remove(self.group_black_list, group_id)
                 self._group_black_set.discard(group_id)
                 self.config["group_black_list"] = self.group_black_list
             self._save_config_safe()
@@ -575,7 +580,7 @@ class Main(Star):
             if not user_id:
                 return jsonify({"status": "error", "message": "缺少 user_id"})
             if user_id in self._user_black_set:
-                self.user_black_list.remove(user_id)
+                self._safe_list_remove(self.user_black_list, user_id)
                 self._user_black_set.discard(user_id)
                 self.config["user_black_list"] = self.user_black_list
             self._save_config_safe()
@@ -613,7 +618,7 @@ class Main(Star):
                 admin_list = []
             admin_list = [str(a).strip() for a in admin_list if a]
             if user_id in admin_list:
-                admin_list.remove(user_id)
+                self._safe_list_remove(admin_list, user_id)
                 self.config["admin_list"] = admin_list
             self._admin_role_cache.clear()
             self._save_config_safe()
@@ -668,6 +673,13 @@ class Main(Star):
                 "user_ranking": [{"user_id": u, "user_name": user_names.get(u, ""), "count": c} for u, c in user_ranking],
             }
         })
+
+    def _safe_list_remove(self, lst: list, value) -> bool:
+        try:
+            lst.remove(value)
+            return True
+        except ValueError:
+            return False
 
     def _cfg(self, key: str, default: bool = True) -> bool:
         return bool(self.config.get(key, default))
@@ -1017,11 +1029,11 @@ class Main(Star):
         self._stats_cache.pop("user_names", None)
 
     def _log_moderation(self, group_id: str, user_id: str, user_name: str, msg_text: str, action: str, reason: str = "", image_urls: list = None):
-        filtered_urls = []
+        valid_urls = []
         if image_urls:
             for u in image_urls:
-                if u and not self._is_sticker_image(u):
-                    filtered_urls.append(u)
+                if u:
+                    valid_urls.append(u)
         log_entry = {
             "id": len(self._moderation_logs),
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1033,7 +1045,7 @@ class Main(Star):
             "msg_preview": msg_text[:100],
             "action": action,
             "reason": reason,
-            "image_urls": filtered_urls[:5],
+            "image_urls": valid_urls[:5],
         }
         self._moderation_logs.append(log_entry)
         today_start = self._today_start()
@@ -3613,7 +3625,7 @@ class Main(Star):
         admin_list = [str(a).strip() for a in admin_list if a]
         if action == "移除":
             if user_id in admin_list:
-                admin_list.remove(user_id)
+                self._safe_list_remove(admin_list, user_id)
                 yield event.plain_result(f"已移除插件管理员: {user_id}")
             else:
                 yield event.plain_result(f"{user_id} 不在管理员列表中")
