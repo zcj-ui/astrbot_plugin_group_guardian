@@ -1198,7 +1198,18 @@ function init() {
   var openDisclaimer2 = document.getElementById('openDisclaimer2');
   if (openDisclaimer2) {
     openDisclaimer2.addEventListener('click', function() {
-      $('#openDisclaimer').click();
+      showModal('为什么需要同意免责声明',
+        '<div style="line-height:1.8;font-size:13px;color:var(--text-secondary)">' +
+        '<p style="margin-bottom:12px">本插件涉及以下可能影响您和群成员权益的功能，因此需要您充分了解并同意后再使用：</p>' +
+        '<p style="margin-bottom:8px"><strong style="color:var(--text-primary)">1. 消息审核与撤回</strong><br>插件会自动审核群聊消息内容，判定违规后将撤回消息并对发送者执行禁言等操作，可能影响群成员的正常发言权。</p>' +
+        '<p style="margin-bottom:8px"><strong style="color:var(--text-primary)">2. LLM 内容分析</strong><br>AI 审核功能会将消息内容发送至第三方大语言模型服务进行判断，消息文本将经过外部服务器处理。</p>' +
+        '<p style="margin-bottom:8px"><strong style="color:var(--text-primary)">3. 群管理操作</strong><br>插件可执行禁言、踢人、设置管理员等群管操作，操作不当可能对群秩序和成员体验造成影响。</p>' +
+        '<p style="margin-bottom:8px"><strong style="color:var(--text-primary)">4. 数据记录</strong><br>审核日志会记录消息内容、发送者信息等数据，用于统计和回溯。</p>' +
+        '<p style="margin-bottom:0;padding-top:8px;border-top:1px solid var(--border)">同意免责声明即表示您已知晓上述风险，并确认已获得群主或管理员的授权。完整法律条款请阅读免责声明全文。</p>' +
+        '</div>',
+        '<button class="btn btn-primary btn-sm" id="btnDisclaimerWhyOk">我知道了</button>'
+      );
+      $('#btnDisclaimerWhyOk').addEventListener('click', closeModal);
     });
   }
   $('#disclaimerAgreed').addEventListener('change', function() {
