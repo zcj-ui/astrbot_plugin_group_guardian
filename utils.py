@@ -9,8 +9,6 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 from astrbot.api import logger
-from astrbot.api.star import StarTools
-
 from .patterns import _POLITICAL_WHITELIST
 
 
@@ -60,11 +58,14 @@ class UtilitiesMixin:
             logger.warning(f"[GroupMgr] 加载配置schema失败: {e}")
             return {}
 
-    def _logs_path(self) -> str:
-        data_dir = StarTools.get_data_dir()
+    def _get_data_dir(self):
+        data_dir = self._data_dir
         if not data_dir.exists():
             data_dir.mkdir(parents=True, exist_ok=True)
-        return str(data_dir / "moderation_logs.json")
+        return data_dir
+
+    def _logs_path(self) -> str:
+        return str(self._get_data_dir() / "moderation_logs.json")
 
     def _load_logs(self) -> list:
         try:
@@ -210,7 +211,7 @@ class UtilitiesMixin:
 
     def _load_lexicon(self) -> Dict[str, Dict]:
         lexicon_path = os.path.join(self._get_plugin_dir(), "lexicon.json")
-        data_dir = StarTools.get_data_dir()
+        data_dir = self._get_data_dir()
         data_lexicon_path = str(data_dir / "lexicon.json")
         if os.path.exists(data_lexicon_path):
             lexicon_path = data_lexicon_path

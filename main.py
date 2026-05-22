@@ -4,7 +4,7 @@ from collections import deque
 from typing import Dict, Tuple
 
 from astrbot.api import logger
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
 
 from .commands import CommandsMixin
@@ -25,6 +25,7 @@ class Main(CommandsMixin, ModerationMixin, LlmToolsMixin, WebMixin, OneBotMixin,
         self._config_schema = self._load_config_schema()
         self._sync_astrbot_admins()
         self._client = None
+        self._data_dir = StarTools.get_data_dir()
         _gwl = self.config.get("group_white_list", [])
         self.group_white_list = [str(g).strip() for g in (_gwl if isinstance(_gwl, list) else [_gwl]) if g]
         self._group_white_set = set(self.group_white_list)
