@@ -4,6 +4,7 @@ import os
 import shutil
 import sqlite3
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -24,10 +25,14 @@ class SQLiteStorage:
             self._create_tables(conn)
         self._ensure_seed_lexicon()
 
+    @contextmanager
     def _connect(self):
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+        finally:
+            conn.close()
 
     @staticmethod
     def _create_tables(conn) -> None:

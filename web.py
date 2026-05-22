@@ -670,7 +670,7 @@ class WebMixin:
             timeout = aiohttp.ClientTimeout(total=15)
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-                async with session.get(url, headers=headers) as resp:
+                async with session.get(url, headers=headers, allow_redirects=False) as resp:
                     if resp.status != 200:
                         return jsonify({"status": "error", "message": f"图片获取失败: HTTP {resp.status}"}), 502
                     content = await resp.read()

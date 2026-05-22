@@ -554,11 +554,20 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
-            if not file_path or not os.path.exists(file_path):
-                yield event.plain_result(f"文件不存在: {file_path}")
+            safe_dir = os.path.abspath(os.path.join(str(self._get_data_dir()), "uploads"))
+            normalized_path = os.path.abspath(file_path or "")
+            try:
+                path_allowed = os.path.commonpath([safe_dir, normalized_path]) == safe_dir
+            except ValueError:
+                path_allowed = False
+            if not path_allowed:
+                yield event.plain_result(f"仅允许上传插件数据目录 uploads 下的文件: {safe_dir}")
                 return
-            name = file_name or os.path.basename(file_path)
-            result = await client.call_action('upload_group_file', group_id=gid, file=file_path, name=name)
+            if not os.path.isfile(normalized_path):
+                yield event.plain_result(f"文件不存在: {normalized_path}")
+                return
+            name = file_name or os.path.basename(normalized_path)
+            result = await client.call_action('upload_group_file', group_id=gid, file=normalized_path, name=name)
             fid = result.get('file_id', '未知') if isinstance(result, dict) else '未知'
             yield event.plain_result(f"已上传，file_id: {fid}")
         except Exception as e:

@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import time
 from typing import Tuple
 
@@ -201,6 +202,7 @@ class CommandsMixin:
                     try:
                         await client.call_action('delete_msg', message_id=msg_id)
                         recalled += 1
+                        await asyncio.sleep(0.5)
                     except Exception as e:
                         logger.debug(f"[GroupMgr] 撤回消息{msg_id}失败: {e}")
             yield event.plain_result(f"已尝试撤回 {recalled} 条消息")
@@ -814,6 +816,7 @@ class CommandsMixin:
                     try:
                         await client.call_action('delete_msg', message_id=msg_id)
                         recalled += 1
+                        await asyncio.sleep(0.5)
                     except Exception as e:
                         logger.debug(f"[GroupMgr] 撤回消息{msg_id}失败: {e}")
             filter_desc = f"（用户{target_user}）" if target_user else ""
