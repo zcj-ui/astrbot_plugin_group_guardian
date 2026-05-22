@@ -1133,16 +1133,25 @@ async function loadMigrationStatus() {
 }
 
 async function runMigration() {
-  if (!window.confirm('确认执行 SQLite 迁移？旧日志 JSON 将导入数据库，随后删除原文件并保留 .bak 备份。')) return;
-  var res = await safePost('migration/run', { confirm: 'migrate_logs' });
-  if (res && res.status === 'error') {
-    toast('迁移失败：' + (res.message || ''), 'error');
-    return;
-  }
-  toast('迁移完成', 'success');
-  loadMigrationStatus();
-  loadOverview();
-  loadLogs();
+  showModal('确认执行 SQLite 迁移',
+    '<p style="line-height:1.8;color:var(--text-secondary)">旧审核日志 JSON 将导入数据库，迁移完成后会删除原文件并保留 <code>.bak</code> 备份。</p>',
+    '<button class="btn btn-ghost btn-sm" id="btnCancelMigration">取消</button>' +
+    '<button class="btn btn-danger btn-sm" id="btnConfirmMigration">确认迁移</button>'
+  );
+  $('#btnCancelMigration').addEventListener('click', closeModal);
+  $('#btnConfirmMigration').addEventListener('click', async function() {
+    closeModal();
+    toast('正在执行迁移...', 'info');
+    var res = await safePost('migration/run', { confirm: 'migrate_logs' });
+    if (res && res.status === 'error') {
+      toast('迁移失败：' + (res.message || ''), 'error');
+      return;
+    }
+    toast('迁移完成', 'success');
+    loadMigrationStatus();
+    loadOverview();
+    loadLogs();
+  });
 }
 
 function renderToggles(containerId, items) {
