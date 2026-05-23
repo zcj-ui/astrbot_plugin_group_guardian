@@ -18,7 +18,6 @@ from .utils import UtilitiesMixin
 from .web import WebMixin
 
 
-@register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
 class Main(CommandsMixin, ModerationMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
     def __init__(self, context: Context, config: AstrBotConfig = None):
         super().__init__(context)
@@ -66,3 +65,12 @@ for _mixin in _DECORATED_METHOD_MIXINS:
             or hasattr(_value, "__decorated_platform__")
         ):
             setattr(Main, _name, _value)
+
+
+Main = register(
+    PLUGIN_NAME,
+    "zhaisir",
+    "QQ群智能守护者 - AI审核+群管工具集",
+    PLUGIN_VERSION,
+    "https://github.com/zcj-ui/astrbot_plugin_group_guardian",
+)(Main)
