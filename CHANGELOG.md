@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.2.0 - 2026-05-24
+
+### 重大更新
+
+- **Aho-Corasick 自动机匹配**：66,993 条词库关键词从正则引擎替换为 `pyahocorasick` 自动机，单次扫描 O(n+命中数) 而非 O(n·m)，长文本审核性能提升百倍以上
+- **脏话/广告规则统一 HybridMatcher**：13 条脏话 + 517 条广告规则拆解为纯文本后优先走 AC，无法拆解的（含 `\s*`、`\d{5,12}`、`.{0,N}` 等语法）保留正则回退
+- **新增 `automaton.py` 模块**：`KeywordAutomaton`（纯文本 AC）+ `HybridMatcher`（AC 优先 + 正则回退）+ `regex_to_literals()`（正则拆解器）
+- **新增依赖**：`pyahocorasick>=2.1.0`
+
+### 移除
+
+- **所有正则级联拼接代码**：移除 `_build_combined_regex()`、`_build_combined_regex_from_escaped()`、`import re`（moderation.py 保留自身逻辑所需）
+- **死代码全量清理**：移除 `patterns.py`（已删除）、`_POLITICAL_WHITELIST` 引用、无用 import（`asyncio`/`json`/`datetime`）、未使用变量 `card`
+
+### Bug 修复
+
+- **词库关键词 AC 前误调 `re.escape()`**：导致含 `.cn` 等字符的关键词永远匹配不上
+- **`commands.py` 类型不匹配**：`_compiled_lexicon.get("political")` 是 `KeywordAutomaton` 但被当作 `List[re.Pattern]` 迭代 → 运行时 `TypeError` 被 except 静默吞掉
+- **`web.py` 无用 import**：`import time` `import json` `from datetime import datetime`
+- **`storage.py` 外键失效**：`PRAGMA foreign_keys=ON` 未设置，级联删除不生效
+
 ## v2.1.0 - 2026-05-24
 
 ### 重大更新

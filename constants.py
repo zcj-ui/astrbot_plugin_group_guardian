@@ -2,4 +2,4 @@
 """插件全局常量。"""
 
 PLUGIN_NAME = "astrbot_plugin_group_guardian"
-PLUGIN_VERSION = "v2.1.0"
+PLUGIN_VERSION = "v2.2.0"
