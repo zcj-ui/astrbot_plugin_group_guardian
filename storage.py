@@ -98,26 +98,31 @@ class SQLiteStorage:
                 logger.info(f"[GroupMgr] 已从 lexicon.db 导入词库: {imported} 条")
 
     def get_meta(self, key: str, default: str = "") -> str:
+        # 从 meta 表读取键值对，不存在则返回 default。
         with self._connect() as conn:
             row = conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return row["value"] if row else default
 
     def set_meta(self, key: str, value: str) -> None:
+        # 向 meta 表写入键值对，已存在则覆盖（INSERT OR REPLACE）。
         with self._connect() as conn:
             conn.execute("INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)", (key, value))
             conn.commit()
 
     def count_logs(self) -> int:
+        # 返回审核日志表总条数。
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS c FROM moderation_logs").fetchone()
         return int(row["c"] or 0)
 
     def count_lexicon_keywords(self) -> int:
+        # 返回词库关键词总条数，用于判断是否已导入 seed lexicon。
         with self._connect() as conn:
             row = conn.execute("SELECT COUNT(*) AS c FROM lexicon_keywords").fetchone()
         return int(row["c"] or 0)
 
     def count_legacy_logs(self) -> int:
+        # 统计旧的 moderation_logs.json 中的日志条数（迁移前）。
         if not self.legacy_logs_path.exists():
             return 0
         try:
@@ -128,6 +133,7 @@ class SQLiteStorage:
             return 0
 
     def migration_status(self) -> dict:
+        # 返回完整的迁移状态信息，供 WebUI 迁移面板展示。
         return {
             "db_path": str(self.db_path),
             "db_exists": self.db_path.exists(),
@@ -235,6 +241,7 @@ class SQLiteStorage:
             conn.commit()
 
     def import_logs(self, logs: Iterable[dict]) -> int:
+        # 批量导入 dict 格式的日志到 SQLite（INSERT OR IGNORE 按 id 去重）。
         imported = 0
         with self._connect() as conn:
             for log in logs:
@@ -289,11 +296,13 @@ class SQLiteStorage:
         return [self._row_to_log(r) for r in reversed(rows)]
 
     def get_log(self, log_id: int) -> Optional[dict]:
+        # 根据 id 查询单条审核日志。
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM moderation_logs WHERE id=?", (log_id,)).fetchone()
         return self._row_to_log(row) if row else None
 
     def delete_logs(self, ids: Iterable[int]) -> int:
+        # 按 id 列表批量删除审核日志，返回实际删除条数。
         ids = list(ids)
         if not ids:
             return 0
@@ -304,6 +313,7 @@ class SQLiteStorage:
         return cur.rowcount if cur.rowcount else 0
 
     def delete_all_logs(self) -> int:
+        # 清空审核日志表，返回删除的总条数。
         with self._connect() as conn:
             count = self.count_logs()
             conn.execute("DELETE FROM moderation_logs")
@@ -324,3 +334,55 @@ class SQLiteStorage:
             "deleted_legacy_logs": delete_logs and not self.legacy_logs_path.exists(),
             "status": self.migration_status(),
         }
+
+    def get_daily_trend(self, days: int = 30) -> List[dict]:
+        # 按天聚合审核日志，返回最近 days 天每日的拦截/放行/总审核数。
+        # 结果按日期升序排列，日期键为 YYYY-MM-DD 格式字符串。
+        with self._connect() as conn:
+            since = int(time.time()) - days * 86400
+            rows = conn.execute(
+                "SELECT DATE(time) as day, "
+                "SUM(CASE WHEN action LIKE '%撤回%' THEN 1 ELSE 0 END) as blocked, "
+                "SUM(CASE WHEN action LIKE '%放行%' THEN 1 ELSE 0 END) as passed, "
+                "COUNT(*) as total "
+                "FROM moderation_logs WHERE ts >= ? "
+                "GROUP BY DATE(time) ORDER BY day ASC",
+                (since,),
+            ).fetchall()
+        return [{"date": r["day"], "blocked": r["blocked"] or 0, "passed": r["passed"] or 0, "total": r["total"] or 0} for r in rows]
+
+    def get_violation_distribution(self, days: int = 30) -> List[dict]:
+        # 按违规原因分组统计最近 days 天的分布情况，返回各类型及其出现次数。
+        with self._connect() as conn:
+            since = int(time.time()) - days * 86400
+            rows = conn.execute(
+                "SELECT reason, COUNT(*) as count "
+                "FROM moderation_logs WHERE ts >= ? AND action LIKE '%撤回%' AND reason != '' "
+                "GROUP BY reason ORDER BY count DESC",
+                (since,),
+            ).fetchall()
+        return [{"reason": r["reason"], "count": r["count"] or 0} for r in rows]
+
+    def get_group_activity_ranking(self, days: int = 30, top_n: int = 10) -> List[dict]:
+        # 按群号聚合最近 days 天的拦截量并排序，返回 Top N 群拦截排行。
+        with self._connect() as conn:
+            since = int(time.time()) - days * 86400
+            rows = conn.execute(
+                "SELECT group_id, COUNT(*) as count "
+                "FROM moderation_logs WHERE ts >= ? AND action LIKE '%撤回%' AND group_id != '' "
+                "GROUP BY group_id ORDER BY count DESC LIMIT ?",
+                (since, top_n),
+            ).fetchall()
+        return [{"group_id": r["group_id"], "count": r["count"] or 0} for r in rows]
+
+    def get_hourly_distribution(self, days: int = 7) -> List[dict]:
+        # 按小时聚合最近 days 天的拦截量，返回 0-23 各时段分布，用于分析活跃高峰。
+        with self._connect() as conn:
+            since = int(time.time()) - days * 86400
+            rows = conn.execute(
+                "SELECT CAST(STRFTIME('%H', time) AS INTEGER) as hour, COUNT(*) as count "
+                "FROM moderation_logs WHERE ts >= ? AND action LIKE '%撤回%' "
+                "GROUP BY hour ORDER BY hour ASC",
+                (since,),
+            ).fetchall()
+        return [{"hour": r["hour"], "count": r["count"] or 0} for r in rows]

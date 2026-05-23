@@ -25,10 +25,13 @@ class WebMixin:
     # 每个 API handler 通过 _wrap_web_handler 包装，自动检查 Quart 可用性并做统一异常捕获。
     @staticmethod
     def _check_quart_available():
+        # 检查 Quart 框架是否已安装（AstrBot 4.x+ 内置 Quart），若未安装则抛出 RuntimeError。
         if quart_request is None or jsonify is None:
             raise RuntimeError("Web框架(Quart)不可用，请检查AstrBot版本")
 
     def _wrap_web_handler(self, handler):
+        # 为每个 Web API handler 添加 Quart 可用性检查的装饰器层。
+        # 这样每个 handler 在被调用前都会先验证 Quart 是否正常，避免奇怪的 ImportError。
         async def _wrapped(*args, **kwargs):
             self._check_quart_available()
             return await handler(*args, **kwargs)
@@ -64,6 +67,10 @@ class WebMixin:
                 ("/today_stats", self._web_today_stats, ["GET"], "获取今日拦截统计"),
                 ("/migration/status", self._web_migration_status, ["GET"], "获取SQLite迁移状态"),
                 ("/migration/run", self._web_migration_run, ["POST"], "执行SQLite迁移"),
+                ("/dashboard/trend", self._web_dashboard_trend, ["GET"], "获取每日拦截趋势数据"),
+                ("/dashboard/distribution", self._web_dashboard_distribution, ["GET"], "获取违规类型分布"),
+                ("/dashboard/hourly", self._web_dashboard_hourly, ["GET"], "获取时段分布"),
+                ("/dashboard/group_ranking", self._web_dashboard_group_ranking, ["GET"], "获取历史群拦截排行"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(
@@ -120,6 +127,7 @@ class WebMixin:
         return jsonify({"status": "success", "data": stats})
 
     async def _web_get_providers(self):
+        # 获取 AstrBot 中所有已注册的 LLM Provider 列表，返回 id/name/model 供 WebUI 下拉选择。
         providers = []
         try:
             ps = (self.context.get_all_providers() if hasattr(self.context, 'get_all_providers') else []) or []
@@ -136,6 +144,7 @@ class WebMixin:
         return jsonify(providers)
 
     async def _web_get_config(self):
+        # 返回插件当前所有配置项，同时附加黑白名单和管理员列表的运行时快照。
         safe_config = {}
         for k in self._config_schema:
             if k in self.config:
@@ -147,6 +156,8 @@ class WebMixin:
         return jsonify(safe_config)
 
     async def _web_update_config(self):
+        # 接收 POST JSON 批量更新配置项，根据 _conf_schema.json 的 type 字段做类型校验。
+        # 特殊处理：int 类型有范围限制、list 类型自动同步 set 属性、lexicon_* 变更重编译词库正则。
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             schema = self._config_schema
@@ -209,9 +220,11 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_get_lexicon(self):
+        # 返回外置词库完整内容（所有分类及关键词），供 WebUI 展示和编辑。
         return jsonify({"status": "success", "data": self._lexicon})
 
     async def _web_get_logs(self):
+        # 分页查询审核日志（SQLite），limit 参数最大 200 条。
         try:
             limit = min(int(quart_request.args.get("limit", 50)), 200)
         except (ValueError, TypeError):
@@ -230,6 +243,8 @@ class WebMixin:
         return None
 
     async def _web_log_detail(self):
+        # 获取单条日志的元信息（总长度、分片数、图片URL、原因、操作），不返回正文以节省带宽。
+        # 正文通过 /log_chunk 和 /log_raw_text 按需分片加载。
         try:
             log_id = quart_request.args.get("id", "").strip()
             if not log_id:
@@ -259,6 +274,7 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_log_chunk(self):
+        # 按分片索引（chunk 参数）返回日志正文的 400 字符片段，用于长消息的分页展示。
         try:
             log_id = quart_request.args.get("id", "").strip()
             chunk_idx = quart_request.args.get("chunk", "0").strip()
@@ -284,6 +300,7 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_log_raw_text(self):
+        # 以纯文本形式返回日志完整正文（text/plain），支持 CORS，用于复制或外部工具调用。
         _cors = {"Access-Control-Allow-Origin": "*", "Content-Type": "text/plain; charset=utf-8"}
         try:
             log_id = quart_request.args.get("id", "").strip()
@@ -303,6 +320,8 @@ class WebMixin:
             return str(e), 500, _cors
 
     async def _web_get_moderation_users(self):
+        # 聚合被撤回消息的用户列表，按违规次数降序排列。
+        # 支持 action 参数过滤（如只查"LLM撤回"），每人最多保留 50 条最近记录。
         logs = self._storage.list_logs(limit=5000)
         action_filter = quart_request.args.get("action", "").strip()
         user_map = {}
@@ -341,6 +360,8 @@ class WebMixin:
         return jsonify({"status": "success", "data": users})
 
     async def _web_delete_logs(self):
+        # 批量删除审核日志：支持按 id 列表删除或 delete_all=True 清空全部。
+        # 删除后同步更新内存缓存和统计缓存。
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             ids = data.get("ids", [])
@@ -366,6 +387,8 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_export_logs(self):
+        # 导出审核日志，支持 json（默认）和 csv 两种格式。
+        # csv 格式返回带 Content-Disposition 的文本，浏览器会自动触发下载。
         fmt = quart_request.args.get("format", "json").strip().lower()
         logs = self._storage.list_logs(limit=100000)
         if fmt == "csv":
@@ -382,6 +405,8 @@ class WebMixin:
         return jsonify({"status": "success", "data": logs})
 
     async def _web_get_groups(self):
+        # 获取 Bot 加入的所有群列表，附带群头像、黑白名单状态、今日拦截数。
+        # 需要 QQ 客户端已连接，否则返回错误提示。
         client = await self._get_client()
         if not client:
             return jsonify({"status": "error", "message": "无法获取QQ客户端，请确保已连接"})
@@ -416,6 +441,8 @@ class WebMixin:
             return jsonify({"status": "error", "message": f"获取群列表失败: {e}"})
 
     async def _web_get_group_members(self):
+        # 获取指定群的成员列表，附带头像、角色、头衔、是否为插件管理员等丰富信息。
+        # 按角色排序（群主 → 管理员 → 成员），需要 group_id 查询参数。
         group_id = quart_request.args.get("group_id", "").strip()
         if not group_id:
             return jsonify({"status": "error", "message": "缺少 group_id 参数"})
@@ -582,6 +609,8 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_today_stats(self):
+        # 返回今日违规拦截的详细统计：总拦截数、放行数、群排行 Top20、用户排行 Top20。
+        # 数据按天缓存（_stats_cache），跨天自动重新计算。
         today_start = self._today_start()
         sc = self._stats_cache
         if sc["today_start"] == today_start and sc.get("user_names"):
@@ -630,6 +659,7 @@ class WebMixin:
         })
 
     async def _web_migration_status(self):
+        # 返回 SQLite 迁移状态：数据库路径、日志数、词库数、旧 JSON 文件是否存在等。
         try:
             return jsonify({"status": "success", "data": self._storage.migration_status()})
         except Exception as e:
@@ -651,6 +681,58 @@ class WebMixin:
             return jsonify({"status": "success", "data": result})
         except Exception as e:
             logger.exception("migration failed")
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_dashboard_trend(self):
+        # 返回最近 N 天的每日拦截/放行/审核趋势，days 参数默认 30 天。
+        try:
+            days = min(int(quart_request.args.get("days", "30")), 365)
+        except (ValueError, TypeError):
+            days = 30
+        try:
+            data = self._storage.get_daily_trend(days=days)
+            return jsonify({"status": "success", "data": data})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_dashboard_distribution(self):
+        # 返回违规类型分布：按 reason 分组统计，days 参数默认 30 天。
+        try:
+            days = min(int(quart_request.args.get("days", "30")), 365)
+        except (ValueError, TypeError):
+            days = 30
+        try:
+            data = self._storage.get_violation_distribution(days=days)
+            return jsonify({"status": "success", "data": data})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_dashboard_hourly(self):
+        # 返回时段的拦截量分布（0-23 小时），用于分析违规高发时段。
+        try:
+            days = min(int(quart_request.args.get("days", "7")), 90)
+        except (ValueError, TypeError):
+            days = 7
+        try:
+            data = self._storage.get_hourly_distribution(days=days)
+            return jsonify({"status": "success", "data": data})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_dashboard_group_ranking(self):
+        # 返回历史群拦截排行 Top N，支持 days 和 top 参数。
+        try:
+            days = min(int(quart_request.args.get("days", "30")), 365)
+        except (ValueError, TypeError):
+            days = 30
+        try:
+            top_n = min(int(quart_request.args.get("top", "10")), 50)
+        except (ValueError, TypeError):
+            top_n = 10
+        try:
+            data = self._storage.get_group_activity_ranking(days=days, top_n=top_n)
+            return jsonify({"status": "success", "data": data})
+        except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
 

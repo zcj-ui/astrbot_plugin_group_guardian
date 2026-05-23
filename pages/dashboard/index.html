@@ -277,6 +277,40 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
   .main-content{padding:12px 12px 72px}
   .stats-row{grid-template-columns:1fr 1fr}
   .stat-card{padding:12px 14px}
+
+  .dash-grid{grid-template-columns:1fr}
+  .bar-chart-container{overflow-x:auto}
+}
+.dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.dash-grid.single{grid-template-columns:1fr}
+.dash-range{display:inline-flex;gap:2px;background:var(--info-light);border-radius:var(--radius);padding:2px}
+.dash-range-btn{padding:4px 12px;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:500;background:transparent;color:var(--text-secondary);transition:all .15s}
+.dash-range-btn:hover{color:var(--text-primary)}
+.dash-range-btn.active{background:var(--surface);color:var(--text-primary);box-shadow:0 1px 2px rgba(0,0,0,.06)}
+[data-theme="dark"] .dash-range-btn.active{box-shadow:0 1px 2px rgba(0,0,0,.3)}
+.bar-chart{padding:16px 18px 12px}
+.bar-chart-inner{display:flex;align-items:flex-end;gap:4px;height:160px;padding-top:8px}
+.bar-chart-inner.horizontal{flex-direction:column;height:auto;align-items:stretch;gap:6px}
+.bar-col{flex:1;display:flex;flex-direction:column;align-items:center;min-width:20px;position:relative;cursor:default}
+.bar-col:hover .bar-fill{opacity:.85}
+.bar-fill{width:100%;border-radius:4px 4px 0 0;transition:all .2s;min-height:2px;position:relative}
+.bar-fill.blocked{background:var(--danger)}
+.bar-fill.passed{background:var(--success)}
+.bar-fill-value{font-size:10px;color:var(--text-muted);margin-top:4px;white-space:nowrap}
+.bar-col-label{font-size:10px;color:var(--text-muted);margin-top:6px;white-space:nowrap;transform:rotate(-30deg);transform-origin:top left}
+.bar-hrow{display:flex;align-items:center;gap:8px}
+.bar-hlabel{width:100px;text-align:right;font-size:12px;color:var(--text-secondary);flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.bar-hfill{height:22px;border-radius:4px;transition:width .3s;display:flex;align-items:center;padding-left:8px;min-width:4px}
+.bar-hcount{font-size:11px;color:#fff;font-weight:500;white-space:nowrap}
+.bar-hfill.dist{background:var(--primary)}
+.bar-hfill.hour{background:var(--warning)}
+.dash-legend{display:flex;gap:16px;align-items:center;margin-bottom:8px;padding:4px 0}
+.dash-legend-item{display:flex;align-items:center;gap:5px;font-size:12px;color:var(--text-muted)}
+.dash-legend-dot{width:8px;height:8px;border-radius:2px}
+.dash-legend-dot.blocked{background:var(--danger)}
+.dash-legend-dot.passed{background:var(--success)}
+.dash-empty{text-align:center;color:var(--text-muted);padding:32px 0;font-size:13px}
+@media(max-width:600px){
   .stat-value{font-size:17px}
   .page-header h1{font-size:16px}
   .card-header{padding:10px 14px;flex-wrap:wrap;gap:8px}
@@ -317,6 +351,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
   .ranking-container{padding:12px}
   .ranking-item{padding:6px 0}
   #disclaimerBanner{font-size:12px;padding:10px 14px}
+}
 }
   </style>
 </head>
@@ -402,6 +437,46 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
           <div class="ranking-container">
             <div class="ranking-section"><h3>群拦截排行</h3><div id="groupRanking" class="ranking-list"><p class="empty">暂无数据</p></div></div>
             <div class="ranking-section"><h3>用户违规排行</h3><div id="userRanking" class="ranking-list"><p class="empty">暂无数据</p></div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <h2>数据仪表盘</h2>
+            <div class="dash-range" id="dashRange">
+              <button class="dash-range-btn active" data-r="7">7天</button>
+              <button class="dash-range-btn" data-r="30">30天</button>
+              <button class="dash-range-btn" data-r="90">90天</button>
+            </div>
+          </div>
+          <div class="bar-chart">
+            <div class="dash-legend">
+              <div class="dash-legend-item"><span class="dash-legend-dot blocked"></span> 拦截</div>
+              <div class="dash-legend-item"><span class="dash-legend-dot passed"></span> 放行</div>
+            </div>
+            <div class="bar-chart-inner" id="trendChart"><p class="dash-empty">点击时间范围加载数据</p></div>
+          </div>
+        </div>
+
+        <div class="dash-grid">
+          <div class="card">
+            <div class="card-header"><h2>违规类型分布</h2></div>
+            <div class="bar-chart">
+              <div class="bar-chart-inner horizontal" id="distChart"><p class="dash-empty">暂无数据</p></div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header"><h2>时段分布（近7天）</h2></div>
+            <div class="bar-chart">
+              <div class="bar-chart-inner horizontal" id="hourlyChart"><p class="dash-empty">暂无数据</p></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header"><h2>群拦截历史排行</h2></div>
+          <div class="bar-chart">
+            <div class="bar-chart-inner horizontal" id="groupRankHistory"><p class="dash-empty">暂无数据</p></div>
           </div>
         </div>
       </div>
@@ -717,6 +792,7 @@ async function loadOverview() {
       return '<span class="ranking-name">' + esc(item.user_name || item.user_id) + '</span><span class="ranking-count">' + item.count + '</span>';
     });
   }
+  loadDashboard();
 }
 
 function renderRanking(containerId, list, renderFn) {
@@ -726,6 +802,109 @@ function renderRanking(containerId, list, renderFn) {
     var cls = i === 0 ? 'top1' : i === 1 ? 'top2' : i === 2 ? 'top3' : 'normal';
     return '<div class="ranking-item"><div class="ranking-num ' + cls + '">' + (i + 1) + '</div>' + renderFn(item) + '</div>';
   }).join('');
+}
+
+var DASH_DAYS = 7;
+function setDashRange(days) {
+  DASH_DAYS = days;
+  $$('#dashRange .dash-range-btn').forEach(function(b) { b.classList.toggle('active', parseInt(b.dataset.r) === days); });
+  loadDashboard();
+}
+
+async function loadDashboard() {
+  var days = DASH_DAYS;
+  loadTrend(days);
+  loadDistribution(days);
+  loadHourly();
+  loadGroupRankHistory(days);
+}
+
+async function loadTrend(days) {
+  var c = $('#trendChart');
+  var res = await safeGet('dashboard/trend', { days: days });
+  if (!res || res.status === 'error' || !res.length) { c.innerHTML = '<p class="dash-empty">暂无趋势数据</p>'; return; }
+  var maxVal = 0;
+  res.forEach(function(d) { maxVal = Math.max(maxVal, d.blocked, d.passed); });
+  if (maxVal === 0) maxVal = 1;
+  var cssMaxH = 140;
+  var html = '';
+  for (var i = 0; i < res.length; i++) {
+    var d = res[i];
+    var blockedH = Math.max(2, Math.round(d.blocked / maxVal * cssMaxH));
+    var passedH = Math.max(2, Math.round(d.passed / maxVal * cssMaxH));
+    var label = d.date ? d.date.slice(5) : '';
+    var total = d.blocked + d.passed;
+    html += '<div class="bar-col" title="' + esc(d.date) + ' 拦截:' + d.blocked + ' 放行:' + d.passed + '">'
+      + '<div style="display:flex;flex-direction:column-reverse;align-items:center;width:100%;height:' + cssMaxH + 'px">'
+      + '<div class="bar-fill blocked" style="height:' + blockedH + 'px"></div>'
+      + '<div class="bar-fill passed" style="height:' + passedH + 'px"></div>'
+      + '</div>'
+      + (total > 0 ? '<div class="bar-fill-value">' + total + '</div>' : '')
+      + '<div class="bar-col-label">' + esc(label) + '</div>'
+      + '</div>';
+  }
+  c.innerHTML = html;
+}
+
+async function loadDistribution(days) {
+  var c = $('#distChart');
+  var res = await safeGet('dashboard/distribution', { days: days });
+  if (!res || res.status === 'error' || !res.length) { c.innerHTML = '<p class="dash-empty">暂无数据</p>'; return; }
+  var maxCount = res[0].count || 1;
+  var html = '';
+  for (var i = 0; i < Math.min(res.length, 15); i++) {
+    var d = res[i];
+    var pct = Math.round(d.count / maxCount * 100);
+    var label = d.reason || '未知';
+    html += '<div class="bar-hrow">'
+      + '<span class="bar-hlabel" title="' + esc(label) + '">' + esc(label) + '</span>'
+      + '<div class="bar-hfill dist" style="width:' + Math.max(pct, 2) + '%">'
+      + '<span class="bar-hcount">' + d.count + '</span>'
+      + '</div></div>';
+  }
+  c.innerHTML = html;
+}
+
+async function loadHourly() {
+  var c = $('#hourlyChart');
+  var res = await safeGet('dashboard/hourly', { days: 7 });
+  if (!res || res.status === 'error' || !res.length) { c.innerHTML = '<p class="dash-empty">暂无数据</p>'; return; }
+  var hourMap = {};
+  res.forEach(function(d) { hourMap[d.hour] = d.count; });
+  var maxCount = 0;
+  for (var h = 0; h < 24; h++) { maxCount = Math.max(maxCount, hourMap[h] || 0); }
+  if (maxCount === 0) maxCount = 1;
+  var html = '';
+  for (var h = 0; h < 24; h++) {
+    var count = hourMap[h] || 0;
+    var pct = Math.round(count / maxCount * 100);
+    var label = String(h).replace(/^\d$/, '0$&') + ':00';
+    html += '<div class="bar-hrow">'
+      + '<span class="bar-hlabel">' + label + '</span>'
+      + '<div class="bar-hfill hour" style="width:' + Math.max(pct, count > 0 ? 2 : 0) + '%">'
+      + (count > 0 ? '<span class="bar-hcount">' + count + '</span>' : '')
+      + '</div></div>';
+  }
+  c.innerHTML = html;
+}
+
+async function loadGroupRankHistory(days) {
+  var c = $('#groupRankHistory');
+  var res = await safeGet('dashboard/group_ranking', { days: days, top: 10 });
+  if (!res || res.status === 'error' || !res.length) { c.innerHTML = '<p class="dash-empty">暂无数据</p>'; return; }
+  var maxCount = res[0].count || 1;
+  var html = '';
+  for (var i = 0; i < res.length; i++) {
+    var d = res[i];
+    var pct = Math.round(d.count / maxCount * 100);
+    var label = '群 ' + (d.group_id || '?');
+    html += '<div class="bar-hrow">'
+      + '<span class="bar-hlabel" title="' + esc(label) + '">' + esc(label) + '</span>'
+      + '<div class="bar-hfill dist" style="width:' + Math.max(pct, 2) + '%">'
+      + '<span class="bar-hcount">' + d.count + '</span>'
+      + '</div></div>';
+  }
+  c.innerHTML = html;
 }
 
 async function loadGroups() {
@@ -1310,6 +1489,10 @@ async function init() {
   $('#btnRefreshUsers').addEventListener('click', loadUsers);
   $('#btnRefreshLogs').addEventListener('click', loadLogs);
   $('#btnSaveSettings').addEventListener('click', saveSettings);
+
+  $$('#dashRange .dash-range-btn').forEach(function(btn) {
+    btn.addEventListener('click', function() { setDashRange(parseInt(btn.dataset.r)); });
+  });
   var btnRefreshMigration = $('#btnRefreshMigration');
   if (btnRefreshMigration) btnRefreshMigration.addEventListener('click', function() { loadMigrationStatus(true); });
   var btnRunMigration = $('#btnRunMigration');

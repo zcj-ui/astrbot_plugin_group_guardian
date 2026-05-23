@@ -46,6 +46,7 @@ class UtilitiesMixin:
             logger.debug(f"[GroupMgr] 同步AstrBot管理员失败: {_e}")
 
     def _save_config_safe(self) -> None:
+        # 安全保存配置：调用 AstrBotConfig.save_config()，失败时记录异常但不抛错。
         try:
             self.config.save_config()
         except Exception:
@@ -53,6 +54,7 @@ class UtilitiesMixin:
 
     @staticmethod
     def _load_config_schema() -> dict:
+        # 从插件目录读取 _conf_schema.json，返回 dict 供 WebUI 渲染配置面板。
         try:
             schema_path = os.path.join(os.path.dirname(__file__), "_conf_schema.json")
             with open(schema_path, 'r', encoding='utf-8') as f:
@@ -62,12 +64,14 @@ class UtilitiesMixin:
             return {}
 
     def _get_data_dir(self):
+        # 获取 AstrBot 分配的持久化数据目录（不会随插件更新覆盖）。
         data_dir = self._data_dir
         if not data_dir.exists():
             data_dir.mkdir(parents=True, exist_ok=True)
         return data_dir
 
     def _load_logs(self) -> list:
+        # 从 SQLite 加载最近 500 条审核日志到内存缓存（_moderation_logs deque）。
         try:
             return self._storage.list_logs_asc(limit=500)
         except Exception:
@@ -75,6 +79,7 @@ class UtilitiesMixin:
         return []
 
     def _init_next_log_id(self) -> int:
+        # 扫描内存缓存中的最大日志 ID，返回其值+1 作为下一个新增日志的 ID。
         max_id = -1
         for item in self._moderation_logs:
             try:
@@ -84,6 +89,7 @@ class UtilitiesMixin:
         return max_id + 1
 
     def _safe_list_remove(self, lst: list, value) -> bool:
+        # 安全移除列表元素：不存在时不抛 ValueError，返回是否实际移除。
         try:
             lst.remove(value)
             return True
@@ -91,16 +97,19 @@ class UtilitiesMixin:
             return False
 
     def _cfg(self, key: str, default: bool = True) -> bool:
+        # 读取配置项并转为 bool：优先取 config 值（运行时），其次取 schema 默认值。
         if key in self._config_schema:
             default = self._config_schema[key].get("default", default)
         return bool(self.config.get(key, default))
 
     def _today_start(self) -> int:
+        # 返回今日零点的 Unix 时间戳，用于日统计缓存判断是否跨天。
         now = datetime.now()
         today = now.replace(hour=0, minute=0, second=0, microsecond=0)
         return int(today.timestamp())
 
     def _safe_int(self, value, default: int = 0) -> int:
+        # 安全转为 int：转换失败返回 default，避免 ValueError 中断主流程。
         try:
             return int(value)
         except (ValueError, TypeError):
@@ -115,12 +124,14 @@ class UtilitiesMixin:
 
     @staticmethod
     def _extract_data_result(result):
+        # 从 OneBot API 返回值中提取 data 字段：若响应是 {"data": {...}} 则取 data，否则原样返回。
         if isinstance(result, dict) and "data" in result:
             return result.get("data")
         return result
 
     @staticmethod
     def _extract_list_result(result) -> list:
+        # 从 OneBot API 返回值中提取列表：优先取 data 字段，再尝试 messages/files/notices 等嵌套 key。
         result = UtilitiesMixin._extract_data_result(result)
         if isinstance(result, list):
             return result
@@ -170,6 +181,7 @@ class UtilitiesMixin:
         return True, ""
 
     def _get_plugin_dir(self) -> str:
+        # 返回插件源代码目录的绝对路径，用于定位 lexicon.db 等内置资源文件。
         return os.path.dirname(os.path.abspath(__file__))
 
     def _load_lexicon(self) -> Dict[str, Dict]:
@@ -233,6 +245,8 @@ class UtilitiesMixin:
 
     @staticmethod
     def _build_combined_regex_from_escaped(escaped_parts: list, chunk_size: int = 3000) -> list:
+        # 将已 re.escape 处理过的关键词字符串用 | 拼接编译为正则列表。
+        # chunk_size=3000 控制每组拼接数量，超出则分批，避免单条正则过长导致性能下降。
         if not escaped_parts:
             return []
         compiled = []
@@ -250,6 +264,7 @@ class UtilitiesMixin:
         return compiled
 
     def _check_lexicon(self, text: str) -> Dict[str, bool]:
+        # 用预编译的词库正则逐类扫描文本，返回各分类是否命中的 dict。
         result = {}
         text_lower = text.lower()
         for cat_name, patterns in self._compiled_lexicon.items():
@@ -264,6 +279,7 @@ class UtilitiesMixin:
         return result
 
     def _truncate(self, text: str, max_chars: int = 2000) -> str:
+        # 截断超长文本：超过 max_chars 时添加 "已截断" 提示。
         if len(text) <= max_chars:
             return text
         suffix = f"\n...（已截断，原{len(text)}字符）"
@@ -290,6 +306,8 @@ class UtilitiesMixin:
         return ''.join(parts) if parts else '[空消息]'
 
     def _invalidate_stats_cache(self):
+        # 清除当日统计缓存：today_start 归零 + 清空 group_stats/user_stats/user_names。
+        # 下次访问时会自动重新从日志计算当日数据。
         self._stats_cache["today_start"] = 0
         self._stats_cache["group_stats"] = {}
         self._stats_cache["user_stats"] = {}
