@@ -27,8 +27,7 @@ class SQLiteStorage:
         with self._connect() as conn:
             self._create_tables(conn)
         self._ensure_seed_lexicon()
-        from .patterns import SWEAR_PATTERNS, AD_PATTERNS
-        self.seed_moderation_rules({"swear": SWEAR_PATTERNS, "ad": AD_PATTERNS})
+        self._ensure_seed_rules()
 
     @contextmanager
     def _connect(self):
@@ -109,6 +108,31 @@ class SQLiteStorage:
             imported = self.import_lexicon_db(self.seed_lexicon_db_path)
             if imported:
                 logger.info(f"[GroupMgr] 已从 lexicon.db 导入词库: {imported} 条")
+
+    def _ensure_seed_rules(self) -> None:
+        # 从内置 lexicon.db 读取 moderation_rules 表导入到运行库，已有则跳过。
+        if self.count_moderation_rules() > 0:
+            return
+        if not self.seed_lexicon_db_path.exists():
+            return
+        try:
+            seed = sqlite3.connect(str(self.seed_lexicon_db_path))
+            seed.row_factory = sqlite3.Row
+            rows = seed.execute(
+                "SELECT category, pattern FROM moderation_rules ORDER BY id"
+            ).fetchall()
+            seed.close()
+            if not rows:
+                return
+            rules: Dict[str, List[str]] = {}
+            for r in rows:
+                cat = r["category"]
+                if cat not in rules:
+                    rules[cat] = []
+                rules[cat].append(r["pattern"])
+            self.seed_moderation_rules(rules)
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 从 lexicon.db 导入正则规则失败: {e}")
 
     def seed_moderation_rules(self, rules: Dict[str, List[str]]) -> None:
         # 将 patterns.py 中的正则规则写入 moderation_rules 表，已有则不重复导入。
