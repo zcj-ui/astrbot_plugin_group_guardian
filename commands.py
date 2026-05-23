@@ -94,10 +94,8 @@ class CommandsMixin:
                     if search_type != "all":
                         is_match = False
                         if search_type == "swear":
-                            # 用预编译的脏话正则列表 _compiled_swear 逐条匹配
-                            is_match = any(p.search(text) for p in self._compiled_swear)
+                            is_match = self._swear_matcher.is_match(text) if hasattr(self, '_swear_matcher') else False
                         elif search_type == "ad":
-                            # _is_ad_pattern: 用广告模式规则判断文本是否为广告
                             is_match = self._is_ad_pattern(text)
                         elif search_type == "sensitive":
                             # 用 AC 自动机扫描 political 分类词库

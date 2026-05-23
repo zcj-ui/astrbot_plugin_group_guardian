@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
 import os
-import re
 import time
 from datetime import datetime
 from typing import Dict, List, Tuple
@@ -137,25 +136,6 @@ class UtilitiesMixin:
         if isinstance(result, dict):
             return result.get("messages") or result.get("files") or result.get("notices") or []
         return []
-
-    @staticmethod
-    def _build_combined_regex(patterns: list, chunk_size: int = 500) -> list:
-        # 将多个正则模式用 | 合并为一个，减少匹配循环；超出 chunk_size 则分批，防止单条表达式过长导致回溯爆炸。
-        if not patterns:
-            return []
-        compiled = []
-        for i in range(0, len(patterns), chunk_size):
-            chunk = patterns[i:i + chunk_size]
-            combined = '|'.join(f'(?:{p})' for p in chunk)
-            try:
-                compiled.append(re.compile(combined, re.IGNORECASE))
-            except re.error:
-                for p in chunk:
-                    try:
-                        compiled.append(re.compile(p, re.IGNORECASE))
-                    except re.error:
-                        pass
-        return compiled
 
     def _cfg_check(self, key: str, name: str) -> Tuple[bool, str]:
         # 三级权限/功能检查：插件总开关 → 免责声明未同意 → 具体功能配置关闭，逐层短路返回错误。

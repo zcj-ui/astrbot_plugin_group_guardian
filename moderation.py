@@ -383,16 +383,10 @@ class ModerationMixin:
             return {"violation": False, "reason": f"LLM调用失败: {str(e)[:100]}"}
 
     def _is_ad_pattern(self, text: str) -> bool:
-        # 使用预编译的广告正则列表（_compiled_ad）对文本进行快速初筛。
-        # 正则来源在配置文件/字典中定义，覆盖微信号、QQ号、手机号、引流话术等常见广告模式。
-        if not text:
+        # HybridMatcher 检查广告规则：AC 自动机优先，无法拆解的正则回退。
+        if not text or not hasattr(self, '_ad_matcher'):
             return False
-        for p in self._compiled_ad:
-            m = p.search(text)
-            if m:
-                logger.debug(f"[GroupMgr] 正则广告命中: {m.group()}")
-                return True
-        return False
+        return self._ad_matcher.is_match(text)
 
     def _should_scan_message(self, event: AiocqhttpMessageEvent) -> bool:
         # 判断消息是否需要进行审核扫描。
@@ -905,13 +899,8 @@ class ModerationMixin:
         }
 
         swear_hit = False
-        if self._cfg("scan_swear", True):
-            for p in self._compiled_swear:
-                m = p.search(text)
-                if m:
-                    logger.info(f"[GroupMgr] 正则脏话命中: {m.group()}")
-                    swear_hit = True
-                    break
+        if self._cfg("scan_swear", True) and hasattr(self, '_swear_matcher'):
+            swear_hit = self._swear_matcher.is_match(text)
         hit_types["swear"] = swear_hit
 
         ad_hit = False

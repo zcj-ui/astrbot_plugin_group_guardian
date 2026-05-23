@@ -9,6 +9,7 @@ from astrbot.api.star import Context, Star, StarTools, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
+from .automaton import HybridMatcher, KeywordAutomaton
 from .commands import CommandsMixin
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .llm_tools import LlmToolsMixin
@@ -48,12 +49,16 @@ class Main(ModerationMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin
         self.user_black_list = [str(u).strip() for u in (_ubl if isinstance(_ubl, list) else [_ubl]) if u]
         self._user_black_set = set(self.user_black_list)
         self.auto_moderate_enabled = self.config.get("auto_moderate_enabled", True)
-        # 正则规则从 DB 加载（含通配符语法，保留正则），词库关键词改用 AC 自动机（高性能纯文本匹配）
+        # 脏话/广告规则：AC 自动机优先，无法拆解的正则保留回退
         _swear_list = self._storage.load_moderation_rules("swear")
         _ad_list = self._storage.load_moderation_rules("ad")
-        self._compiled_swear = self._build_combined_regex(_swear_list)
-        self._compiled_ad = self._build_combined_regex(_ad_list)
-        # 外置词库：从 SQLite lex.db 加载，每个分类编译为 AC 自动机，O(n) 单次扫描
+        self._swear_matcher = HybridMatcher()
+        self._swear_matcher.add_regex_patterns(_swear_list)
+        self._swear_matcher.build()
+        self._ad_matcher = HybridMatcher()
+        self._ad_matcher.add_regex_patterns(_ad_list)
+        self._ad_matcher.build()
+        # 外置词库：每个分类编译为纯文本 AC 自动机，O(n) 单次扫描
         self._lexicon = self._load_lexicon()
         self._compiled_lexicon = self._compile_lexicon()
         # 审核日志环形缓存 + 自增ID：日志 500 条封顶，持久化到 SQLite
