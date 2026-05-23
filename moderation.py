@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
 import re
-import time
 from typing import Dict, Tuple
 
 from astrbot.api import logger
@@ -482,7 +481,6 @@ class ModerationMixin:
                         continue
                     sender = msg.get('sender') or {}
                     nickname = sender.get('nickname', '未知') if isinstance(sender, dict) else '未知'
-                    card = sender.get('card', '') if isinstance(sender, dict) else ''
                     content = msg.get('message', '')
                     if isinstance(content, list):
                         # 逐条解析转发内的 CQ 码段：text 提取文本，image 标记为[图片]，

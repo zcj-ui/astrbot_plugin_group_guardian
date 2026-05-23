@@ -34,6 +34,7 @@ class SQLiteStorage:
         # 使用 contextmanager 确保连接在退出 with 块时总是通过 finally 关闭，防止泄漏。
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
         finally:
