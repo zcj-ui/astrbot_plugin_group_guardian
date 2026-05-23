@@ -442,7 +442,9 @@ class Main(ModerationMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin
             yield item
 
     # 消息监听注册区：审核主流程由 moderation.py 实现，这里只负责注册事件入口。
+    # moderation._handle_message 是 async generator，必须用 async for/yield 转发，不能 await。
     @filter.event_message_type(filter.EventMessageType.ALL)
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def _handle_message(self, event: AiocqhttpMessageEvent):
-        await ModerationMixin._handle_message(self, event)
+        async for item in ModerationMixin._handle_message(self, event):
+            yield item
