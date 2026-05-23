@@ -1,11 +1,4 @@
 # -*- coding: utf-8 -*-
-"""AstrBot 插件主入口。
-
-贡献者约定：
-- 所有 AstrBot 注册装饰器（@filter.command、@filter.llm_tool、事件监听等）只写在本文件的 Main 类中。
-- commands.py、llm_tools.py、moderation.py 等模块只承载业务实现，不直接注册 handler。
-- 新增命令或工具时，请先在对应业务模块实现逻辑，再在 Main 类中添加一个显式转发 handler。
-"""
 import asyncio
 from collections import deque
 from typing import Dict, Tuple
@@ -29,23 +22,22 @@ from .web import WebMixin
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
 class Main(ModerationMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
-    """插件主类，也是 AstrBot 唯一注册入口。
-
-    所有 @filter.command、@filter.llm_tool、@filter.event_message_type
-    等框架注册装饰器只在此类中声明。业务逻辑委托到对应的 mixin 模块。
-    """
+    """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
-        # AstrBot 载入插件时通过 register 装饰器实例化本类，传入 context 和 WebUI 配置。
+        # AstrBot 每次加载/重载插件时通过 @register 实例化本类，注入 context 和 WebUI 配置对象(config)。
         super().__init__(context)
         self.config = config or {}
+        # 读取 _conf_schema.json 到 _config_schema，供 WebUI 渲染配置面板
         self._config_schema = self._load_config_schema()
+        # 同步 AstrBot 全局管理员到插件黑色管理员列表，确保插件管理者与框架一致
         self._sync_astrbot_admins()
         self._client = None
-        # StarTools.get_data_dir() 返回框架分配的持久化目录，插件数据应放在这里而非插件自身目录。
+        # StarTools.get_data_dir() 由框架分配持久化目录(data/plugin_data/插件名/)，更新插件时不会覆盖
         self._data_dir = StarTools.get_data_dir()
         self._storage = SQLiteStorage(self._data_dir, self._get_plugin_dir())
         self._storage.initialize()
+        # 黑白名单：转字符串 trim 后统一为 list，再转为 set 提升查找性能
         # 群白名单：白名单非空时仅处理列表内的群
         _gwl = self.config.get("group_white_list", [])
         self.group_white_list = [str(g).strip() for g in (_gwl if isinstance(_gwl, list) else [_gwl]) if g]
@@ -57,18 +49,26 @@ class Main(ModerationMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin
         self.user_black_list = [str(u).strip() for u in (_ubl if isinstance(_ubl, list) else [_ubl]) if u]
         self._user_black_set = set(self.user_black_list)
         self.auto_moderate_enabled = self.config.get("auto_moderate_enabled", True)
+        # 预设正则放缩编译为已编译 Pattern 对象，每次审核时直接 search 而非 recompile
         self._compiled_swear = self._build_combined_regex(SWEAR_PATTERNS)
         self._compiled_ad = self._build_combined_regex(AD_PATTERNS)
+        # 外置词库：从 SQLite lexicon_db 逐类读入，再按分类 key 编译为排他 Pattern 列表
         self._lexicon = self._load_lexicon()
         self._compiled_lexicon = self._compile_lexicon()
+        # 审核日志环形缓存 + 自增ID：日志 500 条封顶，持久化到 SQLite
         self._moderation_logs = deque(self._load_logs(), maxlen=500)
         self._next_log_id = max(self._init_next_log_id(), self._storage.max_log_id() + 1)
+        # 日志写出节流：_last_log_save + asyncio 定时任务，避免每次审核都写盘
         self._last_log_save = 0.0
         self._log_save_task = None
+        # 管理员角色缓存：cache_ttl=300 秒后强制刷新，避免频繁 call_api 查 get_group_member_list
         self._admin_role_cache: Dict[str, Tuple[bool, float]] = {}
         self._admin_role_cache_ttl = 300.0
+        # 当日统计缓存，reset 键是 today_start 时间戳，跨日自动清零
         self._stats_cache = {"today_start": 0, "blocked": 0, "passed": 0, "total": 0, "group_stats": {}, "user_stats": {}}
+        # LLM 并发信号量：同一时刻最多 5 个 LLM 请求，防止所有 provider 被填满
         self._llm_semaphore = asyncio.Semaphore(5)
+        # 注册 WebUI 面板所需的 Quart 路由
         self._register_web_apis()
 
     async def terminate(self):

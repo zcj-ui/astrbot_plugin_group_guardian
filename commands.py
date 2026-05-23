@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""群管命令业务实现。
-
-本模块不注册 AstrBot 命令；命令注册统一放在 main.py 的 Main 类中。
-新增命令时，在这里实现可复用业务逻辑，再到 main.py 添加对应注册入口。
-"""
 import asyncio
 import time
 from typing import Tuple
@@ -16,12 +11,15 @@ class CommandsMixin:
     # AstrBot 命令 handler 统一使用 async generator 模式：通过 yield event.plain_result() 发送回复。
     # 每个 handler 的第一步都是调用 _check_admin_cfg_access 或 _cfg_check 做功能开关 + 权限校验。
     # 需要调用 QQ API 时通过 _get_group_client 获取客户端，它在 main.py 初始化时注入。
+
     async def word_count(self, event: AstrMessageEvent):
         '''统计群内关键词出现次数'''
+        # _check_admin_cfg_access: 检查配置项 word_count_enabled 是否为 True，need_admin=False 表示普通成员也可使用
         ok, err = await self._check_admin_cfg_access(event, "word_count_enabled", "字数统计", need_admin=False)
         if not ok:
             yield event.plain_result(err)
             return
+        # 拆分命令参数：/字数统计 <关键词> [天数] [类型]
         args = event.message_str.split()
         if len(args) < 2:
             yield event.plain_result("用法: /字数统计 <关键词> [天数] [类型]\n类型: 脏话/广告/敏感词/黑名单\n示例: /字数统计 傻逼 7 脏话")
@@ -29,7 +27,9 @@ class CommandsMixin:
         keyword = args[1]
         days = 7
         search_type = "all"
+        # 将中文类型名称映射为内部枚举值，便于 _search_keyword_in_messages 做专项匹配
         type_map = {"脏话": "swear", "广告": "ad", "敏感词": "sensitive", "黑名单": "black"}
+        # 第三个参数可能是天数也可能是类型名，用 int() 尝试解析来区分
         if len(args) >= 3:
             try:
                 days = int(args[2])
@@ -37,8 +37,10 @@ class CommandsMixin:
                 search_type = type_map.get(args[2], args[2].lower())
         if len(args) >= 4:
             search_type = type_map.get(args[3], args[3].lower())
+        # 约束天数范围 1-90 天，防止过大的查询压力
         days = max(1, min(days, 90))
         try:
+            # _get_group_client: 获取 OneBot 客户端实例和群 ID，need_gid=True 要求必须处于群聊上下文中
             group_id, client, _, err = await self._get_group_client(event, need_gid=True)
             if not client:
                 yield event.plain_result(err)
@@ -48,6 +50,7 @@ class CommandsMixin:
                 yield event.plain_result(f"最近 {days} 天内未找到包含「{keyword}」的消息")
             else:
                 result = f"最近 {days} 天内「{keyword}」出现次数: {count}\n"
+                # 附带最近几条匹配消息作为示例，帮助用户确认匹配质量
                 if sample_messages:
                     result += "\n最近消息:\n"
                     for msg in sample_messages[:5]:
@@ -57,11 +60,16 @@ class CommandsMixin:
             yield event.plain_result(f"搜索失败: {e}")
 
     async def _search_keyword_in_messages(self, event: AstrMessageEvent, group_id: str, keyword: str, days: int, search_type: str = "all") -> Tuple[int, list]:
+        # 内部辅助方法：从群历史消息中检索关键词，返回 (匹配次数, 示例消息列表)
+        # 使用 _get_client（非 _get_group_client），因为它只需 client 而不需要群 ID
         client = await self._get_client(event)
         if not client:
             return 0, []
         try:
+            # 调用 OneBot get_group_msg_history 拉取最近 100 条消息（大部分 OneBot 实现支持）
+            # _safe_int 用于防止 group_id 字符串转换为 int 时抛出异常
             result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=100)
+            # _extract_data_result: 统一处理 OneBot API 的 data 字段嵌套（如 {status:ok, data:{...}}）
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
         except Exception as e:
@@ -74,20 +82,28 @@ class CommandsMixin:
         for msg in messages:
             try:
                 msg_time = msg.get('time', 0)
+                # 跳过超出时间范围的消息
                 if msg_time < cutoff:
                     continue
                 raw_message = msg.get('message', '')
+                # _format_message_content: 将 OneBot 消息数组（CQ 码）转换为纯文本
                 text = self._format_message_content(raw_message)
+                # 大小写不敏感匹配关键词
                 if keyword.lower() in text.lower():
+                    # 如果指定了过滤类型，需要进一步按类型规则判断该消息是否真的属于该类别
                     if search_type != "all":
                         is_match = False
                         if search_type == "swear":
+                            # 用预编译的脏话正则列表 _compiled_swear 逐条匹配
                             is_match = any(p.search(text) for p in self._compiled_swear)
                         elif search_type == "ad":
+                            # _is_ad_pattern: 用广告模式规则判断文本是否为广告
                             is_match = self._is_ad_pattern(text)
                         elif search_type == "sensitive":
+                            # 用预编译敏感词库 _compiled_lexicon 中的 political 类别匹配
                             is_match = any(p.search(text) for p in self._compiled_lexicon.get("political", []))
                         elif search_type == "black":
+                            # 黑名单类型：检查消息发送者的 QQ 号是否在 _user_black_set 中
                             sender = msg.get('sender') or {}
                             uid = str(sender.get('user_id', ''))
                             is_match = uid in self._user_black_set
@@ -96,13 +112,16 @@ class CommandsMixin:
                     count += 1
                     sender = msg.get('sender') or {}
                     nickname = sender.get('nickname', '未知')
+                    # 每条示例消息截取前 50 字符，避免输出过长
                     sample_messages.append(f"{nickname}: {text[:50]}")
             except Exception:
+                # 单条消息解析失败不影响整体统计
                 continue
         return count, sample_messages
 
     async def group_stats(self, event: AstrMessageEvent):
         '''显示群内今日消息统计和活跃排行'''
+        # need_admin=False：允许普通成员查看群统计
         ok, err = await self._check_admin_cfg_access(event, "group_stats_enabled", "群统计", need_admin=False)
         if not ok:
             yield event.plain_result(err)
@@ -112,9 +131,12 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # 调用 OneBot get_group_member_list 获取群成员列表，用于统计分析
             result = await client.call_action('get_group_member_list', group_id=gid)
+            # _extract_list_result: 从 OneBot 响应中提取列表（兼容 data 嵌套和直接返回列表两种格式）
             members = self._extract_list_result(result)
             total = len(members)
+            # 统计各类角色的数量：owner（群主）、admin（管理员）、剩余为普通成员
             admins = sum(1 for m in members if m.get('role') in ('admin', 'owner'))
             owners = sum(1 for m in members if m.get('role') == 'owner')
             regular = total - admins
@@ -131,6 +153,7 @@ class CommandsMixin:
 
     async def search_member(self, event: AstrMessageEvent):
         '''按昵称或QQ号搜索群成员'''
+        # 默认 need_admin=True（未显式指定），因此仅管理员可用
         ok, err = await self._check_admin_cfg_access(event, "member_list_enabled", "查看群成员")
         if not ok:
             yield event.plain_result(err)
@@ -145,6 +168,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # 获取全量群成员列表，在本地做模糊匹配（不依赖 OneBot 搜索 API，因为大部分实现不支持）
             result = await client.call_action('get_group_member_list', group_id=gid)
             members = self._extract_list_result(result)
             matched = []
@@ -152,17 +176,20 @@ class CommandsMixin:
                 card = m.get("card", "")
                 nickname = m.get("nickname", "")
                 uid = str(m.get("user_id", ""))
+                # 支持按群名片、昵称（不区分大小写）或 QQ 号精确匹配三种方式
                 if keyword.lower() in card.lower() or keyword.lower() in nickname.lower() or keyword in uid:
                     matched.append(m)
             if not matched:
                 yield event.plain_result(f"未找到匹配「{keyword}」的成员")
             else:
                 result_text = f"找到 {len(matched)} 个匹配成员:\n"
+                # 最多展示 20 个结果，避免刷屏
                 for m in matched[:20]:
                     card = m.get("card", "")
                     nickname = m.get("nickname", "")
                     name = card if card else nickname
                     role = m.get("role", "member")
+                    # 将角色英文值翻译为中文显示
                     role_text = {"owner": "群主", "admin": "管理员", "member": "成员"}.get(role, role)
                     result_text += f"  {name}({m.get('user_id')}) [{role_text}]\n"
                 yield event.plain_result(result_text.strip())
@@ -171,21 +198,26 @@ class CommandsMixin:
 
     async def recall_last(self, event: AstrMessageEvent):
         '''撤回群内最新一条或多条消息'''
+        # _cfg_check 只检查全局配置（不检查群级权限），因为撤回功能需要单独控制
         ok, msg = self._cfg_check("recall_enabled", "撤回消息")
         if not ok:
             yield event.plain_result(msg)
             return
+        # _check_group_access 单独检查该群是否在白名单中，与 _cfg_check 形成两层校验
         allowed, reason = self._check_group_access(event)
         if not allowed:
             yield event.plain_result(reason)
             return
+        # 额外检查操作者是否为管理员，因为撤回是一个高危操作
         if not await self._is_admin(event):
             yield event.plain_result("仅管理员可以使用此功能")
             return
         args = event.message_str.split()
         count = 1
         if len(args) >= 2:
+            # _safe_int: 安全地将字符串转为 int，转换失败时返回默认值 1，避免程序崩溃
             count = self._safe_int(args[1], 1)
+        # 限制单次最多撤回 10 条，防止误操作导致大量消息丢失
         count = max(1, min(count, 10))
         group_id = self._get_group_id(event)
         if not group_id:
@@ -196,16 +228,20 @@ class CommandsMixin:
             yield event.plain_result("无法获取QQ客户端")
             return
         try:
+            # 拉取 count+1 条历史消息，确保即使最新消息是撤回目标也能获取到足够的历史
             result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=count + 1)
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
             recalled = 0
+            # 取最后 count 条消息（最新的消息在列表末尾）
             for msg in messages[-count:]:
                 msg_id = msg.get('message_id')
                 if msg_id:
                     try:
+                        # 调用 OneBot delete_msg 逐条撤回
                         await client.call_action('delete_msg', message_id=msg_id)
                         recalled += 1
+                        # 每条撤回之间休眠 0.5 秒，防止 API 频率限制
                         await asyncio.sleep(0.5)
                     except Exception as e:
                         logger.debug(f"[GroupMgr] 撤回消息{msg_id}失败: {e}")
@@ -225,15 +261,19 @@ class CommandsMixin:
             return
         try:
             user_id = str(args[1]).strip()
+            # _safe_int 防止 args[2] 为非数字时崩溃；默认 10 分钟；上限 43200 分钟（30 天），因为 OneBot 对此有限制
             duration = min(max(self._safe_int(args[2], 10) if len(args) > 2 else 10, 1), 43200)
             _, client, gid, err = await self._get_group_client(event, need_gid=True)
             if not client:
                 yield event.plain_result(err)
                 return
+            # _safe_int 用于验证 QQ 号是否合法（非 0）
             uid = self._safe_int(user_id, 0)
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # _call_group_api: 封装 OneBot API 调用 + 错误处理 + 权限审计日志，统一返回成功/失败
+            # duration * 60 将用户输入的分钟转为秒（OneBot 单位）
             ok, err = await self._call_group_api(client, 'set_group_ban', "禁言", group_id=gid, user_id=uid, duration=duration * 60)
             if not ok:
                 yield event.plain_result(f"禁言失败: {err}")
@@ -262,6 +302,7 @@ class CommandsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # 解禁即 duration=0 的 set_group_ban，OneBot 协议中 duration=0 表示解除禁言
             ok, err = await self._call_group_api(client, 'set_group_ban', "解禁", group_id=gid, user_id=uid, duration=0)
             if not ok:
                 yield event.plain_result(f"解禁失败: {err}")
@@ -290,6 +331,7 @@ class CommandsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # set_group_kick: OneBot 踢人 API，调用前 _check_admin_cfg_access 已确保操作者有权限
             ok, err = await self._call_group_api(client, 'set_group_kick', "踢人", group_id=gid, user_id=uid)
             if not ok:
                 yield event.plain_result(f"踢人失败: {err}")
@@ -308,6 +350,7 @@ class CommandsMixin:
         enable = True
         if len(args) >= 2:
             action = args[1].strip()
+            # 支持中英文和数字多种表示方式
             if action in ("关闭", "off", "0", "取消"):
                 enable = False
         try:
@@ -315,6 +358,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # set_group_whole_ban: OneBot 全体禁言 API，enable=True 开启、False 关闭
             ok, err = await self._call_group_api(client, 'set_group_whole_ban', "全体禁言", group_id=gid, enable=enable)
             if not ok:
                 yield event.plain_result(f"操作失败: {err}")
@@ -335,6 +379,7 @@ class CommandsMixin:
             return
         try:
             user_id = str(args[1]).strip()
+            # 名片内容可能包含空格，使用 ' '.join(args[2:]) 保留原始格式
             card = ' '.join(args[2:])
             _, client, gid, err = await self._get_group_client(event, need_gid=True)
             if not client:
@@ -344,6 +389,7 @@ class CommandsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # set_group_card: OneBot 设置群名片 API，card 为空字符串可清除名片
             ok, err = await self._call_group_api(client, 'set_group_card', "设置名片", group_id=gid, user_id=uid, card=card)
             if not ok:
                 yield event.plain_result(f"设置失败: {err}")
@@ -358,6 +404,7 @@ class CommandsMixin:
         if not ok:
             yield event.plain_result(err)
             return
+        # 从消息文本中去除命令前缀，剩余部分作为公告内容
         content = event.message_str.replace("/发公告", "").strip()
         if not content:
             yield event.plain_result("用法: /发公告 <公告内容>")
@@ -367,11 +414,14 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # _send_group_notice: 下划线前缀表示 OneBot 扩展 API（非标准协议），不同实现可能有差异
             r = await client.call_action('_send_group_notice', group_id=gid, content=content)
+            # _check_api_result: 解析 API 返回的 status/retcode 判断是否成功
             api_ok, err = self._check_api_result(r, "发公告")
             if not api_ok:
                 yield event.plain_result(f"发送失败: {err}")
                 return
+            # 不同 OneBot 实现的返回字段名不同（notice_id 或 id），兼容处理
             notice_id = (r or {}).get("notice_id") or (r or {}).get("id") or ""
             yield event.plain_result(f"公告已发送{f'，ID: {notice_id}' if notice_id else ''}")
         except Exception as e:
@@ -393,6 +443,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # _del_group_notice: OneBot 扩展 API，用于删除指定 ID 的群公告
             ok, err = await self._call_group_api(client, '_del_group_notice', "删公告", group_id=gid, notice_id=notice_id)
             if not ok:
                 yield event.plain_result(f"删除失败: {err}")
@@ -403,6 +454,7 @@ class CommandsMixin:
 
     async def cmd_list_notices(self, event: AstrMessageEvent):
         '''查看群公告列表'''
+        # need_admin=False：普通成员也可查看公告列表，但发布和删除需要管理员权限
         ok, err = await self._check_admin_cfg_access(event, "list_announcements_enabled", "公告列表", need_admin=False)
         if not ok:
             yield event.plain_result(err)
@@ -412,13 +464,16 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # _get_group_notice: OneBot 扩展 API，获取群公告列表
             result = await client.call_action('_get_group_notice', group_id=gid)
             notices = self._extract_list_result(result)
             if not notices:
                 yield event.plain_result("暂无群公告")
                 return
             lines = [f"📋 群公告列表 ({len(notices)}条):"]
+            # 最多展示前 10 条，防止公告过多导致刷屏
             for n in notices[:10]:
+                # 兼容不同 OneBot 实现的字段名差异
                 nid = n.get("notice_id", n.get("id", ""))
                 pub = n.get("publisher") or {}
                 name = pub.get("nickname", "未知")
@@ -439,6 +494,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # get_group_root_files: OneBot API，获取群根目录下的文件和文件夹列表
             result = await client.call_action('get_group_root_files', group_id=gid)
             result = self._extract_data_result(result)
             files = result.get("files", []) if isinstance(result, dict) else []
@@ -448,6 +504,7 @@ class CommandsMixin:
                 lines.append(f"  📁 {f.get('folder_name', '?')}")
             for f in files[:15]:
                 size = f.get('size', 0)
+                # 将字节数转换为 KB/MB 等人类可读格式
                 unit = "B"
                 if size > 1024 * 1024:
                     size, unit = round(size / 1048576, 1), "MB"
@@ -476,6 +533,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # delete_group_file: OneBot API，busid=0 表示根目录下的文件
             ok, err = await self._call_group_api(client, 'delete_group_file', "删文件", group_id=gid, file_id=file_id, busid=0)
             if not ok:
                 yield event.plain_result(f"删除失败: {err}")
@@ -497,6 +555,7 @@ class CommandsMixin:
                 return
             result = await client.call_action('get_group_member_list', group_id=gid)
             members = self._extract_list_result(result)
+            # 按角色分组计数：owner（群主）、admin（管理员）、member（普通成员）
             role_count = {"owner": 0, "admin": 0, "member": 0}
             for m in members:
                 role = m.get("role", "member")
@@ -523,12 +582,14 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # get_group_shut_list: OneBot API，获取当前被禁言的成员列表及其剩余时长
             result = await client.call_action('get_group_shut_list', group_id=gid)
             banned = self._extract_list_result(result)
             if not banned:
                 yield event.plain_result("当前无人被禁言")
                 return
             lines = [f"🚫 禁言列表 ({len(banned)}人):"]
+            # 最多展示前 20 条，duration 单位是秒，除以 60 转为分钟显示
             for b in banned[:20]:
                 uid = b.get("user_id", "?")
                 dur = b.get("duration", 0)
@@ -552,6 +613,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # set_group_name: OneBot API，修改群名称
             ok, err = await self._call_group_api(client, 'set_group_name', "修改群名", group_id=gid, group_name=name)
             if not ok:
                 yield event.plain_result(f"修改失败: {err}")
@@ -581,6 +643,7 @@ class CommandsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # set_group_special_title: OneBot API，duration=-1 表示永久头衔
             ok, err = await self._call_group_api(client, 'set_group_special_title', "设置头衔", group_id=gid, user_id=uid, special_title=title, duration=-1)
             if not ok:
                 yield event.plain_result(f"设置失败: {err}")
@@ -600,14 +663,17 @@ class CommandsMixin:
             yield event.plain_result("用法: /设精华 <message_id>\n回复消息或提供 message_id")
             return
         try:
+            # 消息 ID 通常为数字（int），但也可能是字符串，用 _safe_int 统一处理
             msg_id = self._safe_int(args[1], 0)
             if not msg_id:
                 yield event.plain_result("消息ID格式无效")
                 return
+            # 精华消息 API 不需要 group_id（消息 ID 全局唯一），因此 _get_group_client 不传 need_gid=True
             _, client, err = await self._get_group_client(event)
             if not client:
                 yield event.plain_result(err)
                 return
+            # set_essence_msg: OneBot API，将指定消息设为精华
             ok, err = await self._call_group_api(client, 'set_essence_msg', "设精华", message_id=msg_id)
             if not ok:
                 yield event.plain_result(f"设置失败: {err}")
@@ -635,6 +701,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # delete_essence_msg: OneBot API，取消消息的精华状态
             ok, err = await self._call_group_api(client, 'delete_essence_msg', "取消精华", message_id=msg_id)
             if not ok:
                 yield event.plain_result(f"取消失败: {err}")
@@ -663,6 +730,8 @@ class CommandsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # set_group_admin: OneBot API，enable=True 设为管理员，False 取消管理员
+            # 注意：此方法始终执行 enable=True（设为管理员），如需取消需添加单独命令
             ok, err = await self._call_group_api(client, 'set_group_admin', "设置管理员", group_id=gid, user_id=uid, enable=True)
             if not ok:
                 yield event.plain_result(f"设置失败: {err}")
@@ -678,6 +747,7 @@ class CommandsMixin:
             yield event.plain_result(err)
             return
         args = event.message_str.split()
+        # OneBot set_group_add_option 的 add_type 参数：1=需要验证, 0=允许任何人, 2=禁止加群
         method_map = {"需要验证": 1, "允许": 0, "禁止": 2, "免审核": 0}
         if len(args) < 2:
             yield event.plain_result("用法: /加群方式 <方法>\n方法: 需要验证/允许/禁止\n示例: /加群方式 需要验证")
@@ -692,6 +762,7 @@ class CommandsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # set_group_add_option: OneBot API，修改群的加群验证方式
             ok, err = await self._call_group_api(client, 'set_group_add_option', "加群方式", group_id=gid, add_type=method)
             if not ok:
                 yield event.plain_result(f"设置失败: {err}")
@@ -702,11 +773,14 @@ class CommandsMixin:
 
     async def cmd_auto_moderate(self, event: AstrMessageEvent):
         '''开关智能审核功能。用法: /自动审核 开启/关闭/状态'''
+        # 此方法不通过 _check_admin_cfg_access，而是直接检查是否为 QQ 管理员
+        # 因为 auto_moderate 是插件内部功能，其开关不依赖群配置项
         if not await self._is_admin(event):
             yield event.plain_result("仅管理员可以使用此功能")
             return
         args = event.message_str.split()
         if len(args) < 2:
+            # 无参数时显示当前状态
             status = "开启" if self.auto_moderate_enabled else "关闭"
             yield event.plain_result(f"自动审核状态: {status}\n用法: /自动审核 开启|关闭")
             return
@@ -720,11 +794,13 @@ class CommandsMixin:
         else:
             yield event.plain_result("参数错误，请使用: 开启 或 关闭")
             return
+        # _save_config_safe: 将配置写回文件，带异常保护和备份机制
         self._save_config_safe()
         yield event.plain_result(f"自动审核已{action}")
 
     async def cmd_plugin_admin(self, event: AstrMessageEvent):
         '''管理插件管理员列表。用法: /设置管理插件 <QQ号> 添加/移除'''
+        # 同样直接检查 QQ 管理员身份而非群配置，因为管理员列表是插件全局级别的
         if not await self._is_admin(event):
             yield event.plain_result("仅管理员可以使用此功能")
             return
@@ -734,10 +810,12 @@ class CommandsMixin:
             yield event.plain_result(f"插件管理员 ({len(admins)}人): {', '.join(str(a) for a in admins) or '无'}\n用法: /设置管理插件 <QQ号> 添加/移除")
             return
         user_id = str(args[1]).strip()
+        # 第三个参数可选，默认为"添加"（兼容只写 QQ 号的快捷用法）
         action = "添加" if len(args) < 3 else args[2].strip()
         admin_list = self._get_admin_list()
         if action == "移除":
             if user_id in admin_list:
+                # _safe_list_remove: 安全删除，避免列表元素不存在时抛出 ValueError
                 self._safe_list_remove(admin_list, user_id)
                 yield event.plain_result(f"已移除插件管理员: {user_id}")
             else:
@@ -753,6 +831,7 @@ class CommandsMixin:
 
     async def recall_all(self, event: AstrMessageEvent):
         '''批量撤回最近消息。用法: /批量撤回 [条数] 或 /批量撤回 @用户 [条数]'''
+        # 三层校验：全局配置 check -> 群白名单 check -> 管理员身份 check
         ok, msg = self._cfg_check("recall_enabled", "撤回消息")
         if not ok:
             yield event.plain_result(msg)
@@ -767,6 +846,7 @@ class CommandsMixin:
         args = event.message_str.split()
         target_user = None
         count = 20
+        # 解析参数：数字为撤回条数，@xxx 或纯文字为指定用户 QQ
         for arg in args[1:]:
             if arg.isdigit():
                 count = max(1, min(int(arg), 100))
@@ -783,6 +863,7 @@ class CommandsMixin:
             yield event.plain_result("无法获取QQ客户端")
             return
         try:
+            # 拉取最多 100 条历史消息，在本地做过滤（而非服务端过滤）
             result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=100)
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
@@ -792,6 +873,7 @@ class CommandsMixin:
                     break
                 sender = msg.get('sender') or {}
                 uid = str(sender.get('user_id', ''))
+                # 如果指定了目标用户，跳过不匹配的消息
                 if target_user and uid != target_user:
                     continue
                 msg_id = msg.get('message_id')
@@ -799,6 +881,7 @@ class CommandsMixin:
                     try:
                         await client.call_action('delete_msg', message_id=msg_id)
                         recalled += 1
+                        # 每条撤回间隔 0.5 秒，避免 OneBot 频率限制导致后续消息撤回失败
                         await asyncio.sleep(0.5)
                     except Exception as e:
                         logger.debug(f"[GroupMgr] 撤回消息{msg_id}失败: {e}")

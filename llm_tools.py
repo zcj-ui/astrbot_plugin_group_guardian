@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""LLM Tool 业务实现。
-
-本模块只保存工具执行逻辑，不直接注册 LLM Tool。
-工具的注册、名称、参数签名和文档字符串统一维护在 main.py，避免 AstrBot 将工具归属识别到子模块。
-"""
 import os
 import time
 from datetime import datetime
@@ -15,6 +10,21 @@ class LlmToolsMixin:
     # LLM Tool 同样使用 async generator 模式。AstrBot 会根据函数签名的 event 后的参数自动生成 Tool 的 parameters schema。
     # docstring 中的 Args 格式很重要：参数名(类型): 描述，会被 AstrBot 解析为工具的输入参数定义。
     # _check_admin_cfg_access 同时检查功能开关和当前用户是否为插件/群管理员，保证工具不会被未授权用户调用。
+    #
+    # 通用模式（每个工具遵循以下步骤）：
+    #   1. 权限与功能开关检查 — _check_admin_cfg_access(event, "feature_flag", "中文名")
+    #      返回 (ok, err)；不通过则 yield 错误信息并 return。
+    #   2. 获取 OneBot 客户端与群 ID — _get_group_client(event, need_gid=True)
+    #      返回 (unused, client, group_id, err)；client 为 None 则 yield 错误并 return。
+    #   3. 用户输入校验 — 如 _safe_int(user_id, 0) 将字符串转为 int，失败返回默认值 0，
+    #      然后 if not uid 判定无效。
+    #   4. 调用 OneBot API — 通过 _call_group_api(client, action_name, ...) 封装
+    #      client.call_action() 并检查返回码。某些工具直接调用 client.call_action() 并
+    #      配合 _extract_list_result / _extract_data_result 提取响应数据。
+    #   5. 结果格式化 — 构造人类可读的字符串，通过 yield event.plain_result(msg) 返回给 LLM。
+    #   6. 异常兜底 — 所有 API / 处理异常由 except Exception 捕获并 yield 错误消息。
+    # =============================================================================
+
     async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_minutes: int = 10):
         '''禁言群成员。当用户要求禁言某人时使用此工具。
 
@@ -22,27 +32,36 @@ class LlmToolsMixin:
             user_id(string): 要禁言的用户QQ号
             duration_minutes(number): 禁言时长（分钟），默认10分钟
         '''
+        # 1. 权限检查：ban_enabled 功能开关 + 调用者必须是群管理员/群主/插件管理员
         ok, err = await self._check_admin_cfg_access(event, "ban_enabled", "禁言")
         if not ok:
             yield event.plain_result(err)
             return
         try:
+            # 2. 获取 OneBot 客户端和当前群号；need_gid=True 表示需要提取 group_id
             _, client, gid, err = await self._get_group_client(event, need_gid=True)
             if not client:
                 yield event.plain_result(err)
                 return
+            # 3. 输入校验：将 user_id 从 str 转为 int；_safe_int 在解析失败时返回 0（默认值）
             uid = self._safe_int(user_id, 0)
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # 4. 禁言时长处理：先 clamp 到 [1 分钟, 30 天]（单位分钟），再转秒
             duration_seconds = (min(max(duration_minutes, 1), 30 * 24 * 60) * 60)
+            # 第 2 步除以 60 再乘以 60 是为了舍去不满 60 秒的部分，保证 duration 是整分钟
             duration_seconds = (duration_seconds // 60) * 60
+            # 5. API 调用：_call_group_api 内部调 client.call_action('set_group_ban', ...)
+            #    并检查 API 返回码；失败时返回 (False, 错误信息)
             ok, err = await self._call_group_api(client, 'set_group_ban', "禁言", group_id=gid, user_id=uid, duration=duration_seconds)
             if not ok:
                 yield event.plain_result(f"禁言失败: {err}")
                 return
+            # 6. 构造成功响应（plain_result 将以纯文本形式回复）
             yield event.plain_result(f"已禁言 {user_id} {duration_minutes}分钟")
         except Exception as e:
+            # 7. 任何未预料的异常（网络断开、JSON 解析失败等）都被捕获并返回
             yield event.plain_result(f"禁言失败: {e}")
 
     async def unban_group_member_tool(self, event: AstrMessageEvent, user_id: str):
@@ -51,6 +70,7 @@ class LlmToolsMixin:
         Args:
             user_id(string): 要解除禁言的用户QQ号
         '''
+        # 同样先检查 unban_enabled 开关与管理员权限
         ok, err = await self._check_admin_cfg_access(event, "unban_enabled", "解除禁言")
         if not ok:
             yield event.plain_result(err)
@@ -64,6 +84,7 @@ class LlmToolsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # duration=0 表示解除禁言，这是 OneBot set_group_ban 的约定
             ok, err = await self._call_group_api(client, 'set_group_ban', "解除禁言", group_id=gid, user_id=uid, duration=0)
             if not ok:
                 yield event.plain_result(f"解除禁言失败: {err}")
@@ -91,6 +112,7 @@ class LlmToolsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # reject_add_request=False 表示踢出后允许再次加群；如果为 True 则拉黑
             ok, err = await self._call_group_api(client, 'set_group_kick', "踢人", group_id=gid, user_id=uid, reject_add_request=False)
             if not ok:
                 yield event.plain_result(f"踢人失败: {err}")
@@ -114,6 +136,7 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # enable=True 开全体禁言，False 关；_call_group_api 负责校验返回码
             ok, err = await self._call_group_api(client, 'set_group_whole_ban', "全体禁言", group_id=gid, enable=enable)
             if not ok:
                 yield event.plain_result(f"设置全体禁言失败: {err}")
@@ -142,6 +165,7 @@ class LlmToolsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # set_group_card 设置群名片，card 为空字符串可清除名片
             ok, err = await self._call_group_api(client, 'set_group_card', "设置群名片", group_id=gid, user_id=uid, card=card)
             if not ok:
                 yield event.plain_result(f"设置群名片失败: {err}")
@@ -165,6 +189,7 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # _send_group_notice 是 NapCat/LLOneBot 等实现私有 API，非标准 OneBot 动作
             ok, err = await self._call_group_api(client, '_send_group_notice', "发送群公告", group_id=gid, content=content)
             if not ok:
                 yield event.plain_result(f"发布公告失败: {err}")
@@ -184,11 +209,14 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # 此工具直接调 client.call_action 而非 _call_group_api，因为需要解析返回的列表数据；
+            # _extract_list_result 从 OneBot 响应中提取数组（兼容 data.members / data / 直接数组等多种格式）
             result = await client.call_action('get_group_member_list', group_id=gid)
             members = self._extract_list_result(result)
             if not members:
                 yield event.plain_result("群成员列表为空")
                 return
+            # 格式化：最多展示前 30 人，优先显示群名片（card），其次昵称；附带身份标记
             member_texts = []
             for m in members[:30]:
                 card = m.get("card", "")
@@ -197,6 +225,7 @@ class LlmToolsMixin:
                 role = m.get("role", "member")
                 role_text = {"owner": "群主", "admin": "管理员", "member": "成员"}.get(role, role)
                 member_texts.append(f"- {name}({m.get('user_id')}) [{role_text}]")
+            # _truncate 确保返回文本不超过 LLM 上下文长度限制
             yield event.plain_result(self._truncate(f"群成员（共{len(members)}人）：\n" + "\n".join(member_texts)))
         except Exception as e:
             yield event.plain_result(f"获取成员列表失败: {e}")
@@ -221,6 +250,7 @@ class LlmToolsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # set_group_admin：enable=True 设管理员，False 取消；仅群主可调用
             ok, err = await self._call_group_api(client, 'set_group_admin', "设置管理员", group_id=gid, user_id=uid, enable=enable)
             if not ok:
                 yield event.plain_result(f"设置管理员失败: {err}")
@@ -272,6 +302,7 @@ class LlmToolsMixin:
             if not uid:
                 yield event.plain_result("用户QQ号格式无效")
                 return
+            # OneBot 中设置群头衔的动作为 set_group_special_title，而非 set_member_title
             ok, err = await self._call_group_api(client, 'set_group_special_title', "设置头衔", group_id=gid, user_id=uid, special_title=title)
             if not ok:
                 yield event.plain_result(f"设置头衔失败: {err}")
@@ -291,6 +322,7 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # get_group_shut_list 为 OneBot 标准 API（部分实现），返回被禁言成员列表
             result = await client.call_action('get_group_shut_list', group_id=gid)
             shut_list = self._extract_list_result(result)
             if not shut_list:
@@ -300,6 +332,7 @@ class LlmToolsMixin:
             for m in shut_list[:15]:
                 uid = m.get("user_id", "")
                 nickname = m.get("nickname", "")
+                # shut_up_timestamp 是禁言结束时的 Unix 时间戳；通过当前时间计算剩余时长
                 shut_time = self._safe_int(m.get("shut_up_timestamp", 0))
                 if shut_time:
                     remain = max(0, shut_time - int(time.time()))
@@ -326,6 +359,7 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # 将人类可读的类型名映射为 OneBot set_group_add_option 的 add_type 数字代码
             type_map = {"allow": 2, "deny": 1, "need_verify": 3, "not_allow": 4}
             add_type = type_map.get(verify_type.lower(), 2)
             ok, err = await self._call_group_api(client, 'set_group_add_option', "设置加群方式", group_id=gid, add_type=add_type)
@@ -348,6 +382,7 @@ class LlmToolsMixin:
             yield event.plain_result(err)
             return
         try:
+            # recall 不需要群 ID，只需客户端即可；因此 need_gid=False（默认），_get_group_client 返回 (_, client, err)
             _, client, err = await self._get_group_client(event)
             if not client:
                 yield event.plain_result(err)
@@ -356,6 +391,7 @@ class LlmToolsMixin:
             if not mid:
                 yield event.plain_result("消息ID格式无效")
                 return
+            # OneBot 撤回消息动作为 delete_msg（注意不是 recall_msg）
             ok, err = await self._call_group_api(client, 'delete_msg', "撤回消息", message_id=mid)
             if not ok:
                 yield event.plain_result(f"撤回失败: {err}")
@@ -383,6 +419,7 @@ class LlmToolsMixin:
             if not mid:
                 yield event.plain_result("消息ID格式无效")
                 return
+            # set_essence_msg 是 OneBot 标准动作（需群主/管理员权限）
             ok, err = await self._call_group_api(client, 'set_essence_msg', "设精华", message_id=mid)
             if not ok:
                 yield event.plain_result(f"设精华失败: {err}")
@@ -397,6 +434,7 @@ class LlmToolsMixin:
         Args:
             message_id(string): 要取消精华的消息ID
         '''
+        # 注意：这里复用了 essence_enabled 开关（与 set 使用同一个配置项）
         ok, err = await self._check_admin_cfg_access(event, "essence_enabled", "精华消息")
         if not ok:
             yield event.plain_result(err)
@@ -433,6 +471,7 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # _del_group_notice 也是 NapCat/LLOneBot 私有 API
             ok, err = await self._call_group_api(client, '_del_group_notice', "删除公告", group_id=gid, notice_id=notice_id)
             if not ok:
                 yield event.plain_result(f"删除公告失败: {err}")
@@ -452,6 +491,7 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # get_group_root_files 获取群文件根目录，私有 API；取出 files 和 folders 两个列表
             result = await client.call_action('get_group_root_files', group_id=gid)
             result = self._extract_data_result(result)
             files = (result.get('files') or []) if isinstance(result, dict) else []
@@ -508,6 +548,7 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # _get_group_notice 私有 API，返回公告列表数据
             result = await client.call_action('_get_group_notice', group_id=gid)
             notices = self._extract_list_result(result)
             if not notices:
@@ -517,6 +558,7 @@ class LlmToolsMixin:
             for n in notices[:10]:
                 notice_id = n.get('notice_id', '')
                 sender_id = n.get('sender_id', '')
+                # msg 字段可能是嵌套 dict（{text: "..."}）也可能是纯字符串，需要兼容处理
                 _msg = n.get('msg')
                 content = ((_msg.get('text', '') if isinstance(_msg, dict) else '') or n.get('content', ''))[:60]
                 ts = n.get('publish_time', 0)
@@ -542,19 +584,34 @@ class LlmToolsMixin:
             if not client:
                 yield event.plain_result(err)
                 return
+            # ── 安全目录检查 ─────────────────────────────────────────────────
+            # 这是 upload 工具特有的关键安全措施：防止 LLM 被诱导上传任意系统文件。
+            # LLM 生成的 file_path 可能包含 ".." 路径穿越，比如 "../../etc/passwd"。
+            #
+            # 检查逻辑：
+            #   1. 获取安全基线目录 safe_dir = <data_dir>/uploads（插件数据目录下的 uploads 文件夹）
+            #   2. 将用户提供的 file_path 做 abspath 规范化（解析所有 ..）
+            #   3. 用 os.path.commonpath([safe_dir, normalized_path]) 判断
+            #      规范化后的路径是否仍在 safe_dir 之下。
+            #   4. 只有 path_allowed == True 才继续执行。
+            # ─────────────────────────────────────────────────────────────────
             safe_dir = os.path.abspath(os.path.join(str(self._get_data_dir()), "uploads"))
             normalized_path = os.path.abspath(file_path or "")
             try:
                 path_allowed = os.path.commonpath([safe_dir, normalized_path]) == safe_dir
             except ValueError:
+                # 不同驱动器（如 C: vs D:）时 commonpath 会抛 ValueError，此时认定为不安全
                 path_allowed = False
             if not path_allowed:
                 yield event.plain_result(f"仅允许上传插件数据目录 uploads 下的文件: {safe_dir}")
                 return
+            # 文件存在性检查：确保文件确实存在于磁盘上
             if not os.path.isfile(normalized_path):
                 yield event.plain_result(f"文件不存在: {normalized_path}")
                 return
+            # 如果未指定上传文件名，则使用原文件名
             name = file_name or os.path.basename(normalized_path)
+            # 调用 upload_group_file（私有 API），并提取返回的 file_id 作为凭证
             result = await client.call_action('upload_group_file', group_id=gid, file=normalized_path, name=name)
             fid = result.get('file_id', '未知') if isinstance(result, dict) else '未知'
             yield event.plain_result(f"已上传，file_id: {fid}")

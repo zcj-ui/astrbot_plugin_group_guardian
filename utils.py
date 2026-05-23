@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""通用工具和配置辅助。
-
-包含消息格式化、配置访问、日志缓存、词库加载和统计缓存等跨模块能力。
-贡献者应把可复用的无平台副作用逻辑放在这里，避免命令、审核和 Web 层互相复制代码。
-"""
 import asyncio
 import json
 import os
@@ -31,6 +26,7 @@ class UtilitiesMixin:
     }
 
     def _sync_astrbot_admins(self) -> None:
+        # 从 AstrBot 主配置读取 admin_id，补充到插件 admin_list 中，使所有管理员来源统一。
         try:
             ab_config = getattr(self.context, 'astrbot_config', None)
             if not ab_config:
@@ -111,6 +107,7 @@ class UtilitiesMixin:
             return default
 
     def _get_admin_list(self) -> list:
+        # 管理员列表存储在 config["admin_list"]，由 AstrBot 配置同步和 WebUI 管理。
         admin_list = self.config.get("admin_list", [])
         if not isinstance(admin_list, list):
             admin_list = []
@@ -133,6 +130,7 @@ class UtilitiesMixin:
 
     @staticmethod
     def _build_combined_regex(patterns: list, chunk_size: int = 500) -> list:
+        # 将多个正则模式用 | 合并为一个，减少匹配循环；超出 chunk_size 则分批，防止单条表达式过长导致回溯爆炸。
         if not patterns:
             return []
         compiled = []
@@ -150,6 +148,7 @@ class UtilitiesMixin:
         return compiled
 
     def _cfg_check(self, key: str, name: str) -> Tuple[bool, str]:
+        # 三级权限/功能检查：插件总开关 → 免责声明未同意 → 具体功能配置关闭，逐层短路返回错误。
         if not self._cfg("enabled"):
             return False, "插件已禁用，所有功能不可用"
         if not self.config.get("disclaimer_agreed", False):
@@ -159,6 +158,7 @@ class UtilitiesMixin:
         return True, ""
 
     def _check_api_result(self, result, action_name: str = "操作") -> Tuple[bool, str]:
+        # 检查 OneBot API 返回值：status=="failed" 或 retcode!=0 视为失败。
         if result is None:
             return True, ""
         if isinstance(result, dict):
@@ -273,6 +273,7 @@ class UtilitiesMixin:
         return text[:limit] + suffix
 
     def _format_message_content(self, raw_message) -> str:
+        # 将 OneBot 消息链（segment 列表）按 type 分派到 _SEG_FORMATTERS，拼接为纯文本供审核规则匹配。
         if raw_message is None:
             return '[空消息]'
         if not isinstance(raw_message, list):

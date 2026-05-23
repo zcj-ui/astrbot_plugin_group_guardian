@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""OneBot/AIOCQHTTP 适配工具。
-
-集中处理客户端获取、群号/用户号解析、API 返回值兼容和权限判断。
-新增 OneBot 调用时尽量复用这里的封装，避免各业务模块重复处理平台差异。
-"""
 import time
 from typing import Tuple
 
@@ -17,6 +12,7 @@ class OneBotMixin:
     # _get_client 有多级回退：先从事件中取 -> 从缓存的 self._client 取 -> 从 platform_manager 中获取。
     # _call_group_api 对所有群管理 API 做统一的返回值兼容处理。
     async def _get_client(self, event: AstrMessageEvent = None):
+        # 三级回退：优先从 event.bot 取，其次用缓存的 self._client，最后遍历 platform_manager 查找可用实例。
         if event:
             client = getattr(event, 'bot', None)
             if client and hasattr(client, 'call_action'):
@@ -75,6 +71,7 @@ class OneBotMixin:
         return ""
 
     async def _is_admin(self, event: AstrMessageEvent) -> bool:
+        # 三级判断：先查配置 admin_list（含同步的 AstrBot 管理员），再查群角色缓存，最后调 get_group_member_info 获取 role。
         user_id = self._try_get_sender_id(event)
         if not user_id:
             logger.warning(f"[GroupMgr] _is_admin 无法获取user_id from {type(event).__name__}")
@@ -141,6 +138,7 @@ class OneBotMixin:
         return True, ""
 
     async def _check_admin_cfg_access(self, event: AstrMessageEvent, cfg_key: str, feature_name: str, need_admin: bool = True) -> Tuple[bool, str]:
+        # 复合检查：管理员身份 → _cfg_check（插件/功能启用状态）→ 群黑白名单，任一失败即拒绝。
         if need_admin and not await self._is_admin(event):
             return False, "仅管理员可以使用此功能"
         ok, msg = self._cfg_check(cfg_key, feature_name)
@@ -152,6 +150,7 @@ class OneBotMixin:
         return True, ""
 
     async def _get_group_client(self, event: AstrMessageEvent, need_gid: bool = False) -> Tuple:
+        # 同时获取 group_id（字符串）和 client，并按 need_gid 决定是否返回 int 格式的 gid。
         group_id = self._get_group_id(event)
         if not group_id:
             return (None, None, None, "无法获取群号") if need_gid else (None, None, "无法获取群号")
@@ -166,6 +165,7 @@ class OneBotMixin:
         return group_id, client, ""
 
     async def _call_group_api(self, client, action: str, result_name: str = "", **kwargs) -> Tuple[bool, str]:
+        # 调用 OneBot API 并用 _check_api_result 统一判断结果（status=failed 或 retcode!=0 视为失败）。
         try:
             result = await client.call_action(action, **kwargs)
             ok, err = self._check_api_result(result, result_name or action)

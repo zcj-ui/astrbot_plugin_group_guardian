@@ -13,6 +13,7 @@ _POLITICAL_WHITELIST = {
     "草",
 }
 
+# Regex patterns for profanity detection, compiled at initialization.
 # 脏话正则：匹配侮辱性词汇。在审核第一轮由 _compiled_swear 匹配，命中后进入 LLM 二次判断。
 # 添加规则时注意使用非捕获组 (?:...) 包裹分支，避免影响后续匹配逻辑。
 SWEAR_PATTERNS = [
@@ -31,6 +32,7 @@ SWEAR_PATTERNS = [
     r'(?:你算老几|你配吗|你个.{0,5}东西)',
 ]
 
+# Regex patterns for advertisement detection, compiled at initialization.
 AD_PATTERNS = [
     # === 进群推广广告（典型样式: "进1381893群领免费辅助" / "加群123456拿外挂" / "进群12345领科技" 等）===
     # 进/加/入 + QQ群号(5-12位) + 群/裙 + (可选: 领/拿/取/获取/免费/白嫖/送) + 外挂/辅助/科技/挂/资源/福利/视频/资料/教程/软件

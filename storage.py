@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""SQLite 持久化层。
-
-负责审核日志、词库、迁移状态和元数据存储。
-贡献者新增持久化能力时应优先在这里封装方法，业务层不要直接操作数据库文件。
-"""
 import json
 import os
 import shutil
@@ -35,6 +30,7 @@ class SQLiteStorage:
 
     @contextmanager
     def _connect(self):
+        # 使用 contextmanager 确保连接在退出 with 块时总是通过 finally 关闭，防止泄漏。
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
         try:
@@ -45,8 +41,7 @@ class SQLiteStorage:
     @staticmethod
     def _create_tables(conn) -> None:
         # WAL 模式提升并发读性能，NORMAL 同步策略在 crash 后仍可恢复。
-        # meta 表存储键值对（迁移状态等），moderation_logs 存审核日志。
-        # image_urls 以 JSON 数组存储，方便 WebUI 展示。
+        # 三组表：meta（键值对存储）、moderation_logs（审核日志，带时间/群号/用户/操作索引）、lexicon（分类+关键词二级表，级联删除）。
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(
@@ -94,6 +89,7 @@ class SQLiteStorage:
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
+        # 先 count 再读文件：已有词条则跳过，避免每次启动都重复打开 seed DB。
         if self.count_lexicon_keywords() > 0:
             return
         if self.seed_lexicon_db_path.exists():
@@ -145,6 +141,7 @@ class SQLiteStorage:
         }
 
     def import_lexicon_db(self, path: Path) -> int:
+        # 打开 seed DB（发包自带的 lexicon.db），读取所有分类和关键词，再写入当前数据 SQLite。
         path = Path(path)
         if not path.exists():
             return 0
@@ -227,6 +224,7 @@ class SQLiteStorage:
         }
 
     def add_log(self, log: dict) -> None:
+        # INSERT OR REPLACE 按 id 主键持久化一条审核日志到 SQLite。
         with self._connect() as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO moderation_logs("
@@ -254,6 +252,7 @@ class SQLiteStorage:
         return imported
 
     def import_legacy_logs(self, delete_file: bool = False) -> int:
+        # 读取旧的 moderation_logs.json，批量 INSERT 到 SQLite，然后备份并删除原文件。
         if not self.legacy_logs_path.exists():
             return 0
         with open(self.legacy_logs_path, "r", encoding="utf-8") as f:
@@ -272,6 +271,7 @@ class SQLiteStorage:
         return imported
 
     def list_logs(self, limit: int = 200, offset: int = 0) -> List[dict]:
+        # 按 id 降序分页加载日志，用于 WebUI 展示。
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM moderation_logs ORDER BY id DESC LIMIT ? OFFSET ?",
@@ -280,6 +280,7 @@ class SQLiteStorage:
         return [self._row_to_log(r) for r in rows]
 
     def list_logs_asc(self, limit: int = 500) -> List[dict]:
+        # 按 id 降序查询后反转返回（即实际升序），用于内存缓存按时间顺序回放。
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM moderation_logs ORDER BY id DESC LIMIT ?",
@@ -310,11 +311,13 @@ class SQLiteStorage:
         return count
 
     def max_log_id(self) -> int:
+        # 查询当前最大 id，用于计算下一个自增 id。
         with self._connect() as conn:
             row = conn.execute("SELECT MAX(id) AS m FROM moderation_logs").fetchone()
         return int(row["m"] or -1)
 
     def migrate_legacy(self, delete_logs: bool = False) -> dict:
+        # 将旧的 JSON 格式日志导入 SQLite，返回导入数和最终状态。
         imported_logs = self.import_legacy_logs(delete_file=delete_logs)
         return {
             "imported_logs": imported_logs,

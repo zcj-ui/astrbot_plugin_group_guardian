@@ -1,9 +1,4 @@
 # -*- coding: utf-8 -*-
-"""WebUI API 和页面数据适配。
-
-本模块只注册插件 Web 接口，不承载 AstrBot 消息 handler。
-新增 WebUI 功能时，请把数据读写封装到 storage.py 或业务模块，Web 层只做参数校验和响应转换。
-"""
 import asyncio
 import csv
 import io
@@ -47,6 +42,7 @@ class WebMixin:
         return _wrapped
 
     def _register_web_apis(self):
+        # 遍历路由表，每项含 path / handler / methods / desc，统一注册到 self.context.register_web_api。
         try:
             routes = [
                 ("/stats", self._web_stats, ["GET"], "获取群管统计信息"),
@@ -88,6 +84,7 @@ class WebMixin:
             logger.warning(f"[GroupMgr] 注册 WebUI API 失败: {e}")
 
     async def _web_stats(self):
+        # 返回插件全局概览：版本、黑白名单数、规则数、词库大小、今日拦截/放行/总计。
         today_start = self._today_start()
         sc = self._stats_cache
         if sc["today_start"] == today_start:
@@ -230,6 +227,7 @@ class WebMixin:
         return jsonify({"status": "success", "data": logs})
 
     def _get_log_by_id(self, target_id: int):
+        # 辅助方法：先查 SQLite，找不到再回退到内存缓存 _moderation_logs。
         log = self._storage.get_log(target_id)
         if log:
             return log
@@ -645,6 +643,7 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_migration_run(self):
+        # 将旧的 JSON 日志文件导入 SQLite，迁移完成后重新加载词库和日志缓存，刷新统计。
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             confirm = str(data.get("confirm", "")).strip()
@@ -662,6 +661,7 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_image_proxy(self):
+        # allow_redirects=False 防止恶意 URL 跳转到非白名单域名；domain whitelist 只允许腾讯系 CDN 域名。
         if aiohttp is None:
             return jsonify({"status": "error", "message": "aiohttp 未安装"}), 500
         url = quart_request.args.get("url", "").strip()
