@@ -164,6 +164,8 @@ class WebMixin:
                 "group_black_list": ("group_black_list", "_group_black_set"),
                 "user_black_list": ("user_black_list", "_user_black_set"),
             }
+            old_config = {k: self.config.get(k) for k in data if k.startswith("lexicon_")}
+            old_enabled = self.config.get("anti_flood_enabled", True)
             updated = []
             for key, value in data.items():
                 if key not in schema:
@@ -196,8 +198,15 @@ class WebMixin:
                     updated.append(key)
             if "auto_moderate_enabled" in updated:
                 self.auto_moderate_enabled = bool(self.config.get("auto_moderate_enabled", True))
-            if any(k.startswith("lexicon_") for k in updated):
+            # 仅在词库开关值实际变更时才重编译 AC 自动机
+            if any(
+                k in old_config and str(old_config[k]) != str(self.config.get(k, ""))
+                for k in updated
+            ):
                 self._compiled_lexicon = self._compile_lexicon()
+            # 防刷屏总开关关闭时清空追踪缓冲区
+            if "anti_flood_enabled" in updated and old_enabled and not self._cfg("anti_flood_enabled", True):
+                self._anti_flood_data.clear()
             for cfg_key, (list_attr, set_attr) in list_postprocess.items():
                 if cfg_key in updated:
                     raw = self.config.get(cfg_key, [])
