@@ -1,0 +1,99 @@
+name: 🐛 BUG 反馈
+description: 报告QQ群智能守护者插件的错误或异常行为
+title: "[BUG] "
+labels: ["bug"]
+assignees: [zcj-ui]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 🩺 遇到问题了？我们来定位它
+
+        在提交前请确认：
+        - ✅ 已更新到最新版插件
+        - ✅ 已检查不是 AstrBot 本体的问题
+        - ✅ 已搜索过已有 Issue 避免重复
+
+        ---
+
+  - type: textarea
+    id: description
+    attributes:
+      label: 🗣️ 问题描述
+      description: 发生了什么？简洁描述 Bug 现象
+      placeholder: "例如：防刷屏检测开启后，白名单群的消息也被禁言了"
+    validations:
+      required: true
+
+  - type: input
+    id: plugin-version
+    attributes:
+      label: 📦 插件版本
+      description: 在 AstrBot WebUI → 插件管理 中查看
+      placeholder: "v2.2.2"
+    validations:
+      required: true
+
+  - type: input
+    id: astrbot-version
+    attributes:
+      label: 🤖 AstrBot 版本
+      description: 在 WebUI 底部或启动日志中查看
+      placeholder: "v4.x.x"
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 💬 消息平台
+      description: 使用哪个平台适配器连接机器人？
+      options:
+        - QQ（aiocqhttp / NapCat / LLOneBot）
+        - QQ官方（qq_official）
+        - 企业微信
+        - 钉钉
+        - Telegram
+        - Discord
+        - 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 👣 复现步骤
+      description: 如何触发这个 Bug？
+      placeholder: |
+        1. 打开插件设置，配置防刷屏...
+        2. 在 QQ 群中连续发送 10 条消息...
+        3. 观察到...
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: ✅ 预期行为
+      description: 正常情况应该发生什么？
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: ❌ 实际行为
+      description: 实际发生了什么错误？
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 📋 报错日志
+      description: 粘贴 AstrBot 控制台中的完整错误堆栈（❗请不要截图）
+      render: shell
+
+  - type: textarea
+    id: config
+    attributes:
+      label: ⚙️ 相关配置（可选）
+      description: 提供触发问题的配置片段，帮助快速复现
+      render: json
+
+  - type: markdown
+    attributes:
+      value: |
+        > 💛 感谢你的反馈！日志越完整我们定位越快 🏃‍♂️
