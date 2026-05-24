@@ -3,6 +3,7 @@
 ![version](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/zcj-ui/astrbot_plugin_group_guardian/main/version.json&query=version&label=version&color=2563eb)
 ![python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-green)
+![astrbot](https://img.shields.io/badge/astrbot-%3E%3D4.24.2-cf6e34)
 ![stars](https://img.shields.io/github/stars/zcj-ui/astrbot_plugin_group_guardian?style=social)
 
 AstrBot 综合群管理插件，集 **28项群管功能**、**AI智能审核** 与 **WebUI 管理面板** 于一体，让机器人成为真正的群聊守护者。
