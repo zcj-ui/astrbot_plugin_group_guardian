@@ -1,5 +1,11 @@
 # QQ群智能守护者 (GroupGuardian)
 
+[![Version](https://img.shields.io/badge/version-v2.2.2-blue)](https://github.com/zcj-ui/astrbot_plugin_group_guardian)
+[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+[![Stars](https://img.shields.io/github/stars/zcj-ui/astrbot_plugin_group_guardian?style=social)](https://github.com/zcj-ui/astrbot_plugin_group_guardian)
+[![AstrBot](https://img.shields.io/badge/AstrBot-≥4.24.2-orange)](https://astrbot.app)
+
 AstrBot 综合群管理插件，集 **28项群管功能**、**AI智能审核** 与 **WebUI 管理面板** 于一体，让机器人成为真正的群聊守护者。
 
 > 当前版本：**v2.2.2** | 最低 AstrBot 版本：**>=4.24.2**
