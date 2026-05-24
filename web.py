@@ -140,11 +140,12 @@ class WebMixin:
         return jsonify(providers)
 
     async def _web_get_config(self):
-        # 返回插件当前所有配置项，同时附加黑白名单和管理员列表的运行时快照。
         safe_config = {}
         for k in self._config_schema:
             if k in self.config:
                 safe_config[k] = self.config[k]
+            else:
+                safe_config[k] = self._config_schema[k].get("default")
         safe_config["_white_list"] = self.group_white_list
         safe_config["_black_list"] = self.group_black_list
         safe_config["_user_black_list"] = self.user_black_list
