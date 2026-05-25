@@ -8,16 +8,29 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
 
 
 class ModerationMixin:
-    # 审核主流程由 _handle_message 驱动（注册在 main.py），按以下顺序执行：
-    # 1. 黑白名单 / 功能开关 / 管理员豁免检查
-    # 2. 消息文本提取（支持普通消息 + 合并转发 + JSON卡片 + QQ收藏）
-    # 3. 正则初筛（脏话、广告、敏感词库）
-    # 4. OCR 识图审核（可选，需配置视觉模型）
-    # 5. LLM 二次判断（30条上下文 + 可疑类型标签）
-    # 6. 违规处理（撤回 + 记录日志），非违规补充段记录便于后续排查
+    """审核主流程。由 _handle_message 驱动（注册在 main.py）。
 
-    async def _anti_flood_guard(self, event, group_id: str):
-        """防刷屏检测：记录时间戳，超限禁言+可选撤回。返回 (blocked: bool, notice: str|None)。"""
+    按以下顺序执行:
+    1.  黑白名单 / 防刷屏 / 功能开关 / 管理员豁免检查
+    2.  消息文本提取（支持普通消息 + 合并转发 + JSON 卡片 + QQ 收藏）
+    3.  正则初筛（脏话、广告、敏感词库）
+    4.  OCR 识图审核（可选）
+    5.  LLM 二次判断（30 条上下文 + 可疑类型标签）
+    6.  违规处理（撤回 + 记录日志）
+    """
+
+    async def _anti_flood_guard(self, event, group_id: str) -> Tuple[bool, str]:
+        """防刷屏检测入口。记录时间戳，超限后禁言并可选撤回。
+
+        Args:
+            event:    消息事件对象。
+            group_id: 群号。
+
+        Returns:
+            (blocked, notice):
+                blocked 为 True 时表示已拦截，notice 为通知文本；
+                blocked 为 False 时 notice 为 None。
+        """
         user_id = self._try_get_sender_id(event)
         msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
         if not self._cfg("anti_flood_enabled", True) or not user_id or not msg_id:
