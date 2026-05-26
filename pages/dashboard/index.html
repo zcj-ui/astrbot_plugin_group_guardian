@@ -640,6 +640,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
           <div class="card"><div class="card-header"><h2>词库设置</h2></div><div class="settings-list" id="settingsLexicon"></div></div>
           <div class="card"><div class="card-header"><h2>功能开关</h2></div><div class="settings-list" id="settingsFeatures"></div></div>
           <div class="card card-full"><div class="card-header"><h2>高级设置</h2></div><div class="settings-list" id="settingsExtra"></div></div>
+          <div class="card card-full"><div class="card-header"><h2>全量配置（Schema）</h2></div><div class="settings-list" id="settingsAll"></div></div>
           <div class="card card-full"><div class="card-header"><h2>名单管理</h2></div><div class="list-manage" id="settingsLists"></div></div>
         </div>
       </div>
@@ -1276,6 +1277,8 @@ var AUDIT_TOGGLES = [
   { key: 'recall_qq_favorite_enabled', label: 'QQ收藏撤回', desc: '检测到QQ收藏转发内容自动撤回' },
   { key: 'anti_flood_enabled', label: '防刷屏', desc: '检测消息发送频率，超限自动禁言' },
   { key: 'anti_flood_recall_enabled', label: '刷屏撤回', desc: '刷屏消息自动批量撤回' },
+  { key: 'repeat_detect_enabled', label: '重复消息检测', desc: '检测短时间内重复发送相同内容' },
+  { key: 'long_text_detect_enabled', label: '长文本检测', desc: '检测超长消息刷屏' },
 ];
 var OCR_TOGGLES = [
   { key: 'ocr_enabled', label: 'OCR识图审核', desc: '使用LLM视觉模型识别图片内容进行审核' },
@@ -1316,6 +1319,68 @@ var FEATURE_TOGGLES = [
   { key: 'group_sign_enabled', label: '群打卡' },
 ];
 
+var MANUAL_SETTING_KEYS = {
+  enabled: true,
+  auto_moderate_enabled: true,
+  auto_moderate_notice: true,
+  scan_swear: true,
+  scan_ad: true,
+  llm_moderation_enabled: true,
+  llm_moderation_ban: true,
+  prompt_injection_enabled: true,
+  scan_forward_msg: true,
+  recall_qq_favorite_enabled: true,
+  anti_flood_enabled: true,
+  anti_flood_recall_enabled: true,
+  ocr_enabled: true,
+  lexicon_political_enabled: true,
+  lexicon_porn_enabled: true,
+  lexicon_violent_enabled: true,
+  lexicon_reactionary_enabled: true,
+  lexicon_weapons_enabled: true,
+  lexicon_corruption_enabled: true,
+  lexicon_illegal_url_enabled: true,
+  lexicon_other_enabled: true,
+  ban_enabled: true,
+  unban_enabled: true,
+  kick_enabled: true,
+  recall_enabled: true,
+  whole_ban_enabled: true,
+  set_admin_enabled: true,
+  set_card_enabled: true,
+  set_title_enabled: true,
+  member_list_enabled: true,
+  banned_list_enabled: true,
+  join_verify_enabled: true,
+  essence_enabled: true,
+  group_files_enabled: true,
+  set_group_name_enabled: true,
+  send_announcement_enabled: true,
+  delete_announcement_enabled: true,
+  list_announcements_enabled: true,
+  group_honor_enabled: true,
+  at_all_remain_enabled: true,
+  ignore_requests_enabled: true,
+  group_msg_history_enabled: true,
+  group_portrait_enabled: true,
+  group_sign_enabled: true,
+  moderation_ban_duration: true,
+  moderation_llm_provider_id: true,
+  ban_notice: true,
+  anti_flood_rate_per_second: true,
+  anti_flood_rate_per_minute: true,
+  anti_flood_rate_per_hour: true,
+  anti_flood_mute_duration: true,
+  anti_flood_recall_threshold: true,
+  ocr_provider_id: true,
+  ocr_prompt_template: true,
+  ocr_custom_system_prompt: true,
+  ocr_custom_user_prompt: true,
+  group_white_list: true,
+  group_black_list: true,
+  user_black_list: true,
+};
+
 function updateLinDisclaimerStatus(agreed) {
   var dot = document.getElementById('linStatusDot');
   var txt = document.getElementById('linStatusText');
@@ -1342,9 +1407,42 @@ async function loadSettings() {
   renderToggles('settingsFeatures', FEATURE_TOGGLES);
   renderListSettings();
   renderExtraSettings();
+  renderAllSettings();
   renderOcrSettings();
   loadProviderList();
   loadMigrationStatus();
+}
+
+function renderAllSettings() {
+  var c = $('#settingsAll');
+  if (!c) return;
+  var schema = CONFIG._schema || {};
+  var rows = [];
+  Object.keys(schema).forEach(function(key) {
+    if (MANUAL_SETTING_KEYS[key]) return;
+    var def = schema[key] || {};
+    var t = def.type || '';
+    var val = (CONFIG[key] != null) ? CONFIG[key] : def.default;
+    var desc = def.description || key;
+    var hint = def.hint || '';
+    if (t === 'bool') {
+      rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><label class="toggle"><input type="checkbox" data-all-key="' + key + '" data-all-type="bool" ' + (val ? 'checked' : '') + ' /><span class="slider"></span></label></div>');
+      return;
+    }
+    if (t === 'int') {
+      rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><input type="number" class="input-sm" data-all-key="' + key + '" data-all-type="int" value="' + esc(String(val != null ? val : 0)) + '" style="width:140px" /></div>');
+      return;
+    }
+    if (t === 'string' || t === 'text') {
+      if (t === 'text') {
+        rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><textarea class="input-md" data-all-key="' + key + '" data-all-type="text" rows="2" style="width:100%;max-width:420px">' + esc(String(val != null ? val : '')) + '</textarea></div>');
+      } else {
+        rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><input type="text" class="input-sm" data-all-key="' + key + '" data-all-type="string" value="' + esc(String(val != null ? val : '')) + '" style="width:260px" /></div>');
+      }
+      return;
+    }
+  });
+  c.innerHTML = rows.length ? rows.join('') : '<div style="padding:8px 0;color:var(--text-muted);font-size:12px">所有配置项均已在上方分组展示。</div>';
 }
 
 async function loadMigrationStatus(showToast) {
@@ -1485,8 +1583,11 @@ function renderExtraSettings() {
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">每秒上限</div><div class="setting-desc">设 0 关闭每秒检测</div></div><input type="number" class="input-sm" id="inputFloodSec" value="' + (CONFIG.anti_flood_rate_per_second != null ? CONFIG.anti_flood_rate_per_second : 5) + '" min="0" max="99" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">每分钟上限</div><div class="setting-desc">设 0 关闭每分钟检测</div></div><input type="number" class="input-sm" id="inputFloodMin" value="' + (CONFIG.anti_flood_rate_per_minute != null ? CONFIG.anti_flood_rate_per_minute : 20) + '" min="0" max="999" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">每小时上限</div><div class="setting-desc">设 0 关闭每小时检测</div></div><input type="number" class="input-sm" id="inputFloodHour" value="' + (CONFIG.anti_flood_rate_per_hour != null ? CONFIG.anti_flood_rate_per_hour : 60) + '" min="0" max="9999" style="width:80px" /></div>' +
-    '<div class="setting-item"><div class="setting-info"><div class="setting-label">禁言时长（秒）</div><div class="setting-desc">默认 300 秒（5分钟）</div></div><input type="number" class="input-sm" id="inputFloodMute" value="' + (CONFIG.anti_flood_mute_duration != null ? CONFIG.anti_flood_mute_duration : 300) + '" min="60" max="2592000" style="width:100px" /></div>' +
-    '<div class="setting-item"><div class="setting-info"><div class="setting-label">撤回阈值（条数）</div><div class="setting-desc">超限达此数才撤回消息</div></div><input type="number" class="input-sm" id="inputFloodRecallThreshold" value="' + (CONFIG.anti_flood_recall_threshold != null ? CONFIG.anti_flood_recall_threshold : 20) + '" min="1" max="9999" style="width:80px" /></div>';
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">禁言时长（秒）</div><div class="setting-desc">设 0 仅撤回不禁言</div></div><input type="number" class="input-sm" id="inputFloodMute" value="' + (CONFIG.anti_flood_mute_duration != null ? CONFIG.anti_flood_mute_duration : 300) + '" min="0" max="2592000" style="width:100px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">撤回阈值（条数）</div><div class="setting-desc">超限达此数才撤回消息</div></div><input type="number" class="input-sm" id="inputFloodRecallThreshold" value="' + (CONFIG.anti_flood_recall_threshold != null ? CONFIG.anti_flood_recall_threshold : 20) + '" min="1" max="9999" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">重复消息窗口（秒）</div><div class="setting-desc">设 0 关闭重复消息检测</div></div><input type="number" class="input-sm" id="inputRepeatWindow" value="' + (CONFIG.repeat_detect_window_seconds != null ? CONFIG.repeat_detect_window_seconds : 120) + '" min="0" max="3600" style="width:100px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">重复消息触发次数</div><div class="setting-desc">同内容达到该次数触发处理</div></div><input type="number" class="input-sm" id="inputRepeatCount" value="' + (CONFIG.repeat_detect_count != null ? CONFIG.repeat_detect_count : 3) + '" min="2" max="50" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">长文本阈值（字符）</div><div class="setting-desc">设 0 关闭长文本检测</div></div><input type="number" class="input-sm" id="inputLongTextThreshold" value="' + (CONFIG.long_text_threshold != null ? CONFIG.long_text_threshold : 500) + '" min="0" max="100000" style="width:100px" /></div>';
 }
 
 var PROVIDER_LIST = [];
@@ -1569,6 +1670,20 @@ async function saveSettings() {
   if (floodMute) payload.anti_flood_mute_duration = parseInt(floodMute.value, 10) || 300;
   var floodRecallThreshold = $('#inputFloodRecallThreshold');
   if (floodRecallThreshold) payload.anti_flood_recall_threshold = parseInt(floodRecallThreshold.value, 10) || 20;
+  var repeatWindow = $('#inputRepeatWindow');
+  if (repeatWindow) payload.repeat_detect_window_seconds = parseInt(repeatWindow.value, 10) || 0;
+  var repeatCount = $('#inputRepeatCount');
+  if (repeatCount) payload.repeat_detect_count = parseInt(repeatCount.value, 10) || 3;
+  var longTextThreshold = $('#inputLongTextThreshold');
+  if (longTextThreshold) payload.long_text_threshold = parseInt(longTextThreshold.value, 10) || 0;
+  $$('[data-all-key]').forEach(function(inp) {
+    var key = inp.getAttribute('data-all-key');
+    var typ = inp.getAttribute('data-all-type');
+    if (!key) return;
+    if (typ === 'bool') payload[key] = !!inp.checked;
+    else if (typ === 'int') payload[key] = parseInt(inp.value, 10) || 0;
+    else payload[key] = (inp.value || '').trim();
+  });
   var res = await safePost('config', payload);
   if (res && res.status === 'error') {
     toast('保存失败: ' + (res.message || ''), 'error');

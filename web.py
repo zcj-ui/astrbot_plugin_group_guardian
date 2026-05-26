@@ -146,6 +146,7 @@ class WebMixin:
                 safe_config[k] = self.config[k]
             else:
                 safe_config[k] = self._config_schema[k].get("default")
+        safe_config["_schema"] = self._config_schema
         safe_config["_white_list"] = self.group_white_list
         safe_config["_black_list"] = self.group_black_list
         safe_config["_user_black_list"] = self.user_black_list
