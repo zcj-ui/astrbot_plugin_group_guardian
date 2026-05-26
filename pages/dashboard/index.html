@@ -1332,6 +1332,8 @@ var MANUAL_SETTING_KEYS = {
   recall_qq_favorite_enabled: true,
   anti_flood_enabled: true,
   anti_flood_recall_enabled: true,
+  repeat_detect_enabled: true,
+  long_text_detect_enabled: true,
   ocr_enabled: true,
   lexicon_political_enabled: true,
   lexicon_porn_enabled: true,
@@ -1372,6 +1374,9 @@ var MANUAL_SETTING_KEYS = {
   anti_flood_rate_per_hour: true,
   anti_flood_mute_duration: true,
   anti_flood_recall_threshold: true,
+  repeat_detect_window_seconds: true,
+  repeat_detect_count: true,
+  long_text_threshold: true,
   ocr_provider_id: true,
   ocr_prompt_template: true,
   ocr_custom_system_prompt: true,
@@ -1418,6 +1423,7 @@ function renderAllSettings() {
   if (!c) return;
   var schema = CONFIG._schema || {};
   var rows = [];
+  rows.push('<div style="padding:6px 0 10px"><input type="text" class="input-sm" id="allSettingsSearch" placeholder="搜索配置项（名称/说明）..." style="width:260px" /></div>');
   Object.keys(schema).forEach(function(key) {
     if (MANUAL_SETTING_KEYS[key]) return;
     var def = schema[key] || {};
@@ -1425,24 +1431,49 @@ function renderAllSettings() {
     var val = (CONFIG[key] != null) ? CONFIG[key] : def.default;
     var desc = def.description || key;
     var hint = def.hint || '';
+    var searchText = (key + ' ' + desc + ' ' + hint).toLowerCase();
     if (t === 'bool') {
-      rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><label class="toggle"><input type="checkbox" data-all-key="' + key + '" data-all-type="bool" ' + (val ? 'checked' : '') + ' /><span class="slider"></span></label></div>');
+      rows.push('<div class="setting-item" data-search="' + esc(searchText) + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><label class="toggle"><input type="checkbox" data-all-key="' + key + '" data-all-type="bool" ' + (val ? 'checked' : '') + ' /><span class="slider"></span></label></div>');
       return;
     }
     if (t === 'int') {
-      rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><input type="number" class="input-sm" data-all-key="' + key + '" data-all-type="int" value="' + esc(String(val != null ? val : 0)) + '" style="width:140px" /></div>');
+      rows.push('<div class="setting-item" data-search="' + esc(searchText) + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><input type="number" class="input-sm" data-all-key="' + key + '" data-all-type="int" value="' + esc(String(val != null ? val : 0)) + '" style="width:140px" /></div>');
+      return;
+    }
+    if (t === 'list') {
+      var listVal = Array.isArray(val) ? val.join(',') : (val == null ? '' : String(val));
+      rows.push('<div class="setting-item" data-search="' + esc(searchText) + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '<div class="setting-desc">多个值请用英文逗号分隔</div>') + '</div><input type="text" class="input-sm" data-all-key="' + key + '" data-all-type="list" value="' + esc(listVal) + '" style="width:320px" /></div>');
       return;
     }
     if (t === 'string' || t === 'text') {
+      if (Array.isArray(def.options) && def.options.length && t === 'string') {
+        var opts = def.options.map(function(o) {
+          var selected = String(o) === String(val) ? ' selected' : '';
+          return '<option value="' + esc(String(o)) + '"' + selected + '>' + esc(String(o)) + '</option>';
+        }).join('');
+        rows.push('<div class="setting-item" data-search="' + esc(searchText) + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><select class="input-sm" data-all-key="' + key + '" data-all-type="string" style="width:260px">' + opts + '</select></div>');
+        return;
+      }
       if (t === 'text') {
-        rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><textarea class="input-md" data-all-key="' + key + '" data-all-type="text" rows="2" style="width:100%;max-width:420px">' + esc(String(val != null ? val : '')) + '</textarea></div>');
+        rows.push('<div class="setting-item" data-search="' + esc(searchText) + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><textarea class="input-md" data-all-key="' + key + '" data-all-type="text" rows="2" style="width:100%;max-width:420px">' + esc(String(val != null ? val : '')) + '</textarea></div>');
       } else {
-        rows.push('<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(desc) + '</div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><input type="text" class="input-sm" data-all-key="' + key + '" data-all-type="string" value="' + esc(String(val != null ? val : '')) + '" style="width:260px" /></div>');
+        rows.push('<div class="setting-item" data-search="' + esc(searchText) + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '') + '</div><input type="text" class="input-sm" data-all-key="' + key + '" data-all-type="string" value="' + esc(String(val != null ? val : '')) + '" style="width:260px" /></div>');
       }
       return;
     }
+    rows.push('<div class="setting-item" data-search="' + esc(searchText) + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div><div class="setting-desc">类型 ' + esc(t || 'unknown') + ' 暂不支持直接编辑，请使用 AstrBot 原生插件配置页。</div></div></div>');
   });
   c.innerHTML = rows.length ? rows.join('') : '<div style="padding:8px 0;color:var(--text-muted);font-size:12px">所有配置项均已在上方分组展示。</div>';
+  var search = $('#allSettingsSearch');
+  if (search) {
+    search.addEventListener('input', function() {
+      var q = (search.value || '').trim().toLowerCase();
+      $$('#settingsAll .setting-item').forEach(function(item) {
+        var s = (item.getAttribute('data-search') || '').toLowerCase();
+        item.style.display = (!q || s.indexOf(q) >= 0) ? '' : 'none';
+      });
+    });
+  }
 }
 
 async function loadMigrationStatus(showToast) {
@@ -1667,13 +1698,19 @@ async function saveSettings() {
   var floodHour = $('#inputFloodHour');
   if (floodHour) payload.anti_flood_rate_per_hour = parseInt(floodHour.value, 10) || 0;
   var floodMute = $('#inputFloodMute');
-  if (floodMute) payload.anti_flood_mute_duration = parseInt(floodMute.value, 10) || 300;
+  if (floodMute) {
+    var vFloodMute = parseInt(floodMute.value, 10);
+    payload.anti_flood_mute_duration = Number.isNaN(vFloodMute) ? 300 : vFloodMute;
+  }
   var floodRecallThreshold = $('#inputFloodRecallThreshold');
   if (floodRecallThreshold) payload.anti_flood_recall_threshold = parseInt(floodRecallThreshold.value, 10) || 20;
   var repeatWindow = $('#inputRepeatWindow');
   if (repeatWindow) payload.repeat_detect_window_seconds = parseInt(repeatWindow.value, 10) || 0;
   var repeatCount = $('#inputRepeatCount');
-  if (repeatCount) payload.repeat_detect_count = parseInt(repeatCount.value, 10) || 3;
+  if (repeatCount) {
+    var vRepeatCount = parseInt(repeatCount.value, 10);
+    payload.repeat_detect_count = Number.isNaN(vRepeatCount) ? 3 : vRepeatCount;
+  }
   var longTextThreshold = $('#inputLongTextThreshold');
   if (longTextThreshold) payload.long_text_threshold = parseInt(longTextThreshold.value, 10) || 0;
   $$('[data-all-key]').forEach(function(inp) {
@@ -1682,6 +1719,7 @@ async function saveSettings() {
     if (!key) return;
     if (typ === 'bool') payload[key] = !!inp.checked;
     else if (typ === 'int') payload[key] = parseInt(inp.value, 10) || 0;
+    else if (typ === 'list') payload[key] = (inp.value || '').split(',').map(function(x){ return x.trim(); }).filter(Boolean);
     else payload[key] = (inp.value || '').trim();
   });
   var res = await safePost('config', payload);
