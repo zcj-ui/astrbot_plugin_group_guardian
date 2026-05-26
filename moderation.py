@@ -40,7 +40,9 @@ class ModerationMixin:
             return False, None
         if await self._is_admin(event):
             return False, None
-        self._record_message(group_id, user_id, msg_id)
+        raw_message = getattr(getattr(event, 'message_obj', None), 'message', None)
+        msg_text = self._format_message_content(raw_message)
+        self._record_message(group_id, user_id, msg_id, msg_text)
         self._anti_flood_cleanup()
         is_flooding, flood_info = self._check_anti_flood(group_id, user_id)
         if not is_flooding:

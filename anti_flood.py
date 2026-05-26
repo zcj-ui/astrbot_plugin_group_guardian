@@ -2,6 +2,7 @@
 
 按 (群号, 用户ID) 追踪消息时间戳，超限自动禁言 + 可选撤回。
 """
+import re
 import time
 from collections import deque
 from typing import Dict, List, Optional, Tuple
@@ -27,7 +28,13 @@ class AntiFloodMixin:
         self._anti_flood_data: Dict[str, Dict[str, deque]] = {}
         self._anti_flood_last_cleanup = 0.0
 
-    def _record_message(self, group_id: str, user_id: str, msg_id: str) -> None:
+    def _normalize_message_text(self, text: str) -> str:
+        """归一化消息文本，便于重复消息检测。"""
+        s = (text or "").strip().lower()
+        s = re.sub(r"\s+", " ", s)
+        return s
+
+    def _record_message(self, group_id: str, user_id: str, msg_id: str, text: str = "") -> None:
         """记录一条消息到对应的群/用户时间戳队列。
 
         Args:
@@ -39,7 +46,18 @@ class AntiFloodMixin:
             self._anti_flood_data[group_id] = {}
         if user_id not in self._anti_flood_data[group_id]:
             self._anti_flood_data[group_id][user_id] = deque(maxlen=200)
-        self._anti_flood_data[group_id][user_id].append((time.time(), msg_id))
+        normalized = self._normalize_message_text(text)
+        self._anti_flood_data[group_id][user_id].append((time.time(), msg_id, normalized, len(text or "")))
+
+    @staticmethod
+    def _unpack_entry(entry) -> Tuple[float, str, str, int]:
+        """兼容旧结构 (ts,msg_id) 与新结构 (ts,msg_id,text,len)。"""
+        if isinstance(entry, tuple):
+            if len(entry) >= 4:
+                return float(entry[0]), str(entry[1]), str(entry[2] or ""), int(entry[3] or 0)
+            if len(entry) >= 2:
+                return float(entry[0]), str(entry[1]), "", 0
+        return 0.0, "", "", 0
 
     def _get_rate_limit(self, key: str, default: int) -> int:
         """读取防刷屏速率配置，返回值 < = 0 表示该档位被关闭。
@@ -94,7 +112,18 @@ class AntiFloodMixin:
         min_ids: List[str] = []
         hour_ids: List[str] = []
 
-        for t, mid in reversed(dq):
+        repeat_enabled = self._cfg("repeat_detect_enabled", True)
+        repeat_window = self._safe_int(self.config.get("repeat_detect_window_seconds", 120), 120)
+        repeat_count_limit = self._safe_int(self.config.get("repeat_detect_count", 3), 3)
+        long_text_enabled = self._cfg("long_text_detect_enabled", True)
+        long_text_threshold = self._safe_int(self.config.get("long_text_threshold", 500), 500)
+
+        current_text = ""
+        current_len = 0
+        repeat_count = 0
+
+        for entry in reversed(dq):
+            t, mid, norm_text, msg_len = self._unpack_entry(entry)
             dt = now - t
             if dt >= 3600:
                 break
@@ -107,6 +136,12 @@ class AntiFloodMixin:
                 sec_count += 1
                 sec_ids.append(mid)
 
+            if current_text == "":
+                current_text = norm_text
+                current_len = msg_len
+            if repeat_enabled and repeat_window > 0 and current_text and dt < repeat_window and norm_text == current_text:
+                repeat_count += 1
+
         if sec_limit > 0 and sec_count > sec_limit:
             return True, {"rate": "每秒", "count": sec_count, "limit": sec_limit,
                           "total_msgs": total_msgs, "msg_ids": sec_ids}
@@ -116,6 +151,22 @@ class AntiFloodMixin:
         if hour_limit > 0 and hour_count > hour_limit:
             return True, {"rate": "每小时", "count": hour_count, "limit": hour_limit,
                           "total_msgs": total_msgs, "msg_ids": hour_ids}
+        if long_text_enabled and long_text_threshold > 0 and current_len > long_text_threshold:
+            return True, {
+                "rate": "长文本",
+                "count": current_len,
+                "limit": long_text_threshold,
+                "total_msgs": total_msgs,
+                "msg_ids": sec_ids[:1] or min_ids[:1] or hour_ids[:1],
+            }
+        if repeat_enabled and repeat_count_limit > 1 and repeat_count >= repeat_count_limit:
+            return True, {
+                "rate": "重复消息",
+                "count": repeat_count,
+                "limit": repeat_count_limit,
+                "total_msgs": total_msgs,
+                "msg_ids": [mid for _, mid, txt, _ in [self._unpack_entry(e) for e in reversed(dq)] if txt == current_text][:repeat_count],
+            }
         return False, None
 
     def _anti_flood_cleanup(self) -> None:
@@ -131,7 +182,10 @@ class AntiFloodMixin:
         for gid, users in list(self._anti_flood_data.items()):
             for uid in list(users.keys()):
                 dq = users[uid]
-                while dq and dq[0][0] < expired:
+                while dq:
+                    t, _, _, _ = self._unpack_entry(dq[0])
+                    if t >= expired:
+                        break
                     dq.popleft()
                 if not dq:
                     del users[uid]
@@ -163,7 +217,8 @@ class AntiFloodMixin:
                     continue
                 total_users += 1
                 s = m = h = 0
-                for t, _mid in reversed(dq):
+                for entry in reversed(dq):
+                    t, _mid, _txt, _len = self._unpack_entry(entry)
                     dt = now - t
                     if dt >= 3600:
                         break

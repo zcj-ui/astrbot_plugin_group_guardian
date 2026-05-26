@@ -282,6 +282,36 @@
         "default": 20,
         "hint": "刷屏消息数超过此值才进行批量撤回，防止少量超限就被撤回，默认20条"
     },
+    "repeat_detect_enabled": {
+        "description": "重复消息检测开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后检测短时间内重复发送相同内容的刷屏行为"
+    },
+    "repeat_detect_window_seconds": {
+        "description": "重复消息检测窗口（秒）",
+        "type": "int",
+        "default": 120,
+        "hint": "在该时间窗口内统计同内容重复次数，超过阈值触发处理；设 0 关闭"
+    },
+    "repeat_detect_count": {
+        "description": "重复消息触发次数",
+        "type": "int",
+        "default": 3,
+        "hint": "同一内容在检测窗口内达到该次数即触发处理，建议 >= 2"
+    },
+    "long_text_detect_enabled": {
+        "description": "长文本刷屏检测开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后检测超长消息，防止通过大段文本刷屏"
+    },
+    "long_text_threshold": {
+        "description": "长文本长度阈值（字符）",
+        "type": "int",
+        "default": 500,
+        "hint": "单条消息长度超过该值触发处理；设 0 关闭"
+    },
     "lexicon_political_enabled": {
         "description": "外置词库-政治敏感类检测",
         "type": "bool",
