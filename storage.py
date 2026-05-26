@@ -422,14 +422,14 @@ class SQLiteStorage:
             row = conn.execute(sql, params).fetchone()
         return int(row["c"] or 0)
 
-    def add_lexicon_keyword(self, category: str, keyword: str) -> int:
+    def add_lexicon_keyword(self, category: str, keyword: str) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO lexicon_keywords(category, keyword) VALUES(?, ?)",
                 (category, keyword),
             )
             conn.commit()
-        return int(cur.lastrowid or 0)
+        return bool(cur.rowcount)
 
     def delete_lexicon_keyword(self, keyword_id: int) -> bool:
         with self._connect() as conn:

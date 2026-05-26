@@ -89,6 +89,12 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
         self._register_web_apis()
 
     async def terminate(self):
+        if self._rebuild_task and not self._rebuild_task.done():
+            self._rebuild_task.cancel()
+            try:
+                await self._rebuild_task
+            except asyncio.CancelledError:
+                logger.debug("[GroupMgr] 后台重建任务已取消")
         logger.info("[GroupMgr] 插件卸载，SQLite 存储已自动持久化")
 
     def _set_rebuild_status(self, state: str, target: str = "", message: str = "") -> None:
@@ -137,6 +143,9 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
                     self._rebuild_rule_matcher("swear")
                     self._rebuild_rule_matcher("ad")
                 self._set_rebuild_status("success", "full", "后台重建完成")
+            except asyncio.CancelledError:
+                self._set_rebuild_status("idle", "", "后台重建已取消")
+                raise
             except Exception as e:
                 logger.warning(f"[GroupMgr] 后台重建失败: {e}")
                 self._set_rebuild_status("error", "full", str(e))

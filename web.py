@@ -266,11 +266,16 @@ class WebMixin:
             keyword = str(data.get("keyword", "")).strip()
             if not category or not keyword:
                 return jsonify({"status": "error", "message": "缺少分类或关键词"})
-            self._storage.add_lexicon_keyword(category, keyword)
+            inserted = self._storage.add_lexicon_keyword(category, keyword)
+            if not inserted:
+                return jsonify({"status": "error", "message": "关键词已存在"})
             self._rebuild_lexicon_category(category)
             self._schedule_background_rebuild(f"词库分类 {category} 后台校验重建")
             return jsonify({"status": "success", "data": {"category": category, "keyword": keyword}})
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)})
         except Exception as e:
+            logger.exception("[GroupMgr] 新增关键词失败")
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_delete_lexicon_keyword(self):
@@ -286,7 +291,10 @@ class WebMixin:
             self._rebuild_lexicon_category(category)
             self._schedule_background_rebuild(f"词库分类 {category} 后台校验重建")
             return jsonify({"status": "success", "data": {"id": keyword_id, "category": category}})
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)})
         except Exception as e:
+            logger.exception("[GroupMgr] 删除关键词失败")
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_get_rules(self):
@@ -326,7 +334,10 @@ class WebMixin:
             self._rebuild_rule_matcher(category)
             self._schedule_background_rebuild(f"规则分类 {category} 后台校验重建")
             return jsonify({"status": "success", "data": {"id": saved_id, "category": category}})
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)})
         except Exception as e:
+            logger.exception("[GroupMgr] 保存规则失败")
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_delete_rule(self):
@@ -342,7 +353,10 @@ class WebMixin:
             self._rebuild_rule_matcher(category)
             self._schedule_background_rebuild(f"规则分类 {category} 后台校验重建")
             return jsonify({"status": "success", "data": {"id": rule_id, "category": category}})
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)})
         except Exception as e:
+            logger.exception("[GroupMgr] 删除规则失败")
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_toggle_rule(self):
@@ -359,7 +373,10 @@ class WebMixin:
             self._rebuild_rule_matcher(category)
             self._schedule_background_rebuild(f"规则分类 {category} 后台校验重建")
             return jsonify({"status": "success", "data": {"id": rule_id, "enabled": enabled, "category": category}})
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)})
         except Exception as e:
+            logger.exception("[GroupMgr] 切换规则状态失败")
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_rebuild_status(self):

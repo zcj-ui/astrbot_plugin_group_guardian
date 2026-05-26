@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import json
 import os
-import pickle
 import time
 from datetime import datetime
 from pathlib import Path
@@ -226,28 +225,9 @@ class UtilitiesMixin:
             if not raw_parts:
                 continue
 
-            cache_path = cache_dir / f"{cat_name}.pkl"
-            ac = None
-            if cache_path.exists() and db_mtime > 0:
-                try:
-                    cache_mtime = cache_path.stat().st_mtime
-                    if cache_mtime >= db_mtime:
-                        with open(cache_path, 'rb') as f:
-                            ac = pickle.load(f)
-                        if not isinstance(ac, KeywordAutomaton):
-                            ac = None
-                except Exception:
-                    pass
-
-            if ac is None:
-                ac = KeywordAutomaton()
-                ac.add_keywords(raw_parts)
-                ac.build()
-                try:
-                    with open(cache_path, 'wb') as f:
-                        pickle.dump(ac, f, protocol=pickle.HIGHEST_PROTOCOL)
-                except Exception:
-                    pass
+            ac = KeywordAutomaton()
+            ac.add_keywords(raw_parts)
+            ac.build()
 
             compiled[cat_name] = ac
         return compiled
@@ -270,14 +250,6 @@ class UtilitiesMixin:
         if raw_parts:
             ac.add_keywords(raw_parts)
             ac.build()
-        cache_dir = Path(self._data_dir) / "ac_cache"
-        cache_dir.mkdir(exist_ok=True)
-        cache_path = cache_dir / f"{cat_name}.pkl"
-        try:
-            with open(cache_path, "wb") as f:
-                pickle.dump(ac, f, protocol=pickle.HIGHEST_PROTOCOL)
-        except OSError:
-            logger.debug("[GroupMgr] 写入 AC 缓存失败", exc_info=True)
         return ac
 
     def _lexicon_category_enabled(self, cat_name: str) -> bool:

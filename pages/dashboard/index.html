@@ -694,6 +694,7 @@ let CONFIG = {};
 let CURRENT_GROUP = null;
 let CURRENT_MEMBERS = [];
 let CACHED_GROUP_ID = null;
+let REBUILD_STATUS_TIMER = null;
 
 function $(sel, ctx) { ctx = ctx || document; return ctx.querySelector(sel); }
 function $$(sel, ctx) { ctx = ctx || document; return [].slice.call(ctx.querySelectorAll(sel)); }
@@ -1978,10 +1979,12 @@ async function loadFlood() {
 
 async function init() {
   initTabs();
-  setInterval(function() {
-    var active = $('#tab-settings');
-    if (active && active.classList.contains('active')) loadRebuildStatus();
-  }, 3000);
+  if (!REBUILD_STATUS_TIMER) {
+    REBUILD_STATUS_TIMER = setInterval(function() {
+      var active = $('#tab-settings');
+      if (active && active.classList.contains('active')) loadRebuildStatus();
+    }, 3000);
+  }
 
   $('#btnRefreshAll').addEventListener('click', loadOverview);
   $('#btnRefreshTodayStats').addEventListener('click', loadOverview);
