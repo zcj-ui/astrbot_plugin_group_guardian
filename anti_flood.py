@@ -102,6 +102,17 @@ class AntiFloodMixin:
         sec_limit = self._get_rate_limit("anti_flood_rate_per_second", 5)
         min_limit = self._get_rate_limit("anti_flood_rate_per_minute", 20)
         hour_limit = self._get_rate_limit("anti_flood_rate_per_hour", 60)
+
+        # 凌晨时段独立限速：判断当前时刻是否在夜间区间
+        if self._cfg("anti_flood_night_enabled", False):
+            start_h = self._safe_int(self.config.get("anti_flood_night_start_hour", 0), 0)
+            end_h = self._safe_int(self.config.get("anti_flood_night_end_hour", 6), 6)
+            now_hour = time.localtime().tm_hour
+            in_night = (now_hour >= start_h if start_h <= end_h else now_hour >= start_h or now_hour < end_h)
+            if in_night:
+                sec_limit = self._get_rate_limit("anti_flood_night_rate_per_second", 2)
+                min_limit = self._get_rate_limit("anti_flood_night_rate_per_minute", 8)
+                hour_limit = self._get_rate_limit("anti_flood_night_rate_per_hour", 25)
         if sec_limit <= 0 and min_limit <= 0 and hour_limit <= 0:
             return False, None
 

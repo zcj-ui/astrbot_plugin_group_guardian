@@ -226,6 +226,11 @@ class WebMixin:
                 "repeat_detect_window_seconds": (0, 86400),
                 "repeat_detect_count": (2, 9999),
                 "long_text_threshold": (0, 1000000),
+                "anti_flood_night_start_hour": (0, 23),
+                "anti_flood_night_end_hour": (0, 23),
+                "anti_flood_night_rate_per_second": (0, 999),
+                "anti_flood_night_rate_per_minute": (0, 99999),
+                "anti_flood_night_rate_per_hour": (0, 999999),
             }
             list_postprocess = {
                 "group_white_list": ("group_white_list", "_group_white_set"),

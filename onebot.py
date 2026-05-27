@@ -224,3 +224,29 @@ class OneBotMixin:
         except Exception as e:
             logger.warning(f"[GroupMgr] 禁言失败: {e}")
             self._client = None
+
+    async def _send_ban_private_notify(self, event: AiocqhttpMessageEvent, duration: int, reason: str = "") -> bool:
+        """禁言前发送私聊通知。成功返回 True，失败返回 False。"""
+        if not self._cfg("ban_private_notify_enabled", True):
+            return False
+        user_id = self._try_get_sender_id(event)
+        if not user_id:
+            return False
+        client = await self._get_client(event)
+        if not client:
+            return False
+        template = self.config.get("ban_private_notify_template",
+            "[群管通知] 你在群内因{reason}被禁言{duration}秒。如有疑问请联系管理员。")
+        text = (template
+            .replace("{reason}", reason or "违规行为")
+            .replace("{duration}", str(duration))
+            .replace("{group_id}", self._get_group_id(event)))
+        uid = self._safe_int(user_id, 0)
+        if not uid:
+            return False
+        try:
+            await client.call_action('send_private_msg', user_id=uid, message=text)
+            return True
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 禁言私聊通知失败(可能非好友): {e}")
+            return False

@@ -1321,6 +1321,9 @@ var AUDIT_TOGGLES = [
   { key: 'anti_flood_recall_enabled', label: '刷屏撤回', desc: '刷屏消息自动批量撤回' },
   { key: 'repeat_detect_enabled', label: '重复消息检测', desc: '检测短时间内重复发送相同内容' },
   { key: 'long_text_detect_enabled', label: '长文本检测', desc: '检测超长消息刷屏' },
+  { key: 'anti_flood_night_enabled', label: '凌晨独立限速', desc: '在指定时段使用独立的速率限制' },
+  { key: 'ban_private_notify_enabled', label: '禁言前私聊通知', desc: '自动禁言前通过私聊告知被禁言用户' },
+  { key: 'group_leave_notify_enabled', label: '退群提醒', desc: '有人主动退群时在群内发送提示' },
 ];
 var OCR_TOGGLES = [
   { key: 'ocr_enabled', label: 'OCR识图审核', desc: '使用LLM视觉模型识别图片内容进行审核' },
@@ -1369,7 +1372,18 @@ function renderSegmented(name, value, items) {
       var active = String(it.value) === String(value);
       return '<button type="button" class="btn btn-sm ' + (active ? 'btn-primary' : 'btn-ghost') + '" data-seg-value="' + escAttr(String(it.value)) + '">' + esc(it.label) + '</button>';
     }).join('')
-    + '</div>';
+    + '</div>' +
+    '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
+    '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">凌晨时段独立限速</h3>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">起始小时</div><div class="setting-desc">例如 0 表示 00:00</div></div><input type="number" class="input-sm" id="inputNightStart" value="' + (CONFIG.anti_flood_night_start_hour != null ? CONFIG.anti_flood_night_start_hour : 0) + '" min="0" max="23" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">结束小时</div><div class="setting-desc">例如 6 表示 06:00</div></div><input type="number" class="input-sm" id="inputNightEnd" value="' + (CONFIG.anti_flood_night_end_hour != null ? CONFIG.anti_flood_night_end_hour : 6) + '" min="0" max="23" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每秒上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightSec" value="' + (CONFIG.anti_flood_night_rate_per_second != null ? CONFIG.anti_flood_night_rate_per_second : 2) + '" min="0" max="99" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每分钟上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightMin" value="' + (CONFIG.anti_flood_night_rate_per_minute != null ? CONFIG.anti_flood_night_rate_per_minute : 8) + '" min="0" max="999" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每小时上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightHour" value="' + (CONFIG.anti_flood_night_rate_per_hour != null ? CONFIG.anti_flood_night_rate_per_hour : 25) + '" min="0" max="9999" style="width:80px" /></div>' +
+    '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
+    '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">禁言通知与退群</h3>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">禁言通知模板</div><div class="setting-desc">支持 {reason} {duration} {group_id}</div></div><input type="text" class="input-sm" id="inputBanNotifyTemplate" value="' + esc(CONFIG.ban_private_notify_template || '') + '" style="width:300px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">退群提醒模板</div><div class="setting-desc">支持 {name} {uid} {group_id}</div></div><input type="text" class="input-sm" id="inputLeaveNotifyTemplate" value="' + esc(CONFIG.group_leave_notify_template || '') + '" style="width:300px" /></div>';
 }
 
 function bindSegmented(root, currentValue, onChange) {
@@ -1400,7 +1414,18 @@ function renderPager(page, pageSize, total, prefix) {
     + '<div style="display:flex;gap:8px">'
     + '<button class="btn btn-ghost btn-sm" data-page-act="prev" data-page-prefix="' + prefix + '" ' + (page <= 1 ? 'disabled' : '') + '>上一页</button>'
     + '<button class="btn btn-ghost btn-sm" data-page-act="next" data-page-prefix="' + prefix + '" ' + (page >= totalPages ? 'disabled' : '') + '>下一页</button>'
-    + '</div></div>';
+    + '</div></div>' +
+    '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
+    '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">凌晨时段独立限速</h3>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">起始小时</div><div class="setting-desc">例如 0 表示 00:00</div></div><input type="number" class="input-sm" id="inputNightStart" value="' + (CONFIG.anti_flood_night_start_hour != null ? CONFIG.anti_flood_night_start_hour : 0) + '" min="0" max="23" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">结束小时</div><div class="setting-desc">例如 6 表示 06:00</div></div><input type="number" class="input-sm" id="inputNightEnd" value="' + (CONFIG.anti_flood_night_end_hour != null ? CONFIG.anti_flood_night_end_hour : 6) + '" min="0" max="23" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每秒上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightSec" value="' + (CONFIG.anti_flood_night_rate_per_second != null ? CONFIG.anti_flood_night_rate_per_second : 2) + '" min="0" max="99" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每分钟上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightMin" value="' + (CONFIG.anti_flood_night_rate_per_minute != null ? CONFIG.anti_flood_night_rate_per_minute : 8) + '" min="0" max="999" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每小时上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightHour" value="' + (CONFIG.anti_flood_night_rate_per_hour != null ? CONFIG.anti_flood_night_rate_per_hour : 25) + '" min="0" max="9999" style="width:80px" /></div>' +
+    '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
+    '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">禁言通知与退群</h3>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">禁言通知模板</div><div class="setting-desc">支持 {reason} {duration} {group_id}</div></div><input type="text" class="input-sm" id="inputBanNotifyTemplate" value="' + esc(CONFIG.ban_private_notify_template || '') + '" style="width:300px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">退群提醒模板</div><div class="setting-desc">支持 {name} {uid} {group_id}</div></div><input type="text" class="input-sm" id="inputLeaveNotifyTemplate" value="' + esc(CONFIG.group_leave_notify_template || '') + '" style="width:300px" /></div>';
 }
 
 var MANUAL_SETTING_KEYS = {
@@ -2174,7 +2199,18 @@ function renderExtraSettings() {
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">撤回阈值（条数）</div><div class="setting-desc">超限达此数才撤回消息</div></div><input type="number" class="input-sm" id="inputFloodRecallThreshold" value="' + (CONFIG.anti_flood_recall_threshold != null ? CONFIG.anti_flood_recall_threshold : 20) + '" min="1" max="9999" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">重复消息窗口（秒）</div><div class="setting-desc">设 0 关闭重复消息检测</div></div><input type="number" class="input-sm" id="inputRepeatWindow" value="' + (CONFIG.repeat_detect_window_seconds != null ? CONFIG.repeat_detect_window_seconds : 120) + '" min="0" max="3600" style="width:100px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">重复消息触发次数</div><div class="setting-desc">同内容达到该次数触发处理</div></div><input type="number" class="input-sm" id="inputRepeatCount" value="' + (CONFIG.repeat_detect_count != null ? CONFIG.repeat_detect_count : 3) + '" min="2" max="50" style="width:80px" /></div>' +
-    '<div class="setting-item"><div class="setting-info"><div class="setting-label">长文本阈值（字符）</div><div class="setting-desc">设 0 关闭长文本检测</div></div><input type="number" class="input-sm" id="inputLongTextThreshold" value="' + (CONFIG.long_text_threshold != null ? CONFIG.long_text_threshold : 500) + '" min="0" max="100000" style="width:100px" /></div>';
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">长文本阈值（字符）</div><div class="setting-desc">设 0 关闭长文本检测</div></div><input type="number" class="input-sm" id="inputLongTextThreshold" value="' + (CONFIG.long_text_threshold != null ? CONFIG.long_text_threshold : 500) + '" min="0" max="100000" style="width:100px" /></div>' +
+    '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
+    '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">凌晨时段独立限速</h3>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">起始小时</div><div class="setting-desc">例如 0 表示 00:00</div></div><input type="number" class="input-sm" id="inputNightStart" value="' + (CONFIG.anti_flood_night_start_hour != null ? CONFIG.anti_flood_night_start_hour : 0) + '" min="0" max="23" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">结束小时</div><div class="setting-desc">例如 6 表示 06:00</div></div><input type="number" class="input-sm" id="inputNightEnd" value="' + (CONFIG.anti_flood_night_end_hour != null ? CONFIG.anti_flood_night_end_hour : 6) + '" min="0" max="23" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每秒上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightSec" value="' + (CONFIG.anti_flood_night_rate_per_second != null ? CONFIG.anti_flood_night_rate_per_second : 2) + '" min="0" max="99" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每分钟上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightMin" value="' + (CONFIG.anti_flood_night_rate_per_minute != null ? CONFIG.anti_flood_night_rate_per_minute : 8) + '" min="0" max="999" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">每小时上限</div><div class="setting-desc">设 0 关闭</div></div><input type="number" class="input-sm" id="inputNightHour" value="' + (CONFIG.anti_flood_night_rate_per_hour != null ? CONFIG.anti_flood_night_rate_per_hour : 25) + '" min="0" max="9999" style="width:80px" /></div>' +
+    '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
+    '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">禁言通知与退群</h3>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">禁言通知模板</div><div class="setting-desc">支持 {reason} {duration} {group_id}</div></div><input type="text" class="input-sm" id="inputBanNotifyTemplate" value="' + esc(CONFIG.ban_private_notify_template || '') + '" style="width:300px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">退群提醒模板</div><div class="setting-desc">支持 {name} {uid} {group_id}</div></div><input type="text" class="input-sm" id="inputLeaveNotifyTemplate" value="' + esc(CONFIG.group_leave_notify_template || '') + '" style="width:300px" /></div>';
 }
 
 var PROVIDER_LIST = [];
@@ -2269,6 +2305,20 @@ async function saveSettings() {
   }
   var longTextThreshold = $('#inputLongTextThreshold');
   if (longTextThreshold) payload.long_text_threshold = parseIntOrDefault(longTextThreshold.value, 0);
+  var nightStart = document.getElementById('inputNightStart');
+  var nightEnd = document.getElementById('inputNightEnd');
+  var nightSec = document.getElementById('inputNightSec');
+  var nightMin = document.getElementById('inputNightMin');
+  var nightHour = document.getElementById('inputNightHour');
+  var banNotifyTemplate = document.getElementById('inputBanNotifyTemplate');
+  var leaveNotifyTemplate = document.getElementById('inputLeaveNotifyTemplate');
+  if (nightStart) payload.anti_flood_night_start_hour = parseIntOrDefault(nightStart.value, 0);
+  if (nightEnd) payload.anti_flood_night_end_hour = parseIntOrDefault(nightEnd.value, 6);
+  if (nightSec) payload.anti_flood_night_rate_per_second = parseIntOrDefault(nightSec.value, 2);
+  if (nightMin) payload.anti_flood_night_rate_per_minute = parseIntOrDefault(nightMin.value, 8);
+  if (nightHour) payload.anti_flood_night_rate_per_hour = parseIntOrDefault(nightHour.value, 25);
+  if (banNotifyTemplate) payload.ban_private_notify_template = banNotifyTemplate.value.trim();
+  if (leaveNotifyTemplate) payload.group_leave_notify_template = leaveNotifyTemplate.value.trim();
   $$('[data-all-key]').forEach(function(inp) {
     var key = inp.getAttribute('data-all-key');
     var typ = inp.getAttribute('data-all-type');

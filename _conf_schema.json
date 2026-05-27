@@ -426,5 +426,65 @@
         "type": "bool",
         "default": true,
         "hint": "开启后允许使用 /群统计 查看群成员数量与管理员统计"
+    },
+    "ban_private_notify_enabled": {
+        "description": "自动禁言前私聊通知开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后自动审核决定禁言时会先私聊通知被禁言用户"
+    },
+    "ban_private_notify_template": {
+        "description": "禁言私聊通知模板",
+        "type": "text",
+        "default": "[群管通知] 你在群内因{reason}被禁言{duration}秒。如有疑问请联系管理员。",
+        "hint": "支持变量：{reason} 违规原因、{duration} 禁言秒数、{group_id} 群号"
+    },
+    "anti_flood_night_enabled": {
+        "description": "凌晨时段独立限速开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后在指定时段使用独立的速率限制"
+    },
+    "anti_flood_night_start_hour": {
+        "description": "凌晨时段起始小时（0-23）",
+        "type": "int",
+        "default": 0,
+        "hint": "如设为 0 表示 00:00 开始"
+    },
+    "anti_flood_night_end_hour": {
+        "description": "凌晨时段结束小时（0-23）",
+        "type": "int",
+        "default": 6,
+        "hint": "如设为 6 表示 06:00 结束（不含 06:00 整点）"
+    },
+    "anti_flood_night_rate_per_second": {
+        "description": "凌晨每秒消息上限（0=关闭）",
+        "type": "int",
+        "default": 2,
+        "hint": "凌晨时段每秒消息数超过此值判定为刷屏。设为 0 关闭此项"
+    },
+    "anti_flood_night_rate_per_minute": {
+        "description": "凌晨每分钟消息上限（0=关闭）",
+        "type": "int",
+        "default": 8,
+        "hint": "凌晨时段每分钟消息数超过此值判定为刷屏。设为 0 关闭此项"
+    },
+    "anti_flood_night_rate_per_hour": {
+        "description": "凌晨每小时消息上限（0=关闭）",
+        "type": "int",
+        "default": 25,
+        "hint": "凌晨时段每小时消息数超过此值判定为刷屏。设为 0 关闭此项"
+    },
+    "group_leave_notify_enabled": {
+        "description": "退群提醒开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后有人主动退群时在群内发送提醒"
+    },
+    "group_leave_notify_template": {
+        "description": "退群提醒模板",
+        "type": "text",
+        "default": "{name}({uid}) 已退出本群",
+        "hint": "支持变量：{name} 昵称、{uid} QQ号、{group_id} 群号"
     }
 }

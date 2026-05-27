@@ -53,6 +53,9 @@ class ModerationMixin:
         recall_threshold = self._safe_int(self.config.get("anti_flood_recall_threshold", 20), 20)
         try:
             if mute_dur > 0:
+                if self._cfg("ban_private_notify_enabled", True):
+                    await self._send_ban_private_notify(event, mute_dur,
+                        f"刷屏（{flood_info['rate']} {flood_info['count']}条/上限{flood_info['limit']}条）")
                 await self._mute_member(event, mute_dur)
             flood_total = flood_info.get("total_msgs", flood_info.get("count", 0))
             if recall_enabled and flood_total >= recall_threshold and flood_info.get("msg_ids"):
@@ -1003,6 +1006,8 @@ class ModerationMixin:
             try:
                 msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
                 await self._recall_msg(event, msg_id)
+                if self._cfg("ban_private_notify_enabled", True):
+                    await self._send_ban_private_notify(event, self._safe_int(self.config.get("moderation_ban_duration", 1800), 1800), reason)
                 await self._mute_member(event)
                 notice = self.config.get("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）")
                 yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id))
@@ -1039,6 +1044,8 @@ class ModerationMixin:
 
             if self._cfg("llm_moderation_ban", True):
                 try:
+                    if self._cfg("ban_private_notify_enabled", True):
+                        await self._send_ban_private_notify(event, self._safe_int(self.config.get("moderation_ban_duration", 1800), 1800), reason)
                     await self._mute_member(event)
                 except Exception as ban_err:
                     logger.warning(f"[GroupMgr] 禁言失败: {ban_err}")
@@ -1055,3 +1062,42 @@ class ModerationMixin:
         except Exception as e:
             logger.warning(f"[GroupMgr] 自动审核出错: {e}")
             yield event.plain_result(f"[群管] 审核出错: {str(e)[:100]}")
+
+    async def _handle_group_leave(self, event: AiocqhttpMessageEvent):
+        """检测退群事件并发送群内提醒。
+
+        OneBot group_decrease/leave notice 会在 raw_event 中携带 notice_type 和 sub_type。
+        仅处理主动退群（sub_type=leave），被踢出（kick）不触发提醒。
+        """
+        if not self._cfg("group_leave_notify_enabled", True):
+            return
+        raw = getattr(event, 'raw_event', None)
+        if not isinstance(raw, dict):
+            return
+        if raw.get('notice_type') != 'group_decrease':
+            return
+        if raw.get('sub_type') != 'leave':
+            return
+        group_id = str(raw.get('group_id', ''))
+        user_id = str(raw.get('user_id', ''))
+        if not group_id or not user_id:
+            return
+        if self._group_black_set and group_id in self._group_black_set:
+            return
+        if self._group_white_set and group_id not in self._group_white_set:
+            return
+        name = user_id
+        try:
+            client = await self._get_client(event)
+            if client:
+                info = await client.call_action('get_group_member_info',
+                    group_id=self._safe_int(group_id, 0),
+                    user_id=self._safe_int(user_id, 0), no_cache=False)
+                info = self._extract_data_result(info)
+                if isinstance(info, dict):
+                    name = info.get('nickname', info.get('card', user_id))
+        except Exception:
+            pass
+        template = self.config.get("group_leave_notify_template", "{name}({uid}) 已退出本群")
+        text = template.replace("{name}", str(name)).replace("{uid}", user_id).replace("{group_id}", group_id)
+        yield event.plain_result(text)

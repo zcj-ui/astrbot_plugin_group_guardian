@@ -574,3 +574,10 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
     async def _handle_message(self, event: AiocqhttpMessageEvent):
         async for item in ModerationMixin._handle_message(self, event):
             yield item
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def _handle_group_leave(self, event: AiocqhttpMessageEvent):
+        """检测退群事件并发送群内提醒。"""
+        async for item in ModerationMixin._handle_group_leave(self, event):
+            yield item
