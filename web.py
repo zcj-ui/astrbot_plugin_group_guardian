@@ -84,10 +84,13 @@ class WebMixin:
                 ("/lexicon/keywords", self._web_get_lexicon_keywords, ["GET"], "分页获取分类关键词"),
                 ("/lexicon/keywords/add", self._web_add_lexicon_keyword, ["POST"], "添加词库关键词"),
                 ("/lexicon/keywords/delete", self._web_delete_lexicon_keyword, ["POST"], "删除词库关键词"),
+                ("/lexicon/keywords/delete_batch", self._web_delete_lexicon_keywords_batch, ["POST"], "批量删除词库关键词"),
                 ("/rules", self._web_get_rules, ["GET"], "分页获取审核规则"),
                 ("/rules/save", self._web_save_rule, ["POST"], "新增或更新审核规则"),
                 ("/rules/delete", self._web_delete_rule, ["POST"], "删除审核规则"),
+                ("/rules/delete_batch", self._web_delete_rules_batch, ["POST"], "批量删除审核规则"),
                 ("/rules/toggle", self._web_toggle_rule, ["POST"], "启停审核规则"),
+                ("/rules/toggle_batch", self._web_toggle_rules_batch, ["POST"], "批量启停审核规则"),
                 ("/rules/rebuild_status", self._web_rebuild_status, ["GET"], "获取热更新重建状态"),
                 ("/logs", self._web_get_logs, ["GET"], "获取最近审核日志"),
                 ("/moderation_users", self._web_get_moderation_users, ["GET"], "获取被撤回用户聚合列表"),
@@ -364,6 +367,22 @@ class WebMixin:
             logger.exception("[GroupMgr] 删除关键词失败")
             return jsonify({"status": "error", "message": str(e)})
 
+    async def _web_delete_lexicon_keywords_batch(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            ids = data.get("ids", []) or []
+            category = str(data.get("category", "")).strip()
+            if not category or not isinstance(ids, list):
+                return jsonify({"status": "error", "message": "缺少分类或 IDs 无效"})
+            deleted = self._storage.delete_lexicon_keywords(ids)
+            if deleted <= 0:
+                return jsonify({"status": "error", "message": "未删除任何关键词"})
+            rebuilt, rebuild_err = self._apply_incremental_lexicon_rebuild(category)
+            return jsonify({"status": "success", "data": {"deleted": deleted, "category": category, "rebuilt": rebuilt, "deferred": not rebuilt, "message": "批量删除已生效" if rebuilt else f"已批量删除，后台重建中：{rebuild_err}"}})
+        except Exception as e:
+            logger.exception("[GroupMgr] 批量删除关键词失败")
+            return jsonify({"status": "error", "message": str(e)})
+
     async def _web_get_rules(self):
         try:
             category = str(quart_request.args.get("category", "")).strip()
@@ -428,6 +447,22 @@ class WebMixin:
             logger.exception("[GroupMgr] 删除规则失败")
             return jsonify({"status": "error", "message": str(e)})
 
+    async def _web_delete_rules_batch(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            ids = data.get("ids", []) or []
+            category = str(data.get("category", "")).strip().lower()
+            if category not in ("swear", "ad") or not isinstance(ids, list):
+                return jsonify({"status": "error", "message": "缺少分类或 IDs 无效"})
+            deleted = self._storage.delete_moderation_rules(ids)
+            if deleted <= 0:
+                return jsonify({"status": "error", "message": "未删除任何规则"})
+            rebuilt, rebuild_err = self._apply_incremental_rule_rebuild(category)
+            return jsonify({"status": "success", "data": {"deleted": deleted, "category": category, "rebuilt": rebuilt, "deferred": not rebuilt, "message": "批量删除已生效" if rebuilt else f"已批量删除，后台重建中：{rebuild_err}"}})
+        except Exception as e:
+            logger.exception("[GroupMgr] 批量删除规则失败")
+            return jsonify({"status": "error", "message": str(e)})
+
     async def _web_toggle_rule(self):
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
@@ -445,6 +480,23 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
         except Exception as e:
             logger.exception("[GroupMgr] 切换规则状态失败")
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_toggle_rules_batch(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            ids = data.get("ids", []) or []
+            category = str(data.get("category", "")).strip().lower()
+            enabled = self._parse_bool(data.get("enabled", True), True)
+            if category not in ("swear", "ad") or not isinstance(ids, list):
+                return jsonify({"status": "error", "message": "缺少分类或 IDs 无效"})
+            changed = self._storage.toggle_moderation_rules(ids, enabled)
+            if changed <= 0:
+                return jsonify({"status": "error", "message": "未更新任何规则"})
+            rebuilt, rebuild_err = self._apply_incremental_rule_rebuild(category)
+            return jsonify({"status": "success", "data": {"updated": changed, "category": category, "enabled": enabled, "rebuilt": rebuilt, "deferred": not rebuilt, "message": "批量状态更新已生效" if rebuilt else f"已批量更新，后台重建中：{rebuild_err}"}})
+        except Exception as e:
+            logger.exception("[GroupMgr] 批量切换规则状态失败")
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_rebuild_status(self):

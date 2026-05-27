@@ -255,6 +255,16 @@ class SQLiteStorage:
             conn.commit()
         return bool(cur.rowcount)
 
+    def delete_moderation_rules(self, rule_ids: Iterable[int]) -> int:
+        ids = [int(x) for x in rule_ids if int(x) > 0]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as conn:
+            cur = conn.execute(f"DELETE FROM moderation_rules WHERE id IN ({placeholders})", ids)
+            conn.commit()
+        return int(cur.rowcount or 0)
+
     def toggle_moderation_rule(self, rule_id: int, enabled: bool) -> bool:
         with self._connect() as conn:
             cur = conn.execute(
@@ -263,6 +273,20 @@ class SQLiteStorage:
             )
             conn.commit()
         return bool(cur.rowcount)
+
+    def toggle_moderation_rules(self, rule_ids: Iterable[int], enabled: bool) -> int:
+        ids = [int(x) for x in rule_ids if int(x) > 0]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        params = [1 if enabled else 0, *ids]
+        with self._connect() as conn:
+            cur = conn.execute(
+                f"UPDATE moderation_rules SET enabled=? WHERE id IN ({placeholders})",
+                params,
+            )
+            conn.commit()
+        return int(cur.rowcount or 0)
 
     def count_moderation_rules(self) -> int:
         with self._connect() as conn:
@@ -436,6 +460,16 @@ class SQLiteStorage:
             cur = conn.execute("DELETE FROM lexicon_keywords WHERE id=?", (keyword_id,))
             conn.commit()
         return bool(cur.rowcount)
+
+    def delete_lexicon_keywords(self, keyword_ids: Iterable[int]) -> int:
+        ids = [int(x) for x in keyword_ids if int(x) > 0]
+        if not ids:
+            return 0
+        placeholders = ",".join("?" for _ in ids)
+        with self._connect() as conn:
+            cur = conn.execute(f"DELETE FROM lexicon_keywords WHERE id IN ({placeholders})", ids)
+            conn.commit()
+        return int(cur.rowcount or 0)
 
     @staticmethod
     def _log_to_row(log: dict) -> tuple:

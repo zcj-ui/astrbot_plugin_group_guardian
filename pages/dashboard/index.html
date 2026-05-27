@@ -1328,6 +1328,34 @@ var FEATURE_TOGGLES = [
 var RULES_STATE = { category: 'swear', q: '', enabled: '', page: 1, pageSize: 20 };
 var KEYWORDS_STATE = { category: '', q: '', page: 1, pageSize: 50 };
 
+function renderSegmented(name, value, items) {
+  return '<div data-seg-name="' + name + '" style="display:inline-flex;gap:6px;flex-wrap:wrap">'
+    + items.map(function(it) {
+      var active = String(it.value) === String(value);
+      return '<button type="button" class="btn btn-sm ' + (active ? 'btn-primary' : 'btn-ghost') + '" data-seg-value="' + escAttr(String(it.value)) + '">' + esc(it.label) + '</button>';
+    }).join('')
+    + '</div>';
+}
+
+function bindSegmented(root, currentValue, onChange) {
+  if (!root) return;
+  $$('[data-seg-value]', root).forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      onChange(btn.getAttribute('data-seg-value'));
+    });
+  });
+}
+
+function renderPager(page, pageSize, total, prefix) {
+  var totalPages = Math.max(1, Math.ceil((total || 0) / pageSize));
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:10px;font-size:12px;color:var(--text-muted)">'
+    + '<span>第 ' + page + ' / ' + totalPages + ' 页，共 ' + total + ' 条</span>'
+    + '<div style="display:flex;gap:8px">'
+    + '<button class="btn btn-ghost btn-sm" data-page-act="prev" data-page-prefix="' + prefix + '" ' + (page <= 1 ? 'disabled' : '') + '>上一页</button>'
+    + '<button class="btn btn-ghost btn-sm" data-page-act="next" data-page-prefix="' + prefix + '" ' + (page >= totalPages ? 'disabled' : '') + '>下一页</button>'
+    + '</div></div>';
+}
+
 var MANUAL_SETTING_KEYS = {
   enabled: true,
   auto_moderate_enabled: true,
@@ -1436,8 +1464,8 @@ function renderRuleCenterShell() {
     + '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">'
     + '  <div style="min-width:0">'
     + '    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:10px">'
-    + '      <select class="input-sm" id="rulesCategory" style="width:120px"><option value="swear">脏话规则</option><option value="ad">广告规则</option></select>'
-    + '      <select class="input-sm" id="rulesEnabled" style="width:110px"><option value="">全部状态</option><option value="1">已启用</option><option value="0">已禁用</option></select>'
+    + '      <div id="rulesCategorySeg"></div>'
+    + '      <div id="rulesEnabledSeg"></div>'
     + '      <input class="input-sm" id="rulesQuery" style="width:180px" placeholder="搜索规则/备注" />'
     + '      <button class="btn btn-ghost btn-sm" id="btnRulesSearch">查询</button>'
     + '      <button class="btn btn-primary btn-sm" id="btnRuleAdd">新增规则</button>'
@@ -1454,14 +1482,25 @@ function renderRuleCenterShell() {
     + '    <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px">'
     + '      <input class="input-sm" id="kwNew" style="flex:1;min-width:120px" placeholder="输入新关键词" />'
     + '      <button class="btn btn-primary btn-sm" id="btnKwAdd">新增关键词</button>'
+    + '      <button class="btn btn-danger btn-sm" id="btnKwBatchDelete">批量删除</button>'
     + '    </div>'
     + '    <div id="kwTableWrap" style="overflow:auto"></div>'
     + '  </div>'
     + '</div>';
 
+  $('#rulesCategorySeg').innerHTML = renderSegmented('ruleCategory', RULES_STATE.category, [
+    { value: 'swear', label: '脏话规则' },
+    { value: 'ad', label: '广告规则' },
+  ]);
+  $('#rulesEnabledSeg').innerHTML = renderSegmented('ruleEnabled', RULES_STATE.enabled, [
+    { value: '', label: '全部状态' },
+    { value: '1', label: '已启用' },
+    { value: '0', label: '已禁用' },
+  ]);
+  bindSegmented($('#rulesCategorySeg'), RULES_STATE.category, function(v) { RULES_STATE.category = v; RULES_STATE.page = 1; renderRuleCenterShell(); loadRules(); });
+  bindSegmented($('#rulesEnabledSeg'), RULES_STATE.enabled, function(v) { RULES_STATE.enabled = v; RULES_STATE.page = 1; renderRuleCenterShell(); loadRules(); });
+
   $('#btnRulesSearch').addEventListener('click', function() {
-    RULES_STATE.category = $('#rulesCategory').value;
-    RULES_STATE.enabled = $('#rulesEnabled').value;
     RULES_STATE.q = $('#rulesQuery').value.trim();
     RULES_STATE.page = 1;
     loadRules();
@@ -1474,6 +1513,7 @@ function renderRuleCenterShell() {
     loadKeywords();
   });
   $('#btnKwAdd').addEventListener('click', addKeyword);
+  $('#btnKwBatchDelete').addEventListener('click', deleteSelectedKeywords);
 }
 
 async function loadRuleCenter() {
@@ -1504,6 +1544,7 @@ async function loadRules() {
   var total = res.total || 0;
   var rows = items.map(function(item) {
     return '<tr>'
+      + '<td><input type="checkbox" data-rule-id="' + item.id + '" /></td>'
       + '<td style="white-space:nowrap">' + esc(item.category) + '</td>'
       + '<td style="word-break:break-all">' + esc(item.pattern) + '</td>'
       + '<td>' + esc(item.description || '-') + '</td>'
@@ -1515,10 +1556,17 @@ async function loadRules() {
       + '</td>'
       + '</tr>';
   }).join('');
-  wrap.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">共 ' + total + ' 条规则</div>'
-    + '<table class="log-table"><thead><tr><th>分类</th><th>规则</th><th>备注</th><th>状态</th><th>操作</th></tr></thead><tbody>'
-    + (rows || '<tr><td colspan="5" style="text-align:center;color:var(--text-muted);padding:24px">暂无规则</td></tr>')
-    + '</tbody></table>';
+  wrap.innerHTML = '<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;font-size:12px;color:var(--text-muted);margin-bottom:6px"><span>共 ' + total + ' 条规则</span><div style="display:flex;gap:8px"><button class="btn btn-ghost btn-sm" id="btnRulesBatchEnable">批量启用</button><button class="btn btn-ghost btn-sm" id="btnRulesBatchDisable">批量禁用</button><button class="btn btn-danger btn-sm" id="btnRulesBatchDelete">批量删除</button></div></div>'
+    + '<table class="log-table"><thead><tr><th><input type="checkbox" id="rulesCheckAll" /></th><th>分类</th><th>规则</th><th>备注</th><th>状态</th><th>操作</th></tr></thead><tbody>'
+    + (rows || '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:24px">暂无规则</td></tr>')
+    + '</tbody></table>'
+    + renderPager(RULES_STATE.page, RULES_STATE.pageSize, total, 'rules');
+  var checkAll = $('#rulesCheckAll');
+  if (checkAll) {
+    checkAll.addEventListener('change', function() {
+      $$('[data-rule-id]', wrap).forEach(function(inp) { inp.checked = checkAll.checked; });
+    });
+  }
   $$('[data-act]', wrap).forEach(function(btn) {
     btn.addEventListener('click', async function() {
       var act = btn.getAttribute('data-act');
@@ -1545,6 +1593,41 @@ async function loadRules() {
       }
     });
   });
+  bindRuleBatchActions(wrap);
+  bindPager(wrap);
+}
+
+function selectedRuleIds() {
+  return $$('[data-rule-id]:checked').map(function(inp) { return parseInt(inp.getAttribute('data-rule-id'), 10) || 0; }).filter(Boolean);
+}
+
+function bindRuleBatchActions(wrap) {
+  var btnEnable = $('#btnRulesBatchEnable');
+  var btnDisable = $('#btnRulesBatchDisable');
+  var btnDelete = $('#btnRulesBatchDelete');
+  if (btnEnable) btnEnable.addEventListener('click', function() { batchToggleRules(true); });
+  if (btnDisable) btnDisable.addEventListener('click', function() { batchToggleRules(false); });
+  if (btnDelete) btnDelete.addEventListener('click', deleteSelectedRules);
+}
+
+async function batchToggleRules(enabled) {
+  var ids = selectedRuleIds();
+  if (!ids.length) { toast('请先选择规则', 'info'); return; }
+  var res = await safePost('rules/toggle_batch', { ids: ids, category: RULES_STATE.category, enabled: enabled });
+  if (!res || res.status === 'error') { toast('批量更新失败: ' + ((res && res.message) || ''), 'error'); return; }
+  toast(enabled ? '已批量启用' : '已批量禁用', 'success');
+  loadRules();
+  loadRebuildStatus();
+}
+
+async function deleteSelectedRules() {
+  var ids = selectedRuleIds();
+  if (!ids.length) { toast('请先选择规则', 'info'); return; }
+  var res = await safePost('rules/delete_batch', { ids: ids, category: RULES_STATE.category });
+  if (!res || res.status === 'error') { toast('批量删除失败: ' + ((res && res.message) || ''), 'error'); return; }
+  toast('已批量删除规则', 'success');
+  loadRules();
+  loadRebuildStatus();
 }
 
 function openRuleEditor(rule) {
@@ -1605,11 +1688,18 @@ async function loadKeywords() {
   var items = res.items || [];
   var total = res.total || 0;
   wrap.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">分类 ' + esc(KEYWORDS_STATE.category) + '，共 ' + total + ' 个关键词</div>'
-    + '<table class="log-table"><thead><tr><th>ID</th><th>关键词</th><th>操作</th></tr></thead><tbody>'
+    + '<table class="log-table"><thead><tr><th><input type="checkbox" id="kwCheckAll" /></th><th>ID</th><th>关键词</th><th>操作</th></tr></thead><tbody>'
     + (items.map(function(item) {
-        return '<tr><td>' + item.id + '</td><td style="word-break:break-all">' + esc(item.keyword) + '</td><td><button class="btn btn-danger btn-sm" data-kw-del="' + item.id + '">删除</button></td></tr>';
-      }).join('') || '<tr><td colspan="3" style="text-align:center;color:var(--text-muted);padding:24px">暂无关键词</td></tr>')
-    + '</tbody></table>';
+        return '<tr><td><input type="checkbox" data-kw-id="' + item.id + '" /></td><td>' + item.id + '</td><td style="word-break:break-all">' + esc(item.keyword) + '</td><td><button class="btn btn-danger btn-sm" data-kw-del="' + item.id + '">删除</button></td></tr>';
+      }).join('') || '<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:24px">暂无关键词</td></tr>')
+    + '</tbody></table>'
+    + renderPager(KEYWORDS_STATE.page, KEYWORDS_STATE.pageSize, total, 'keywords');
+  var kwCheckAll = $('#kwCheckAll');
+  if (kwCheckAll) {
+    kwCheckAll.addEventListener('change', function() {
+      $$('[data-kw-id]', wrap).forEach(function(inp) { inp.checked = kwCheckAll.checked; });
+    });
+  }
   $$('[data-kw-del]', wrap).forEach(function(btn) {
     btn.addEventListener('click', async function() {
       var res2 = await safePost('lexicon/keywords/delete', { id: parseInt(btn.getAttribute('data-kw-del'), 10) || 0, category: KEYWORDS_STATE.category });
@@ -1617,6 +1707,37 @@ async function loadKeywords() {
       toast('关键词已删除', 'success');
       loadKeywordCategories();
       loadRebuildStatus();
+    });
+  });
+  bindPager(wrap);
+}
+
+function selectedKeywordIds() {
+  return $$('[data-kw-id]:checked').map(function(inp) { return parseInt(inp.getAttribute('data-kw-id'), 10) || 0; }).filter(Boolean);
+}
+
+async function deleteSelectedKeywords() {
+  var ids = selectedKeywordIds();
+  if (!ids.length) { toast('请先选择关键词', 'info'); return; }
+  var res = await safePost('lexicon/keywords/delete_batch', { ids: ids, category: KEYWORDS_STATE.category });
+  if (!res || res.status === 'error') { toast('批量删除失败: ' + ((res && res.message) || ''), 'error'); return; }
+  toast('已批量删除关键词', 'success');
+  loadKeywordCategories();
+  loadRebuildStatus();
+}
+
+function bindPager(root) {
+  $$('[data-page-act]', root).forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      var prefix = btn.getAttribute('data-page-prefix');
+      var act = btn.getAttribute('data-page-act');
+      if (prefix === 'rules') {
+        RULES_STATE.page = act === 'prev' ? Math.max(1, RULES_STATE.page - 1) : RULES_STATE.page + 1;
+        loadRules();
+      } else if (prefix === 'keywords') {
+        KEYWORDS_STATE.page = act === 'prev' ? Math.max(1, KEYWORDS_STATE.page - 1) : KEYWORDS_STATE.page + 1;
+        loadKeywords();
+      }
     });
   });
 }
