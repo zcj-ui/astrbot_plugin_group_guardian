@@ -110,6 +110,8 @@ class WebMixin:
                 ("/blacklist/remove", self._web_blacklist_remove, ["POST"], "移除群黑名单"),
                 ("/user_blacklist/add", self._web_user_blacklist_add, ["POST"], "添加用户黑名单"),
                 ("/user_blacklist/remove", self._web_user_blacklist_remove, ["POST"], "移除用户黑名单"),
+                ("/user_whitelist/add", self._web_user_whitelist_add, ["POST"], "添加审核白名单用户"),
+                ("/user_whitelist/remove", self._web_user_whitelist_remove, ["POST"], "移除审核白名单用户"),
                 ("/admin/add", self._web_admin_add, ["POST"], "添加管理员"),
                 ("/admin/remove", self._web_admin_remove, ["POST"], "移除管理员"),
                 ("/today_stats", self._web_today_stats, ["GET"], "获取今日拦截统计"),
@@ -161,6 +163,7 @@ class WebMixin:
             "group_white_list_count": len(self.group_white_list),
             "group_black_list_count": len(self.group_black_list),
             "user_black_list_count": len(self.user_black_list),
+            "user_white_list_count": len(self.user_white_list),
             "admin_list_count": len(self.config.get("admin_list", [])),
             "swear_patterns_count": len(self._storage.load_moderation_rules("swear")),
             "ad_patterns_count": len(self._storage.load_moderation_rules("ad")),
@@ -203,6 +206,7 @@ class WebMixin:
         safe_config["_white_list"] = self.group_white_list
         safe_config["_black_list"] = self.group_black_list
         safe_config["_user_black_list"] = self.user_black_list
+        safe_config["_user_white_list"] = self.user_white_list
         safe_config["_admin_list"] = self.config.get("admin_list", [])
         return jsonify(safe_config)
 
@@ -227,6 +231,7 @@ class WebMixin:
                 "group_white_list": ("group_white_list", "_group_white_set"),
                 "group_black_list": ("group_black_list", "_group_black_set"),
                 "user_black_list": ("user_black_list", "_user_black_set"),
+                "user_white_list": ("user_white_list", "_user_white_set"),
             }
             old_config = {k: self.config.get(k) for k in data if k.startswith("lexicon_")}
             old_enabled = self.config.get("anti_flood_enabled", True)
@@ -944,6 +949,25 @@ class WebMixin:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
+    async def _web_user_whitelist_add(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            user_id = str(data.get("user_id", "")).strip()
+            if not user_id:
+                return jsonify({"status": "error", "message": "缺少 user_id"})
+            if user_id in self._user_black_set:
+                self._safe_list_remove(self.user_black_list, user_id)
+                self._user_black_set.discard(user_id)
+                self.config["user_black_list"] = self.user_black_list
+            if user_id not in self._user_white_set:
+                self.user_white_list.append(user_id)
+                self._user_white_set.add(user_id)
+                self.config["user_white_list"] = self.user_white_list
+            self._save_config_safe()
+            return jsonify({"status": "success", "user_id": user_id, "user_white_list": self.user_white_list})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
     async def _web_user_blacklist_remove(self):
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
@@ -956,6 +980,21 @@ class WebMixin:
                 self.config["user_black_list"] = self.user_black_list
             self._save_config_safe()
             return jsonify({"status": "success", "user_id": user_id, "user_black_list": self.user_black_list})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_user_whitelist_remove(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            user_id = str(data.get("user_id", "")).strip()
+            if not user_id:
+                return jsonify({"status": "error", "message": "缺少 user_id"})
+            if user_id in self._user_white_set:
+                self._safe_list_remove(self.user_white_list, user_id)
+                self._user_white_set.discard(user_id)
+                self.config["user_white_list"] = self.user_white_list
+            self._save_config_safe()
+            return jsonify({"status": "success", "user_id": user_id, "user_white_list": self.user_white_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 

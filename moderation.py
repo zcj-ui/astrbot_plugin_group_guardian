@@ -815,6 +815,9 @@ class ModerationMixin:
         group_id = self._get_group_id(event)
         if not group_id:
             return
+        user_id = self._try_get_sender_id(event)
+        if user_id and self._user_white_set and user_id in self._user_white_set:
+            return
         # 群黑名单：在黑名单中的群完全不处理（与白名单的"不处理白名单外的群"逻辑对应）。
         if self._group_black_set and group_id in self._group_black_set:
             return
@@ -838,7 +841,6 @@ class ModerationMixin:
             return
         # 用户黑名单：直接踢出+禁言，不经过审核流程。
         if self._user_black_set:
-            user_id = self._try_get_sender_id(event)
             if user_id and user_id in self._user_black_set:
                 try:
                     await self._kick_member(event)

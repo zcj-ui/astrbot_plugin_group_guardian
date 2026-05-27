@@ -1436,6 +1436,7 @@ var MANUAL_SETTING_KEYS = {
   group_white_list: true,
   group_black_list: true,
   user_black_list: true,
+  user_white_list: true,
 };
 
 function updateLinDisclaimerStatus(agreed) {
@@ -2011,11 +2012,13 @@ function renderListSettings() {
   var whites = CONFIG._white_list || CONFIG.group_white_list || [];
   var blacks = CONFIG._black_list || CONFIG.group_black_list || [];
   var users = CONFIG._user_black_list || CONFIG.user_black_list || [];
+  var userWhites = CONFIG._user_white_list || CONFIG.user_white_list || [];
 
   c.innerHTML =
     '<div class="list-section"><h3>群白名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addWhiteInput" placeholder="输入群号..." /><button class="btn btn-primary btn-sm" id="btnAddWhite">添加</button></div><div class="list-items" id="whiteItems">' + renderListTags(whites, 'white') + '</div></div>' +
     '<div class="list-section"><h3>群黑名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addBlackInput" placeholder="输入群号..." /><button class="btn btn-danger btn-sm" id="btnAddBlack">添加</button></div><div class="list-items" id="blackItems">' + renderListTags(blacks, 'black') + '</div></div>' +
-    '<div class="list-section"><h3>用户黑名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addUserInput" placeholder="输入QQ号..." /><button class="btn btn-warning btn-sm" id="btnAddUser" style="background:var(--warning);color:#fff">添加</button></div><div class="list-items" id="userItems">' + renderListTags(users, 'user') + '</div></div>';
+    '<div class="list-section"><h3>用户黑名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addUserInput" placeholder="输入QQ号..." /><button class="btn btn-warning btn-sm" id="btnAddUser" style="background:var(--warning);color:#fff">添加</button></div><div class="list-items" id="userItems">' + renderListTags(users, 'user') + '</div></div>' +
+    '<div class="list-section"><h3>审核白名单用户</h3><div class="list-add-row"><input type="text" class="input-sm" id="addUserWhiteInput" placeholder="输入QQ号..." /><button class="btn btn-primary btn-sm" id="btnAddUserWhite">添加</button></div><div class="setting-desc" style="margin-bottom:8px">白名单用户将跳过自动审核与防刷屏，优先级高于用户黑名单</div><div class="list-items" id="userWhiteItems">' + renderListTags(userWhites, 'userwhite') + '</div></div>';
 
   $('#btnAddWhite').addEventListener('click', async function() {
     var val = $('#addWhiteInput').value.trim(); if (!val) return;
@@ -2038,6 +2041,13 @@ function renderListSettings() {
     toast('已添加到用户黑名单', 'warning');
     loadSettings();
   });
+  $('#btnAddUserWhite').addEventListener('click', async function() {
+    var val = $('#addUserWhiteInput').value.trim(); if (!val) return;
+    await safePost('user_whitelist/add', { user_id: val });
+    $('#addUserWhiteInput').value = '';
+    toast('已添加到审核白名单', 'success');
+    loadSettings();
+  });
 
   $$('.list-tag .btn-remove', c).forEach(function(btn) {
     btn.addEventListener('click', async function() {
@@ -2046,6 +2056,7 @@ function renderListSettings() {
       if (type === 'white') await safePost('whitelist/remove', { group_id: val });
       else if (type === 'black') await safePost('blacklist/remove', { group_id: val });
       else if (type === 'user') await safePost('user_blacklist/remove', { user_id: val });
+      else if (type === 'userwhite') await safePost('user_whitelist/remove', { user_id: val });
       toast('已移除', 'success');
       loadSettings();
     });
@@ -2053,7 +2064,7 @@ function renderListSettings() {
 }
 
 function renderListTags(list, type) {
-  var cls = type === 'white' ? 'list-tag-white' : type === 'black' ? 'list-tag-black' : 'list-tag-user';
+  var cls = type === 'white' ? 'list-tag-white' : (type === 'black' ? 'list-tag-black' : 'list-tag-user');
   if (!list.length) return '<span style="font-size:12px;color:var(--text-muted)">暂无</span>';
   return list.map(function(v) {
     return '<span class="list-tag ' + cls + '">' + esc(String(v)) + '<button class="btn-remove" data-type="' + type + '" data-val="' + esc(String(v)) + '">&times;</button></span>';

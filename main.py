@@ -52,6 +52,9 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
         _ubl = self.config.get("user_black_list", [])
         self.user_black_list = [str(u).strip() for u in (_ubl if isinstance(_ubl, list) else [_ubl]) if u]
         self._user_black_set = set(self.user_black_list)
+        _uwl = self.config.get("user_white_list", [])
+        self.user_white_list = [str(u).strip() for u in (_uwl if isinstance(_uwl, list) else [_uwl]) if u]
+        self._user_white_set = set(self.user_white_list)
         self.auto_moderate_enabled = self.config.get("auto_moderate_enabled", True)
         # 脏话/广告规则：AC 自动机优先，无法拆解的正则保留回退
         _swear_list = self._storage.load_moderation_rules("swear")

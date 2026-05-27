@@ -41,6 +41,12 @@
         "default": [],
         "hint": "列表中的QQ号将被自动拒绝加入任何群"
     },
+    "user_white_list": {
+        "description": "审核白名单用户（免审核/免防刷屏）",
+        "type": "list",
+        "default": [],
+        "hint": "列表中的QQ号将跳过自动审核与防刷屏检测，优先级高于用户黑名单"
+    },
     "admin_list": {
         "description": "管理员 QQ 号列表",
         "type": "list",
