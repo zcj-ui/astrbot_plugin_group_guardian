@@ -13,19 +13,23 @@ from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 from .anti_flood import AntiFloodMixin
+from .appeal import AppealMixin
 from .automaton import HybridMatcher
 from .commands import CommandsMixin
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .llm_tools import LlmToolsMixin
+from .membership import MembershipMixin
 from .moderation import ModerationMixin
 from .onebot import OneBotMixin
+from .remote import RemoteMixin
+from .scheduler import SchedulerMixin
 from .storage import SQLiteStorage
 from .utils import UtilitiesMixin
 from .web import WebMixin
 
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
-class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
+class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
     """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -34,27 +38,18 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
         self.config = config or {}
         # 读取 _conf_schema.json 到 _config_schema，供 WebUI 渲染配置面板
         self._config_schema = self._load_config_schema()
-        # 同步 AstrBot 全局管理员到插件黑色管理员列表，确保插件管理者与框架一致
-        self._sync_astrbot_admins()
         self._client = None
         # StarTools.get_data_dir() 由框架分配持久化目录(data/plugin_data/插件名/)，更新插件时不会覆盖
         self._data_dir = StarTools.get_data_dir()
         self._storage = SQLiteStorage(self._data_dir, self._get_plugin_dir())
         self._storage.initialize()
-        # 黑白名单：转字符串 trim 后统一为 list，再转为 set 提升查找性能
-        # 群白名单：白名单非空时仅处理列表内的群
-        _gwl = self.config.get("group_white_list", [])
-        self.group_white_list = [str(g).strip() for g in (_gwl if isinstance(_gwl, list) else [_gwl]) if g]
-        self._group_white_set = set(self.group_white_list)
-        _gbl = self.config.get("group_black_list", [])
-        self.group_black_list = [str(g).strip() for g in (_gbl if isinstance(_gbl, list) else [_gbl]) if g]
-        self._group_black_set = set(self.group_black_list)
-        _ubl = self.config.get("user_black_list", [])
-        self.user_black_list = [str(u).strip() for u in (_ubl if isinstance(_ubl, list) else [_ubl]) if u]
-        self._user_black_set = set(self.user_black_list)
-        _uwl = self.config.get("user_white_list", [])
-        self.user_white_list = [str(u).strip() for u in (_uwl if isinstance(_uwl, list) else [_uwl]) if u]
-        self._user_white_set = set(self.user_white_list)
+        # 多群独立配置缓存：{group_id: {key: value(str)}}，按群懒加载，WebUI 改配置后失效
+        self._group_cfg_cache = {}
+        # 单群管理类名单（群白/群黑/用户黑/用户白/管理员）：v2.4.0 起以 SQLite 为准，
+        # 首次启动自动从旧 config 迁移。下面会填充 group_white_list / _group_white_set 等内存结构。
+        self._migrate_and_load_managed_lists()
+        # 同步 AstrBot 全局管理员到插件 admin_list（写入 DB managed_lists + 内存）
+        self._sync_astrbot_admins()
         self.auto_moderate_enabled = self.config.get("auto_moderate_enabled", True)
         # 脏话/广告规则：AC 自动机优先，无法拆解的正则保留回退
         _swear_list = self._storage.load_moderation_rules("swear")
@@ -74,9 +69,9 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
         # 日志写出节流：_last_log_save + asyncio 定时任务，避免每次审核都写盘
         self._last_log_save = 0.0
         self._log_save_task = None
-        # 管理员角色缓存：cache_ttl=300 秒后强制刷新，避免频繁 call_api 查 get_group_member_list
-        self._admin_role_cache: Dict[str, Tuple[bool, float]] = {}
-        self._admin_role_cache_ttl = 300.0
+        # 管理员角色缓存：存"角色字符串"，TTL 10 秒（F5 下管理后最多 10 秒失效）
+        self._admin_role_cache: Dict[str, Tuple[str, float]] = {}
+        self._admin_role_cache_ttl = 10.0
         # 当日统计缓存，reset 键是 today_start 时间戳，跨日自动清零
         self._stats_cache = {"today_start": 0, "blocked": 0, "passed": 0, "total": 0, "group_stats": {}, "user_stats": {}}
         # LLM 并发信号量：同一时刻最多 5 个 LLM 请求，防止所有 provider 被填满
@@ -90,6 +85,9 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
         self._rebuild_status = {"state": "idle", "target": "", "message": "空闲", "updated_at": 0}
         # 注册 WebUI 面板所需的 Quart 路由
         self._register_web_apis()
+        # 后台调度器（F3 定时解禁 + F2 申诉超时清理）
+        self._init_scheduler()
+        self._start_scheduler()
 
     async def terminate(self):
         if self._rebuild_task and not self._rebuild_task.done():
@@ -98,6 +96,7 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
                 await self._rebuild_task
             except asyncio.CancelledError:
                 logger.debug("[GroupMgr] 后台重建任务已取消")
+        await self._stop_scheduler()
         logger.info("[GroupMgr] 插件卸载，SQLite 存储已自动持久化")
 
     def _set_rebuild_status(self, state: str, target: str = "", message: str = "") -> None:
@@ -123,7 +122,6 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
         if not cat:
             self._lexicon.pop(category, None)
             self._compiled_lexicon.pop(category, None)
-            self._invalidate_lexicon_cache(category)
             return
         self._lexicon[category] = {
             "description": cat.get("description", ""),
@@ -133,7 +131,6 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
             self._compiled_lexicon[category] = self._compile_lexicon_category(category, self._lexicon[category])
         else:
             self._compiled_lexicon.pop(category, None)
-            self._invalidate_lexicon_cache(category)
 
     async def _background_full_rebuild(self, reason: str = "") -> None:
         while True:
@@ -573,4 +570,85 @@ class Main(ModerationMixin, AntiFloodMixin, LlmToolsMixin, WebMixin, OneBotMixin
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def _handle_message(self, event: AiocqhttpMessageEvent):
         async for item in ModerationMixin._handle_message(self, event):
+            yield item
+
+    # F1 入群自动审核：监听加群申请事件（与 _handle_message 共用 ALL 监听，互不干扰）。
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def _on_group_request(self, event: AiocqhttpMessageEvent):
+        if not self._is_group_request_event(event):
+            return
+        try:
+            await MembershipMixin._handle_group_request(self, event)
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 入群审核出错: {e}")
+        event.stop_event()
+
+    # F2 私聊申诉裁决：私聊消息且发送者有 waiting 申诉时进入。
+    @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def _on_private_appeal(self, event: AiocqhttpMessageEvent):
+        user_id = self._try_get_sender_id(event)
+        if not self._has_waiting_appeal(user_id):
+            return
+        async for item in AppealMixin._handle_private_appeal(self, event):
+            yield item
+        event.stop_event()
+
+    # F4 批量管理指令
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("批量禁言")
+    async def cmd_batch_ban(self, event: AstrMessageEvent):
+        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长分钟]'''
+        async for item in CommandsMixin.cmd_batch_ban(self, event):
+            yield item
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("批量踢人")
+    async def cmd_batch_kick(self, event: AstrMessageEvent):
+        '''批量踢出多人。用法: /批量踢人 <QQ1> <QQ2> ...'''
+        async for item in CommandsMixin.cmd_batch_kick(self, event):
+            yield item
+
+    # F5 群管理员授权开关指令
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("群管理授权")
+    async def cmd_group_admin_grant(self, event: AstrMessageEvent):
+        '''群管理员授权开关。用法: /群管理授权 开启/关闭/状态'''
+        async for item in CommandsMixin.cmd_group_admin_grant(self, event):
+            yield item
+
+    # F5 群主移除/恢复本群某群管的 bot 权限（权限在方法内校验：群主或插件管理员）
+    @filter.command("移除群管权限")
+    async def cmd_revoke_admin_perm(self, event: AstrMessageEvent):
+        '''群主移除本群某群管的bot管理权限。用法: /移除群管权限 <QQ号>'''
+        async for item in CommandsMixin.cmd_revoke_admin_perm(self, event):
+            yield item
+
+    @filter.command("恢复群管权限")
+    async def cmd_restore_admin_perm(self, event: AstrMessageEvent):
+        '''群主恢复本群某群管的bot管理权限。用法: /恢复群管权限 <QQ号>'''
+        async for item in CommandsMixin.cmd_revoke_admin_perm(self, event):
+            yield item
+
+    # F4 批量管理 LLM 工具
+    @filter.llm_tool(name="batch_ban_members")
+    async def batch_ban_members_tool(self, event: AstrMessageEvent, user_ids: str, duration_minutes: int = 10):
+        '''批量禁言多个群成员。当用户要求同时禁言多人时使用此工具。
+
+        Args:
+            user_ids(array): 要禁言的用户QQ号列表
+            duration_minutes(number): 禁言时长（分钟），默认10分钟
+        '''
+        async for item in LlmToolsMixin.batch_ban_members_tool(self, event, user_ids, duration_minutes):
+            yield item
+
+    @filter.llm_tool(name="batch_kick_members")
+    async def batch_kick_members_tool(self, event: AstrMessageEvent, user_ids: str):
+        '''批量踢出多个群成员。当用户要求同时踢出多人时使用此工具。
+
+        Args:
+            user_ids(array): 要踢出的用户QQ号列表
+        '''
+        async for item in LlmToolsMixin.batch_kick_members_tool(self, event, user_ids):
             yield item

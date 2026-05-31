@@ -1,5 +1,64 @@
 # Changelog
 
+## v2.3.0 - 2026-05-31
+
+### 重大更新
+
+- **多群独立配置**：新增 `group_configs` 表与 WebUI「多群配置」页。**所有通用配置**（76 项：全部功能开关、审核/词库/防刷屏/申诉/入群开关与阈值、封禁通知模板等）均可按群单独配置，未设置的项**继承全局默认**。布尔项支持「继承/强制开/强制关」三态，整型项留空即继承。**仅白名单群可配置**（白名单为空时所有群可配）。审核管线、防刷屏、词库分类、群管功能开关（`_cfg_check`）全程按群读取配置，真正实现多群多策略。排除项：名单类、Provider 选择、免责声明、暗色模式（全局语义）。
+- **单群管理类名单迁移到 SQLite**：群白名单、群黑名单、用户黑名单、审核白名单、插件管理员 5 类名单从配置文件迁移到 `managed_lists` 表，统一由 WebUI 管理；配置 schema 中对应项设为隐藏（仅作升级兼容兜底）。首次启动自动从旧 config 迁移（DB 为空时回退读旧值，杜绝升级丢管理员）。
+- **入群自动审核**：监听加群申请，按「通过词 / 拒绝词 / 违禁词库」自动通过或拒绝，其余按默认动作（转人工 / 自动通过 / 自动拒绝）。规则支持按群配置（`join_audit_rules` 表），WebUI「入群审核」页可视化增删改。
+- **刷屏申诉工作流（F2）**：开启后，刷屏处罚时群内 @ 当事人，要求其私聊机器人说明原因；私聊触发后 LLM 结合「申诉理由 + 该用户群内最近 30 条上下文 + 原处罚」复合审核，成立则自动解禁、不成立维持、超时维持。状态机存于 `appeals` 表，WebUI「申诉/解禁」页可查。
+- **定时自动解禁（F3）**：插件发起的禁言可登记到期解禁，后台任务按 `auto_unban_scan_interval` 秒轮询执行，重启后从 `scheduled_unbans` 表恢复。永久禁言按 `auto_unban_permanent_hours` 托管解禁。
+- **批量管理（F4）**：新增 `/批量禁言`、`/批量踢人` 指令与 `batch_ban_members`、`batch_kick_members` LLM 工具；WebUI 群成员列表支持多选后批量执行（禁言/解禁/踢/设名片/设头衔/设管理/取消管理），单次上限 50 人。
+- **动态群管理员授权（F5）**：可按群开启「群主/群管自动成为该群插件管理员」，被下管理后约 10 秒内自动失效（角色缓存 TTL 由 300s 收紧到 10s，缓存存角色而非布尔）。授权对象（群主/管理员）可分别开关。
+- **群超管**：WebUI 可为指定群单独设置插件管理员（仅该群生效）。
+- **群权限黑名单**：群主可移除本群某群管的 bot 管理权限（`/移除群管权限`、`/恢复群管权限`，优先级最高），WebUI「权限管理」页可视化维护。
+- **WebUI 远程执行**：「群管理」页选择群成员后，可远程执行任意群管操作（禁言/解禁/踢/名片/头衔/精华/公告/群名/全体禁言/撤回等），支持单个与批量。
+
+### 配置迁移
+
+- **单群管理类名单迁移到 SQLite**：群白名单、群黑名单、用户黑名单、审核白名单、插件管理员 5 类名单从 `_conf_schema.json` 迁移到 `managed_lists` 表，WebUI 增删改一律走 DB。首次启动自动从旧 config 迁移（`meta.lists_migrated` 标记，DB 为空时回退读旧值，杜绝升级丢管理员）。
+- 全局标量开关、阈值、模板、Provider 选择仍保留在 `_conf_schema.json`（AstrBot 标准机制）。
+
+### 新增配置项
+
+- 入群审核：`join_audit_enabled`、`join_accept_keywords`、`join_reject_keywords`、`join_reject_use_lexicon`、`join_default_action`、`join_reject_reason`
+- 申诉：`appeal_enabled`、`appeal_window_minutes`、`appeal_context_count`、`appeal_at_template`
+- 定时解禁：`auto_unban_enabled`、`auto_unban_scan_interval`、`auto_unban_permanent_hours`
+- 动态授权：`group_admin_grant_enabled`、`legacy_role_admin_enabled`
+- 所有新功能开关**默认关闭**，不影响现有用户行为。
+
+### 新增模块
+
+- `membership.py`（入群审核）、`appeal.py`（申诉工作流）、`scheduler.py`（后台调度：定时解禁 + 申诉超时清理）、`remote.py`（WebUI 远程执行统一入口）。
+- `storage.py` 新增表：`join_audit_rules`、`appeals`、`scheduled_unbans`、`group_admin_grant`、`managed_lists`、`group_super_admins`、`group_admin_block`。
+
+### 性能优化与重构
+
+- **审核热路径去重**：`_handle_message` 中 `user_id`/`user_name` 由每条消息取 3 次改为开头取一次贯穿全程。
+- **重构 `_call_llm_safe`**：130 行 4 层闭包嵌套拆分为 `_invoke_provider_methods` / `_call_llm_by_provider_id` / `_LLMErrorBag` 三个清晰单元，行为不变。
+- **防刷屏去重遍历**：`_check_anti_flood` 的「重复消息」分支不再二次遍历队列，主循环内同步收集消息 ID。
+- **词库编译去重**：`_compile_lexicon` 与 `_lexicon_category_enabled` 重复的 switch_map 合并为 `_lexicon_switch_map()`，关键词拆解提取为 `_extract_lexicon_parts()`。
+- 角色缓存改存「角色字符串」，支持 F5 授权配置变更即时生效。
+
+### Bug 修复
+
+- **修复 `web.py` 导出词库 CSV 崩溃**：`_web_export_lexicon_keywords` 调用了未导入的 `send_file`，改为与导出日志一致的元组返回（带 UTF-8 BOM，Excel 中文不乱码）。
+- **修复 `tuple[bool, str]` 注解兼容性**：`web.py` 两处增量重建方法使用了 Python 3.9+ 的小写下标泛型，改回 `typing.Tuple`，兼容 3.8。
+- **清理死代码**：移除 `utils.py` 中 pickle 缓存残留（`cache_dir`/`db_mtime`/空操作的 `_invalidate_lexicon_cache`）及无用 `Path` 导入。
+
+### WebUI
+
+- 新增「入群审核」「权限管理」「申诉/解禁」三个标签页，沿用主面板 GitHub Primer 风格与 SVG 图标。
+- 群成员列表新增单个/批量远程操作能力。
+- 重做插件 Logo（盾牌 + 对勾，蓝色渐变，更精致）。
+
+### 验证
+
+- 已通过 `python -m py_compile` 全量语法校验、`_conf_schema.json` JSON 校验、dashboard 内联 JS 的 `node --check`。
+- 已通过离线集成测试：mixin 导入、Main MRO 组装、storage 新表增删改查、远程执行端到端、权限判定。
+- 注：开发环境无 AstrBot 运行时，真机功能（加群事件字段、私聊申诉、主动消息）需用户在 NapCat/LLOneBot 等协议端实测。
+
 ## v2.2.7 - 2026-05-27
 
 ### 新增

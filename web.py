@@ -4,6 +4,7 @@ import io
 import re
 import sqlite3
 from collections import deque
+from typing import Tuple
 
 from astrbot.api import logger
 
@@ -35,7 +36,7 @@ class WebMixin:
         _wrapped.__name__ = handler.__name__
         return _wrapped
 
-    def _apply_incremental_rule_rebuild(self, category: str) -> tuple[bool, str]:
+    def _apply_incremental_rule_rebuild(self, category: str) -> Tuple[bool, str]:
         """尝试立即重建规则匹配器，失败时调度后台全量重建。"""
         try:
             self._rebuild_rule_matcher(category)
@@ -46,7 +47,7 @@ class WebMixin:
             self._schedule_background_rebuild(f"规则分类 {category} 增量重建失败，转后台全量重建")
             return False, str(e)
 
-    def _apply_incremental_lexicon_rebuild(self, category: str) -> tuple[bool, str]:
+    def _apply_incremental_lexicon_rebuild(self, category: str) -> Tuple[bool, str]:
         """尝试立即重建词库分类，失败时调度后台全量重建。"""
         try:
             self._rebuild_lexicon_category(category)
@@ -122,6 +123,28 @@ class WebMixin:
                 ("/dashboard/hourly", self._web_dashboard_hourly, ["GET"], "获取时段分布"),
                 ("/dashboard/group_ranking", self._web_dashboard_group_ranking, ["GET"], "获取历史群拦截排行"),
                 ("/anti_flood/status", self._web_anti_flood_status, ["GET"], "获取防刷屏追踪状态"),
+                ("/join_rules", self._web_get_join_rules, ["GET"], "获取入群审核规则列表"),
+                ("/join_rules/save", self._web_save_join_rule, ["POST"], "保存入群审核规则"),
+                ("/join_rules/delete", self._web_delete_join_rule, ["POST"], "删除入群审核规则"),
+                ("/scheduled_unbans", self._web_get_scheduled_unbans, ["GET"], "获取定时解禁计划"),
+                ("/scheduled_unbans/delete", self._web_delete_scheduled_unban, ["POST"], "取消定时解禁计划"),
+                ("/appeals", self._web_get_appeals, ["GET"], "获取申诉记录"),
+                ("/admin_grant", self._web_get_admin_grants, ["GET"], "获取群管理员授权配置"),
+                ("/admin_grant/save", self._web_save_admin_grant, ["POST"], "保存群管理员授权配置"),
+                ("/admin_grant/delete", self._web_delete_admin_grant, ["POST"], "删除群管理员授权配置"),
+                ("/remote/actions", self._web_remote_actions, ["GET"], "获取可远程执行的操作列表"),
+                ("/remote/execute", self._web_remote_execute, ["POST"], "远程执行群管操作（支持批量）"),
+                ("/super_admin", self._web_get_super_admins, ["GET"], "获取群超管列表"),
+                ("/super_admin/add", self._web_add_super_admin, ["POST"], "添加群超管"),
+                ("/super_admin/remove", self._web_remove_super_admin, ["POST"], "移除群超管"),
+                ("/admin_block", self._web_get_admin_blocks, ["GET"], "获取群权限黑名单"),
+                ("/admin_block/add", self._web_add_admin_block, ["POST"], "移除某群管的bot权限"),
+                ("/admin_block/remove", self._web_remove_admin_block, ["POST"], "恢复某群管的bot权限"),
+                ("/group_config", self._web_get_group_config, ["GET"], "获取某群的独立配置"),
+                ("/group_config/set", self._web_set_group_config, ["POST"], "设置某群某配置项"),
+                ("/group_config/delete", self._web_delete_group_config, ["POST"], "删除某群某配置项（恢复继承）"),
+                ("/group_config/clear", self._web_clear_group_config, ["POST"], "清空某群全部独立配置"),
+                ("/configured_groups", self._web_configured_groups, ["GET"], "列出有独立配置的群"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(
@@ -164,7 +187,7 @@ class WebMixin:
             "group_black_list_count": len(self.group_black_list),
             "user_black_list_count": len(self.user_black_list),
             "user_white_list_count": len(self.user_white_list),
-            "admin_list_count": len(self.config.get("admin_list", [])),
+            "admin_list_count": len(self._get_admin_list()),
             "swear_patterns_count": len(self._storage.load_moderation_rules("swear")),
             "ad_patterns_count": len(self._storage.load_moderation_rules("ad")),
             "lexicon_categories_count": len(self._lexicon),
@@ -207,7 +230,7 @@ class WebMixin:
         safe_config["_black_list"] = self.group_black_list
         safe_config["_user_black_list"] = self.user_black_list
         safe_config["_user_white_list"] = self.user_white_list
-        safe_config["_admin_list"] = self.config.get("admin_list", [])
+        safe_config["_admin_list"] = self._get_admin_list()
         return jsonify(safe_config)
 
     async def _web_update_config(self):
@@ -227,17 +250,16 @@ class WebMixin:
                 "repeat_detect_count": (2, 9999),
                 "long_text_threshold": (0, 1000000),
             }
-            list_postprocess = {
-                "group_white_list": ("group_white_list", "_group_white_set"),
-                "group_black_list": ("group_black_list", "_group_black_set"),
-                "user_black_list": ("user_black_list", "_user_black_set"),
-                "user_white_list": ("user_white_list", "_user_white_set"),
-            }
             old_config = {k: self.config.get(k) for k in data if k.startswith("lexicon_")}
             old_enabled = self.config.get("anti_flood_enabled", True)
+            # 单群管理类名单（群白/群黑/用户黑/用户白/管理员）v2.4.0 起改由专用 API + DB 管理，
+            # 配置保存接口跳过它们，避免 config 与 DB 双写不一致。
+            db_managed_keys = {"group_white_list", "group_black_list", "user_black_list", "user_white_list", "admin_list"}
             updated = []
             for key, value in data.items():
                 if key not in schema:
+                    continue
+                if key in db_managed_keys:
                     continue
                 field_type = schema[key].get("type", "")
                 if field_type == "bool":
@@ -293,16 +315,6 @@ class WebMixin:
             # 防刷屏总开关关闭时清空追踪缓冲区
             if "anti_flood_enabled" in updated and old_enabled and not self._cfg("anti_flood_enabled", True):
                 self._anti_flood_data.clear()
-            for cfg_key, (list_attr, set_attr) in list_postprocess.items():
-                if cfg_key in updated:
-                    raw = self.config.get(cfg_key, [])
-                    cleaned = [str(g).strip() for g in (raw if isinstance(raw, list) else [raw]) if g]
-                    setattr(self, list_attr, cleaned)
-                    setattr(self, set_attr, set(cleaned))
-            if "admin_list" in updated:
-                al = self.config.get("admin_list", [])
-                self.config["admin_list"] = [str(a).strip() for a in (al if isinstance(al, list) else [al]) if a]
-                self._admin_role_cache.clear()
             if "enabled" in updated:
                 self.config["enabled"] = self._parse_bool(self.config.get("enabled", True), True)
             if updated:
@@ -478,13 +490,18 @@ class WebMixin:
                 return jsonify({"status": "error", "message": "缺少分类"})
             items = self._storage.list_lexicon_keywords(category, query, 100000, 0)
             output = io.StringIO()
+            # 写入 UTF-8 BOM，确保 Excel 打开 CSV 时正确识别中文编码
+            output.write("\ufeff")
             writer = csv.writer(output)
             writer.writerow(["id", "category", "keyword"])
             for item in items:
                 writer.writerow([item.get("id"), category, item.get("keyword")])
-            mem = io.BytesIO(output.getvalue().encode("utf-8-sig"))
             filename = f"lexicon_{category}.csv"
-            return send_file(mem, as_attachment=True, download_name=filename, mimetype="text/csv; charset=utf-8")
+            # 返回 (body, status, headers) 元组让 Quart 直接触发下载，避免依赖未导入的 send_file
+            return output.getvalue(), 200, {
+                "Content-Type": "text/csv; charset=utf-8",
+                "Content-Disposition": f"attachment; filename={filename}",
+            }
         except Exception as e:
             logger.exception("[GroupMgr] 导出关键词失败")
             return jsonify({"status": "error", "message": str(e)})
@@ -842,7 +859,7 @@ class WebMixin:
             result = await client.call_action('get_group_member_list', group_id=gid, no_cache=True)
             members = self._extract_list_result(result)
             enriched = []
-            admin_set = set(str(a).strip() for a in self.config.get("admin_list", []) if a)
+            admin_set = set(self._get_admin_list())
             for m in members:
                 uid = str(m.get("user_id", ""))
                 card = m.get("card", "")
@@ -872,15 +889,9 @@ class WebMixin:
             group_id = str(data.get("group_id", "")).strip()
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
-            if group_id in self._group_black_set:
-                self._safe_list_remove(self.group_black_list, group_id)
-                self._group_black_set.discard(group_id)
-                self.config["group_black_list"] = self.group_black_list
-            if group_id not in self._group_white_set:
-                self.group_white_list.append(group_id)
-                self._group_white_set.add(group_id)
-                self.config["group_white_list"] = self.group_white_list
-            self._save_config_safe()
+            # 加白名单：从黑名单移除（互斥），再加入白名单。均落 DB + 内存。
+            self._managed_list_remove("group_black", group_id)
+            self._managed_list_add("group_white", group_id)
             return jsonify({"status": "success", "group_id": group_id, "white_list": self.group_white_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -891,11 +902,7 @@ class WebMixin:
             group_id = str(data.get("group_id", "")).strip()
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
-            if group_id in self._group_white_set:
-                self._safe_list_remove(self.group_white_list, group_id)
-                self._group_white_set.discard(group_id)
-                self.config["group_white_list"] = self.group_white_list
-            self._save_config_safe()
+            self._managed_list_remove("group_white", group_id)
             return jsonify({"status": "success", "group_id": group_id, "white_list": self.group_white_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -906,15 +913,8 @@ class WebMixin:
             group_id = str(data.get("group_id", "")).strip()
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
-            if group_id in self._group_white_set:
-                self._safe_list_remove(self.group_white_list, group_id)
-                self._group_white_set.discard(group_id)
-                self.config["group_white_list"] = self.group_white_list
-            if group_id not in self._group_black_set:
-                self.group_black_list.append(group_id)
-                self._group_black_set.add(group_id)
-                self.config["group_black_list"] = self.group_black_list
-            self._save_config_safe()
+            self._managed_list_remove("group_white", group_id)
+            self._managed_list_add("group_black", group_id)
             return jsonify({"status": "success", "group_id": group_id, "black_list": self.group_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -925,11 +925,7 @@ class WebMixin:
             group_id = str(data.get("group_id", "")).strip()
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
-            if group_id in self._group_black_set:
-                self._safe_list_remove(self.group_black_list, group_id)
-                self._group_black_set.discard(group_id)
-                self.config["group_black_list"] = self.group_black_list
-            self._save_config_safe()
+            self._managed_list_remove("group_black", group_id)
             return jsonify({"status": "success", "group_id": group_id, "black_list": self.group_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -940,11 +936,7 @@ class WebMixin:
             user_id = str(data.get("user_id", "")).strip()
             if not user_id:
                 return jsonify({"status": "error", "message": "缺少 user_id"})
-            if user_id not in self._user_black_set:
-                self.user_black_list.append(user_id)
-                self._user_black_set.add(user_id)
-                self.config["user_black_list"] = self.user_black_list
-            self._save_config_safe()
+            self._managed_list_add("user_black", user_id)
             return jsonify({"status": "success", "user_id": user_id, "user_black_list": self.user_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -955,15 +947,9 @@ class WebMixin:
             user_id = str(data.get("user_id", "")).strip()
             if not user_id:
                 return jsonify({"status": "error", "message": "缺少 user_id"})
-            if user_id in self._user_black_set:
-                self._safe_list_remove(self.user_black_list, user_id)
-                self._user_black_set.discard(user_id)
-                self.config["user_black_list"] = self.user_black_list
-            if user_id not in self._user_white_set:
-                self.user_white_list.append(user_id)
-                self._user_white_set.add(user_id)
-                self.config["user_white_list"] = self.user_white_list
-            self._save_config_safe()
+            # 审核白名单与用户黑名单互斥
+            self._managed_list_remove("user_black", user_id)
+            self._managed_list_add("user_white", user_id)
             return jsonify({"status": "success", "user_id": user_id, "user_white_list": self.user_white_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -974,11 +960,7 @@ class WebMixin:
             user_id = str(data.get("user_id", "")).strip()
             if not user_id:
                 return jsonify({"status": "error", "message": "缺少 user_id"})
-            if user_id in self._user_black_set:
-                self._safe_list_remove(self.user_black_list, user_id)
-                self._user_black_set.discard(user_id)
-                self.config["user_black_list"] = self.user_black_list
-            self._save_config_safe()
+            self._managed_list_remove("user_black", user_id)
             return jsonify({"status": "success", "user_id": user_id, "user_black_list": self.user_black_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -989,11 +971,7 @@ class WebMixin:
             user_id = str(data.get("user_id", "")).strip()
             if not user_id:
                 return jsonify({"status": "error", "message": "缺少 user_id"})
-            if user_id in self._user_white_set:
-                self._safe_list_remove(self.user_white_list, user_id)
-                self._user_white_set.discard(user_id)
-                self.config["user_white_list"] = self.user_white_list
-            self._save_config_safe()
+            self._managed_list_remove("user_white", user_id)
             return jsonify({"status": "success", "user_id": user_id, "user_white_list": self.user_white_list})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1004,13 +982,9 @@ class WebMixin:
             user_id = str(data.get("user_id", "")).strip()
             if not user_id:
                 return jsonify({"status": "error", "message": "缺少 user_id"})
-            admin_list = self._get_admin_list()
-            if user_id not in admin_list:
-                admin_list.append(user_id)
-                self.config["admin_list"] = admin_list
+            self._managed_list_add("admin", user_id)
             self._admin_role_cache.clear()
-            self._save_config_safe()
-            return jsonify({"status": "success", "user_id": user_id, "admin_list": admin_list})
+            return jsonify({"status": "success", "user_id": user_id, "admin_list": self._get_admin_list()})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
@@ -1020,13 +994,9 @@ class WebMixin:
             user_id = str(data.get("user_id", "")).strip()
             if not user_id:
                 return jsonify({"status": "error", "message": "缺少 user_id"})
-            admin_list = self._get_admin_list()
-            if user_id in admin_list:
-                self._safe_list_remove(admin_list, user_id)
-                self.config["admin_list"] = admin_list
+            self._managed_list_remove("admin", user_id)
             self._admin_role_cache.clear()
-            self._save_config_safe()
-            return jsonify({"status": "success", "user_id": user_id, "admin_list": admin_list})
+            return jsonify({"status": "success", "user_id": user_id, "admin_list": self._get_admin_list()})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
@@ -1165,3 +1135,311 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
 
+
+    # ============================================================
+    # v2.4.0 新增 WebUI API
+    # ============================================================
+    async def _web_get_join_rules(self):
+        # F1：返回所有入群审核规则（含 default 全局规则）。
+        try:
+            return jsonify({"status": "success", "data": self._storage.list_join_audit_rules()})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_save_join_rule(self):
+        # F1：保存某群（或 default）的入群审核规则。
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip() or "default"
+            accept = data.get("accept_keywords", [])
+            reject = data.get("reject_keywords", [])
+            if isinstance(accept, str):
+                accept = [x.strip() for x in re.split(r"[\r\n,，]+", accept) if x.strip()]
+            if isinstance(reject, str):
+                reject = [x.strip() for x in re.split(r"[\r\n,，]+", reject) if x.strip()]
+            default_action = str(data.get("default_action", "manual")).strip().lower()
+            if default_action not in ("manual", "accept", "reject"):
+                default_action = "manual"
+            reject_reason = str(data.get("reject_reason", ""))
+            enabled = self._parse_bool(data.get("enabled", True), True)
+            self._storage.save_join_audit_rule(
+                group_id,
+                [str(x).strip() for x in accept if str(x).strip()],
+                [str(x).strip() for x in reject if str(x).strip()],
+                default_action, reject_reason, enabled,
+            )
+            return jsonify({"status": "success", "group_id": group_id})
+        except Exception as e:
+            logger.exception("[GroupMgr] 保存入群规则失败")
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_delete_join_rule(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            if not group_id:
+                return jsonify({"status": "error", "message": "缺少 group_id"})
+            ok = self._storage.delete_join_audit_rule(group_id)
+            return jsonify({"status": "success", "deleted": ok, "group_id": group_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_get_scheduled_unbans(self):
+        # F3：返回所有定时解禁计划。
+        try:
+            return jsonify({"status": "success", "data": self._storage.list_all_scheduled_unbans()})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_delete_scheduled_unban(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            unban_id = self._safe_int(data.get("id", 0), 0)
+            if unban_id <= 0:
+                return jsonify({"status": "error", "message": "缺少有效的 id"})
+            ok = self._storage.delete_scheduled_unban(unban_id)
+            return jsonify({"status": "success", "deleted": ok})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_get_appeals(self):
+        # F2：返回申诉记录，可选 status 过滤。
+        try:
+            status = str(quart_request.args.get("status", "")).strip()
+            limit = min(self._safe_int(quart_request.args.get("limit", 200), 200), 1000)
+            return jsonify({"status": "success", "data": self._storage.list_appeals(status, limit)})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_get_admin_grants(self):
+        # F5：返回所有群管理员授权配置。
+        try:
+            return jsonify({"status": "success", "data": self._storage.list_group_admin_grants()})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_save_admin_grant(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            if not group_id:
+                return jsonify({"status": "error", "message": "缺少 group_id"})
+            grant_owner = self._parse_bool(data.get("grant_owner", True), True)
+            grant_admin = self._parse_bool(data.get("grant_admin", True), True)
+            enabled = self._parse_bool(data.get("enabled", True), True)
+            self._storage.save_group_admin_grant(group_id, grant_owner, grant_admin, enabled)
+            self._admin_role_cache.clear()
+            return jsonify({"status": "success", "group_id": group_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_delete_admin_grant(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            if not group_id:
+                return jsonify({"status": "error", "message": "缺少 group_id"})
+            ok = self._storage.delete_group_admin_grant(group_id)
+            self._admin_role_cache.clear()
+            return jsonify({"status": "success", "deleted": ok, "group_id": group_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    # ============================================================
+    # v2.4.0 新增：WebUI 远程执行 + 群超管 + 群权限黑名单
+    # ============================================================
+    async def _web_remote_actions(self):
+        # 返回可远程执行的操作列表（供 WebUI 渲染下拉菜单与表单）。
+        try:
+            return jsonify({"status": "success", "data": self._remote_actions_meta()})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_remote_execute(self):
+        # 远程执行群管操作，支持单个 user_id 或批量 user_ids。
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            action = str(data.get("action", "")).strip()
+            params = data.get("params", {}) or {}
+            if not group_id or not action:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 action"})
+            result = await self._remote_execute(group_id, action, params)
+            return jsonify({"status": "success" if result.get("ok") else "error", "data": result, "message": result.get("message", "")})
+        except Exception as e:
+            logger.exception("[GroupMgr] 远程执行失败")
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_get_super_admins(self):
+        try:
+            group_id = str(quart_request.args.get("group_id", "")).strip()
+            return jsonify({"status": "success", "data": self._storage.list_group_super_admins(group_id)})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_add_super_admin(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            user_id = str(data.get("user_id", "")).strip()
+            if not group_id or not user_id:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 user_id"})
+            self._storage.add_group_super_admin(group_id, user_id)
+            self._admin_role_cache.clear()
+            return jsonify({"status": "success", "group_id": group_id, "user_id": user_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_remove_super_admin(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            user_id = str(data.get("user_id", "")).strip()
+            if not group_id or not user_id:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 user_id"})
+            self._storage.remove_group_super_admin(group_id, user_id)
+            self._admin_role_cache.clear()
+            return jsonify({"status": "success", "group_id": group_id, "user_id": user_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_get_admin_blocks(self):
+        try:
+            group_id = str(quart_request.args.get("group_id", "")).strip()
+            return jsonify({"status": "success", "data": self._storage.list_group_admin_blocks(group_id)})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_add_admin_block(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            user_id = str(data.get("user_id", "")).strip()
+            if not group_id or not user_id:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 user_id"})
+            self._storage.add_group_admin_block(group_id, user_id)
+            self._admin_role_cache.clear()
+            return jsonify({"status": "success", "group_id": group_id, "user_id": user_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_remove_admin_block(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            user_id = str(data.get("user_id", "")).strip()
+            if not group_id or not user_id:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 user_id"})
+            self._storage.remove_group_admin_block(group_id, user_id)
+            self._admin_role_cache.clear()
+            return jsonify({"status": "success", "group_id": group_id, "user_id": user_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    # ============================================================
+    # v2.3.0 新增：多群独立配置 WebUI API
+    # ============================================================
+    # 不可按群覆盖的全局项（名单类已迁 DB；provider/免责声明/暗色模式/提示词注入是全局语义）。
+    _GROUP_CONFIG_EXCLUDE = {
+        "disclaimer_agreed", "webui_dark_mode", "prompt_injection_enabled",
+        "moderation_llm_provider_id", "ocr_provider_id",
+        "group_white_list", "group_black_list", "user_black_list", "user_white_list", "admin_list",
+    }
+
+    def _group_overridable_keys(self):
+        # 动态计算可按群覆盖的配置项：schema 中除全局项外的全部通用配置（开关/阈值/模板）。
+        # 这样新增配置项会自动纳入多群配置，无需手动维护清单。
+        return [k for k in self._config_schema.keys() if k not in self._GROUP_CONFIG_EXCLUDE]
+
+    def _group_config_allowed(self, group_id: str) -> bool:
+        # 多群配置仅对白名单群开放：白名单为空时（=全部群启用）允许任意群；非空时仅白名单群可配。
+        if not self._group_white_set:
+            return True
+        return str(group_id) in self._group_white_set
+
+    async def _web_get_group_config(self):
+        # 返回某群的独立配置项：每项含全局默认值、该群覆盖值（无则 null）、类型，供前端渲染三态控件。
+        try:
+            group_id = str(quart_request.args.get("group_id", "")).strip()
+            if not group_id:
+                return jsonify({"status": "error", "message": "缺少 group_id"})
+            if not self._group_config_allowed(group_id):
+                return jsonify({"status": "error", "message": "仅白名单群可进行多群配置，请先将该群加入白名单"})
+            overrides = self._storage.get_group_configs(group_id)
+            schema = self._config_schema
+            items = []
+            for key in self._group_overridable_keys():
+                meta = schema.get(key, {})
+                global_val = self.config.get(key, meta.get("default"))
+                items.append({
+                    "key": key,
+                    "description": meta.get("description", key),
+                    "type": meta.get("type", "bool"),
+                    "global_value": global_val,
+                    "override": overrides.get(key),  # 字符串或 None（None=继承全局）
+                })
+            return jsonify({"status": "success", "data": {"group_id": group_id, "items": items}})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_set_group_config(self):
+        # 设置某群某配置项的覆盖值。value 统一以字符串存储。
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            key = str(data.get("key", "")).strip()
+            if not group_id or not key:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 key"})
+            if not self._group_config_allowed(group_id):
+                return jsonify({"status": "error", "message": "仅白名单群可进行多群配置"})
+            if key not in self._group_overridable_keys():
+                return jsonify({"status": "error", "message": "该配置项不支持按群设置"})
+            value = data.get("value")
+            # 按 schema 类型规范化：bool→"true"/"false"，int→整数字符串，其余转字符串
+            meta = self._config_schema.get(key, {})
+            ftype = meta.get("type", "bool")
+            if ftype == "bool":
+                value = "true" if self._parse_bool(value, False) else "false"
+            elif ftype == "int":
+                value = str(self._safe_int(value, 0))
+            else:
+                value = str(value)
+            self._storage.set_group_config(group_id, key, value)
+            self._invalidate_group_cfg_cache(group_id)
+            return jsonify({"status": "success", "group_id": group_id, "key": key, "value": value})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_delete_group_config(self):
+        # 删除某群某配置项覆盖，恢复继承全局。
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            key = str(data.get("key", "")).strip()
+            if not group_id or not key:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 key"})
+            self._storage.delete_group_config(group_id, key)
+            self._invalidate_group_cfg_cache(group_id)
+            return jsonify({"status": "success", "group_id": group_id, "key": key})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_clear_group_config(self):
+        # 清空某群全部独立配置。
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            if not group_id:
+                return jsonify({"status": "error", "message": "缺少 group_id"})
+            n = self._storage.clear_group_configs(group_id)
+            self._invalidate_group_cfg_cache(group_id)
+            return jsonify({"status": "success", "group_id": group_id, "cleared": n})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_configured_groups(self):
+        # 列出所有有独立配置的群号。
+        try:
+            return jsonify({"status": "success", "data": self._storage.list_configured_groups()})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})

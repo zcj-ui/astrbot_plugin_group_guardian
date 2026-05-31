@@ -3,7 +3,6 @@ import json
 import os
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Tuple
 
 from astrbot.api import logger
@@ -25,7 +24,7 @@ class UtilitiesMixin:
     }
 
     def _sync_astrbot_admins(self) -> None:
-        # 从 AstrBot 主配置读取 admin_id，补充到插件 admin_list 中，使所有管理员来源统一。
+        # 从 AstrBot 主配置读取 admin_id，补充到插件管理员名单（DB managed_lists + 内存），统一管理员来源。
         try:
             ab_config = getattr(self.context, 'astrbot_config', None)
             if not ab_config:
@@ -33,14 +32,12 @@ class UtilitiesMixin:
             astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
             if not astrbot_admin_ids:
                 return
-            plugin_admins = self.config.get("admin_list", [])
-            plugin_admins = [str(a).strip() for a in (plugin_admins if isinstance(plugin_admins, list) else [plugin_admins]) if a]
-            new_admins = [a for a in astrbot_admin_ids if a not in plugin_admins]
+            current = set(getattr(self, "admin_list", []) or [])
+            new_admins = [a for a in astrbot_admin_ids if a not in current]
             if new_admins:
-                plugin_admins.extend(new_admins)
-                self.config["admin_list"] = plugin_admins
-                self._save_config_safe()
-                logger.info(f"[GroupMgr] 自动同步AstrBot管理员到插件admin_list: {new_admins}")
+                for a in new_admins:
+                    self._managed_list_add("admin", a)
+                logger.info(f"[GroupMgr] 自动同步AstrBot管理员到插件admin名单: {new_admins}")
         except Exception as _e:
             logger.debug(f"[GroupMgr] 同步AstrBot管理员失败: {_e}")
 
@@ -53,6 +50,67 @@ class UtilitiesMixin:
             self.config.save_config()
         except Exception:
             logger.exception("save_config failed")
+
+    # 单群管理类名单的统一映射：DB list_type -> (config key, 内存 list 属性, 内存 set 属性)
+    # v2.4.0 起这些名单以 SQLite(managed_lists) 为准，config 旧值仅作首次迁移与回退兜底。
+    _MANAGED_LIST_MAP = {
+        "group_white": ("group_white_list", "group_white_list", "_group_white_set"),
+        "group_black": ("group_black_list", "group_black_list", "_group_black_set"),
+        "user_black": ("user_black_list", "user_black_list", "_user_black_set"),
+        "user_white": ("user_white_list", "user_white_list", "_user_white_set"),
+        "admin": ("admin_list", "admin_list", None),
+    }
+
+    def _migrate_and_load_managed_lists(self) -> None:
+        """把单群管理类名单从 config 迁移到 DB，并以 DB 为准载入内存。
+
+        迁移只执行一次（meta.lists_migrated 标记）。迁移只增不删 config 旧值，
+        保证升级出问题时仍可回退。DB 为空且未迁移过时，回退读 config 旧值。
+        admin 名单不在此设置内存（由 main 的 admin 同步逻辑处理），仅做 DB 迁移与回填。
+        """
+        migrated_flag = self._storage.get_meta("lists_migrated", "")
+        for list_type, (cfg_key, list_attr, set_attr) in self._MANAGED_LIST_MAP.items():
+            cfg_values = self.config.get(cfg_key, [])
+            cfg_values = [str(v).strip() for v in (cfg_values if isinstance(cfg_values, list) else [cfg_values]) if str(v).strip()]
+            # 首次迁移：DB 该类型为空时，把 config 旧值导入 DB
+            if not migrated_flag and self._storage.count_managed_list(list_type) == 0 and cfg_values:
+                self._storage.seed_managed_list(list_type, cfg_values)
+            # 以 DB 为准读入；若 DB 为空（全新安装/无旧值）则回退 config
+            db_values = self._storage.load_managed_list(list_type)
+            values = db_values if db_values else cfg_values
+            setattr(self, list_attr, list(values))
+            if set_attr:
+                setattr(self, set_attr, set(values))
+        if not migrated_flag:
+            self._storage.set_meta("lists_migrated", "1")
+            logger.info("[GroupMgr] 单群管理类名单已迁移到 SQLite(managed_lists)")
+
+    def _managed_list_add(self, list_type: str, value: str) -> bool:
+        """向 DB 名单添加一项并同步内存 list/set。返回是否实际新增。"""
+        cfg_key, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
+        value = str(value).strip()
+        if not value:
+            return False
+        self._storage.add_managed_list_value(list_type, value)
+        lst = getattr(self, list_attr, None)
+        if isinstance(lst, list) and value not in lst:
+            lst.append(value)
+        if set_attr:
+            getattr(self, set_attr).add(value)
+        return True
+
+    def _managed_list_remove(self, list_type: str, value: str) -> bool:
+        """从 DB 名单移除一项并同步内存 list/set。返回是否实际移除。"""
+        cfg_key, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
+        value = str(value).strip()
+        removed = self._storage.remove_managed_list_value(list_type, value)
+        lst = getattr(self, list_attr, None)
+        if isinstance(lst, list):
+            self._safe_list_remove(lst, value)
+        if set_attr:
+            getattr(self, set_attr).discard(value)
+        return removed
+
 
     @staticmethod
     def _load_config_schema() -> dict:
@@ -98,11 +156,69 @@ class UtilitiesMixin:
         except ValueError:
             return False
 
-    def _cfg(self, key: str, default: bool = True) -> bool:
-        # 读取配置项并转为 bool：优先取 config 值（运行时），其次取 schema 默认值。
+    def _cfg(self, key: str, default: bool = True, group_id: str = None) -> bool:
+        # 读取布尔配置：传 group_id 时优先用该群的覆盖值，否则用全局（config / schema 默认）。
+        # 群覆盖值以字符串存储（"true"/"false"），实现真正的多群独立配置。
+        if group_id:
+            gv = self._get_group_override(group_id, key)
+            if gv is not None:
+                return self._parse_bool_str(gv)
         if key in self._config_schema:
             default = self._config_schema[key].get("default", default)
         return bool(self.config.get(key, default))
+
+    def _cfg_int(self, key: str, default: int = 0, group_id: str = None) -> int:
+        # 读取整型配置：群覆盖优先，其次全局 config，再次 schema 默认值。
+        if group_id:
+            gv = self._get_group_override(group_id, key)
+            if gv is not None:
+                return self._safe_int(gv, default)
+        if key in self._config_schema:
+            default = self._config_schema[key].get("default", default)
+        return self._safe_int(self.config.get(key, default), default)
+
+    def _cfg_str(self, key: str, default: str = "", group_id: str = None) -> str:
+        # 读取字符串配置：群覆盖优先，其次全局 config，再次 schema 默认值。
+        if group_id:
+            gv = self._get_group_override(group_id, key)
+            if gv is not None:
+                return str(gv)
+        if key in self._config_schema:
+            default = self._config_schema[key].get("default", default)
+        return str(self.config.get(key, default))
+
+    @staticmethod
+    def _parse_bool_str(v) -> bool:
+        # 把群配置里存的字符串解析为布尔（兼容 bool/数字）。
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, (int, float)):
+            return v != 0
+        return str(v).strip().lower() in ("1", "true", "yes", "on", "是")
+
+    def _get_group_override(self, group_id: str, key: str):
+        # 带缓存地读取某群对某配置项的覆盖值（字符串）；无覆盖返回 None。
+        # 缓存粒度为整群一次性载入，命中后零 DB 开销，配置变更时由 _invalidate_group_cfg_cache 失效。
+        cache = getattr(self, "_group_cfg_cache", None)
+        if cache is None:
+            cache = {}
+            self._group_cfg_cache = cache
+        if group_id not in cache:
+            try:
+                cache[group_id] = self._storage.get_group_configs(group_id)
+            except Exception:
+                cache[group_id] = {}
+        return cache[group_id].get(key)
+
+    def _invalidate_group_cfg_cache(self, group_id: str = "") -> None:
+        # 清除群配置缓存：指定 group_id 清单群，否则清全部。WebUI 改配置后调用。
+        cache = getattr(self, "_group_cfg_cache", None)
+        if cache is None:
+            return
+        if group_id:
+            cache.pop(group_id, None)
+        else:
+            cache.clear()
 
     def _today_start(self) -> int:
         # 返回今日零点的 Unix 时间戳，用于日统计缓存判断是否跨天。
@@ -117,9 +233,14 @@ class UtilitiesMixin:
         except (ValueError, TypeError):
             return default
 
+    def _clamp_int(self, value, default: int, minimum: int, maximum: int) -> int:
+        # 安全转 int 后限制范围，适合处理 LLM/用户输入这类类型不稳定的参数。
+        number = self._safe_int(value, default)
+        return max(minimum, min(number, maximum))
+
     def _get_admin_list(self) -> list:
-        # 管理员列表存储在 config["admin_list"]，由 AstrBot 配置同步和 WebUI 管理。
-        admin_list = self.config.get("admin_list", [])
+        # 管理员名单 v2.4.0 起以 SQLite(managed_lists) 为准，运行时缓存在 self.admin_list。
+        admin_list = getattr(self, "admin_list", None)
         if not isinstance(admin_list, list):
             admin_list = []
         return [str(a).strip() for a in admin_list if a]
@@ -138,16 +259,21 @@ class UtilitiesMixin:
         if isinstance(result, list):
             return result
         if isinstance(result, dict):
-            return result.get("messages") or result.get("files") or result.get("notices") or []
+            for key in ("messages", "members", "files", "folders", "notices", "data", "items", "list"):
+                value = result.get(key)
+                if isinstance(value, list):
+                    return value
+            return []
         return []
 
-    def _cfg_check(self, key: str, name: str) -> Tuple[bool, str]:
+    def _cfg_check(self, key: str, name: str, group_id: str = None) -> Tuple[bool, str]:
         # 三级权限/功能检查：插件总开关 → 免责声明未同意 → 具体功能配置关闭，逐层短路返回错误。
-        if not self._cfg("enabled"):
+        # 传 group_id 时按群读取开关，实现群管功能的按群独立开关。
+        if not self._cfg("enabled", group_id=group_id):
             return False, "插件已禁用，所有功能不可用"
         if not self.config.get("disclaimer_agreed", False):
             return False, "您暂未阅读并同意免责声明，请在插件设置中阅读并同意免责声明后使用"
-        if not self._cfg(key):
+        if not self._cfg(key, group_id=group_id):
             return False, f"{name}功能已在配置中禁用"
         return True, ""
 
@@ -157,11 +283,37 @@ class UtilitiesMixin:
             return True, ""
         if isinstance(result, dict):
             status = result.get("status", "")
-            retcode = result.get("retcode", 0)
-            if status == "failed" or (retcode != 0 and retcode is not None):
+            raw_retcode = result.get("retcode", 0)
+            try:
+                retcode = 0 if raw_retcode is None else int(raw_retcode)
+            except (TypeError, ValueError):
+                retcode = raw_retcode
+            if status == "failed" or retcode != 0:
                 msg = result.get("msg", "") or result.get("message", "") or f"错误码: {retcode}"
                 return False, msg
         return True, ""
+
+    def _parse_join_verify_method(self, value) -> Tuple[int, str]:
+        # OneBot set_group_add_option: 0=允许任何人，1=需要验证，2=禁止加群。
+        raw = str(value or "").strip().lower()
+        method_map = {
+            "允许": (0, "允许加入"),
+            "免审核": (0, "允许加入"),
+            "allow": (0, "允许加入"),
+            "0": (0, "允许加入"),
+            "需要验证": (1, "需要验证"),
+            "需审核": (1, "需要验证"),
+            "need_verify": (1, "需要验证"),
+            "verify": (1, "需要验证"),
+            "1": (1, "需要验证"),
+            "禁止": (2, "禁止加群"),
+            "不允许": (2, "禁止加群"),
+            "拒绝": (2, "禁止加群"),
+            "deny": (2, "禁止加群"),
+            "not_allow": (2, "禁止加群"),
+            "2": (2, "禁止加群"),
+        }
+        return method_map.get(raw, (-1, ""))
 
     def _get_plugin_dir(self) -> str:
         # 返回插件源代码目录的绝对路径，用于定位 lexicon.db 等内置资源文件。
@@ -179,86 +331,14 @@ class UtilitiesMixin:
             logger.error(f"[GroupMgr] 加载 SQLite 外置词库失败: {e}")
             return {}
 
-    def _compile_lexicon(self) -> Dict[str, "KeywordAutomaton"]:
-        compiled = {}
-        cfg = self.config
+    def _lexicon_switch_map(self) -> Dict[str, bool]:
+        """统一计算各词库分类的启用状态，供编译和增量重建复用。
 
-        def _enabled(key: str) -> bool:
-            return cfg.get(f"lexicon_{key}_enabled", True)
-
-        enable_other = _enabled("other")
-        switch_map = {
-            "political": _enabled("political"),
-            "porn": _enabled("porn"),
-            "violent_terror": _enabled("violent"),
-            "reactionary": _enabled("reactionary"),
-            "weapons": _enabled("weapons"),
-            "corruption": _enabled("corruption"),
-            "illegal_url": _enabled("illegal_url"),
-            "other": enable_other,
-            "supplement": enable_other,
-            "livelihood": enable_other,
-            "tencent_ban": enable_other,
-            "ad": True,
-        }
-
-        cache_dir = Path(self._data_dir) / "ac_cache"
-        cache_dir.mkdir(exist_ok=True)
-        db_mtime = self._storage.db_mtime() if hasattr(self._storage, 'db_mtime') else 0.0
-
-        for cat_name, cat_data in self._lexicon.items():
-            if not switch_map.get(cat_name, True):
-                continue
-            keywords = cat_data.get("keywords", [])
-            raw_parts = []
-            min_len = 2 if cat_name == "illegal_url" else 3
-            for kw in keywords:
-                kw = kw.strip()
-                if not kw:
-                    continue
-                if '+' in kw and cat_name != "illegal_url":
-                    parts = [p.strip() for p in kw.split('+') if p.strip()]
-                    for part in parts:
-                        if len(part) >= min_len:
-                            raw_parts.append(part)
-                else:
-                    if len(kw) < min_len:
-                        continue
-                    raw_parts.append(kw)
-            if not raw_parts:
-                continue
-
-            ac = KeywordAutomaton()
-            ac.add_keywords(raw_parts)
-            ac.build()
-
-            compiled[cat_name] = ac
-        return compiled
-
-    def _compile_lexicon_category(self, cat_name: str, cat_data: Dict) -> KeywordAutomaton:
-        """按单个分类增量编译 AC 自动机并写入缓存。"""
-        keywords = (cat_data or {}).get("keywords", [])
-        raw_parts: List[str] = []
-        min_len = 2 if cat_name == "illegal_url" else 3
-        for kw in keywords:
-            kw = kw.strip()
-            if not kw:
-                continue
-            if "+" in kw and cat_name != "illegal_url":
-                parts = [p.strip() for p in kw.split("+") if p.strip()]
-                raw_parts.extend([part for part in parts if len(part) >= min_len])
-            elif len(kw) >= min_len:
-                raw_parts.append(kw)
-        ac = KeywordAutomaton()
-        if raw_parts:
-            ac.add_keywords(raw_parts)
-            ac.build()
-        return ac
-
-    def _lexicon_category_enabled(self, cat_name: str) -> bool:
-        """判断词库分类是否在当前配置中启用。"""
+        其中 supplement / livelihood / tencent_ban 跟随 other 开关，
+        ad 分类始终启用（由独立的广告规则匹配器控制）。
+        """
         enable_other = self._cfg("lexicon_other_enabled", True)
-        switch_map = {
+        return {
             "political": self._cfg("lexicon_political_enabled", True),
             "porn": self._cfg("lexicon_porn_enabled", True),
             "violent_terror": self._cfg("lexicon_violent_enabled", True),
@@ -272,23 +352,56 @@ class UtilitiesMixin:
             "tencent_ban": enable_other,
             "ad": True,
         }
-        return switch_map.get(cat_name, True)
 
-    def _invalidate_lexicon_cache(self, cat_name: str = "") -> None:
-        """删除单个分类或全部 AC 缓存文件。"""
-        cache_dir = Path(self._data_dir) / "ac_cache"
-        if not cache_dir.exists():
-            return
-        try:
-            if cat_name:
-                cache_path = cache_dir / f"{cat_name}.pkl"
-                if cache_path.exists():
-                    cache_path.unlink()
-                return
-            for item in cache_dir.glob("*.pkl"):
-                item.unlink()
-        except OSError:
-            logger.debug("[GroupMgr] 删除 AC 缓存失败", exc_info=True)
+    @staticmethod
+    def _extract_lexicon_parts(cat_name: str, cat_data: Dict) -> List[str]:
+        """把一个分类的关键词拆解为待编译进 AC 自动机的纯文本片段。
+
+        illegal_url 最小长度 2、其它分类 3；含 '+' 的关键词按 '+' 拆成多个片段
+        （illegal_url 例外，网址本身可能含 '+'）。
+        """
+        keywords = (cat_data or {}).get("keywords", [])
+        min_len = 2 if cat_name == "illegal_url" else 3
+        raw_parts: List[str] = []
+        for kw in keywords:
+            kw = kw.strip()
+            if not kw:
+                continue
+            if "+" in kw and cat_name != "illegal_url":
+                raw_parts.extend(p for p in (s.strip() for s in kw.split("+")) if len(p) >= min_len)
+            elif len(kw) >= min_len:
+                raw_parts.append(kw)
+        return raw_parts
+
+    def _compile_lexicon(self) -> Dict[str, "KeywordAutomaton"]:
+        """全量编译所有启用分类的词库为 AC 自动机。"""
+        switch_map = self._lexicon_switch_map()
+        compiled = {}
+        for cat_name, cat_data in self._lexicon.items():
+            if not switch_map.get(cat_name, True):
+                continue
+            ac = self._build_category_automaton(cat_name, cat_data)
+            if ac.count:
+                compiled[cat_name] = ac
+        return compiled
+
+    @classmethod
+    def _build_category_automaton(cls, cat_name: str, cat_data: Dict) -> "KeywordAutomaton":
+        """根据分类关键词构建并 build 一个 AC 自动机（无关键词时返回空自动机）。"""
+        ac = KeywordAutomaton()
+        raw_parts = cls._extract_lexicon_parts(cat_name, cat_data)
+        if raw_parts:
+            ac.add_keywords(raw_parts)
+            ac.build()
+        return ac
+
+    def _compile_lexicon_category(self, cat_name: str, cat_data: Dict) -> "KeywordAutomaton":
+        """按单个分类增量编译 AC 自动机。"""
+        return self._build_category_automaton(cat_name, cat_data)
+
+    def _lexicon_category_enabled(self, cat_name: str) -> bool:
+        """判断词库分类是否在当前配置中启用。"""
+        return self._lexicon_switch_map().get(cat_name, True)
 
     def _check_lexicon(self, text: str) -> Dict[str, bool]:
         # 用 AC 自动机逐类扫描文本，返回各分类是否命中的 dict。

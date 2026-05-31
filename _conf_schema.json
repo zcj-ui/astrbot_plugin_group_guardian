@@ -27,29 +27,34 @@
         "description": "群白名单（列表中的群才能使用 LLM 群管工具）",
         "type": "list",
         "default": [],
-        "hint": "留空表示所有群都可使用（受黑名单限制）；填写群号则只有白名单群可用"
+        "invisible": true,
+        "hint": "已迁移到 SQLite，请在 WebUI「设置-名单管理」或「群管理」中维护"
     },
     "group_black_list": {
         "description": "群黑名单（列表中的群不能使用 LLM 群管工具）",
         "type": "list",
         "default": [],
-        "hint": "黑名单优先级高于白名单"
+        "invisible": true,
+        "hint": "已迁移到 SQLite，请在 WebUI 中维护"
     },
     "user_black_list": {
         "description": "用户黑名单（自动拒绝加群请求）",
         "type": "list",
         "default": [],
-        "hint": "列表中的QQ号将被自动拒绝加入任何群"
+        "invisible": true,
+        "hint": "已迁移到 SQLite，请在 WebUI 中维护"
     },
     "user_white_list": {
         "description": "审核白名单用户（免审核/免防刷屏）",
         "type": "list",
         "default": [],
-        "hint": "列表中的QQ号将跳过自动审核与防刷屏检测，优先级高于用户黑名单"
+        "invisible": true,
+        "hint": "已迁移到 SQLite，请在 WebUI 中维护"
     },
     "admin_list": {
         "description": "管理员 QQ 号列表",
         "type": "list",
+        "invisible": true,
         "default": [],
         "hint": "必须填写！列表中的 QQ 号才能使用管理指令和 LLM 群管工具"
     },
@@ -426,5 +431,96 @@
         "type": "bool",
         "default": true,
         "hint": "开启后允许使用 /群统计 查看群成员数量与管理员统计"
+    },
+    "join_audit_enabled": {
+        "description": "入群自动审核开关（F1）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后自动处理加群申请：命中拒绝词/违禁词库则拒绝，命中通过词则通过，其余按默认动作"
+    },
+    "join_accept_keywords": {
+        "description": "入群-自动通过关键词",
+        "type": "list",
+        "default": [],
+        "hint": "申请验证消息命中任一关键词即自动通过（按群细化请用 WebUI 规则）"
+    },
+    "join_reject_keywords": {
+        "description": "入群-自动拒绝关键词",
+        "type": "list",
+        "default": [],
+        "hint": "申请验证消息命中任一关键词即自动拒绝"
+    },
+    "join_reject_use_lexicon": {
+        "description": "入群-用违禁词库过滤申请信息",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后申请验证消息经违禁词库/广告匹配，命中则自动拒绝"
+    },
+    "join_default_action": {
+        "description": "入群-默认动作（都不命中时）",
+        "type": "string",
+        "default": "manual",
+        "options": ["manual", "accept", "reject"],
+        "hint": "manual=转人工(不处理)，accept=自动通过，reject=自动拒绝"
+    },
+    "join_reject_reason": {
+        "description": "入群-自动拒绝理由",
+        "type": "string",
+        "default": "",
+        "hint": "自动拒绝时回传给申请人的理由"
+    },
+    "appeal_enabled": {
+        "description": "刷屏申诉模式开关（F2）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后刷屏处罚会群内@当事人，要求其私聊说明原因，由LLM结合群内上下文复核是否撤销处罚"
+    },
+    "appeal_window_minutes": {
+        "description": "申诉窗口（分钟）",
+        "type": "int",
+        "default": 10,
+        "hint": "当事人需在该时间内私聊机器人申诉，超时则维持处罚"
+    },
+    "appeal_context_count": {
+        "description": "申诉复核拉取的群上下文条数",
+        "type": "int",
+        "default": 30,
+        "hint": "复核时拉取当事人在群内最近多少条发言供LLM判断，不足则尽量取"
+    },
+    "appeal_at_template": {
+        "description": "申诉@公示模板",
+        "type": "text",
+        "default": "",
+        "hint": "群内@当事人的提示文案，支持 {name} 昵称、{minutes} 申诉窗口分钟数；留空用默认文案"
+    },
+    "auto_unban_enabled": {
+        "description": "定时自动解禁开关（F3）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后插件发起的禁言会登记到期解禁，后台任务到点自动解除（重启不丢）。OneBot本身到期会解禁，本功能主要用于永久禁言托管与重启补解禁"
+    },
+    "auto_unban_scan_interval": {
+        "description": "定时解禁扫描间隔（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "后台任务多久扫描一次到期解禁，范围 10-3600 秒"
+    },
+    "auto_unban_permanent_hours": {
+        "description": "永久禁言托管解禁时长（小时）",
+        "type": "int",
+        "default": 168,
+        "hint": "对永久禁言(时长0)登记的兜底解禁时长，默认168小时(7天)"
+    },
+    "group_admin_grant_enabled": {
+        "description": "群管理员动态授权总开关（F5）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，在已配置授权的群里，群主/群管理员自动获得插件管理权限，被下管理后最多10秒内失效。按群授权请用 /群管理授权 或 WebUI"
+    },
+    "legacy_role_admin_enabled": {
+        "description": "兼容：群主/管理员默认视为插件管理员",
+        "type": "bool",
+        "default": true,
+        "hint": "保持历史行为：任何群的群主/管理员默认可用群管命令。若只想用F5按群精细授权，可关闭此项"
     }
 }

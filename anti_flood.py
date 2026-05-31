@@ -59,17 +59,18 @@ class AntiFloodMixin:
                 return float(entry[0]), str(entry[1]), "", 0
         return 0.0, "", "", 0
 
-    def _get_rate_limit(self, key: str, default: int) -> int:
+    def _get_rate_limit(self, key: str, default: int, group_id: str = None) -> int:
         """读取防刷屏速率配置，返回值 < = 0 表示该档位被关闭。
 
         Args:
             key:      配置键名，例如 ``anti_flood_rate_per_second``。
             default:  默认值。
+            group_id: 群号，传入时优先用该群的独立配置。
 
         Returns:
             int: 速率上限，< = 0 表示不检测。
         """
-        return self._safe_int(self.config.get(key, default), default)
+        return self._cfg_int(key, default, group_id=group_id)
 
     def _check_anti_flood(
         self, group_id: str, user_id: str
@@ -99,9 +100,9 @@ class AntiFloodMixin:
         total_msgs = len(dq)
         now = time.time()
 
-        sec_limit = self._get_rate_limit("anti_flood_rate_per_second", 5)
-        min_limit = self._get_rate_limit("anti_flood_rate_per_minute", 20)
-        hour_limit = self._get_rate_limit("anti_flood_rate_per_hour", 60)
+        sec_limit = self._get_rate_limit("anti_flood_rate_per_second", 5, group_id=group_id)
+        min_limit = self._get_rate_limit("anti_flood_rate_per_minute", 20, group_id=group_id)
+        hour_limit = self._get_rate_limit("anti_flood_rate_per_hour", 60, group_id=group_id)
         if sec_limit <= 0 and min_limit <= 0 and hour_limit <= 0:
             return False, None
 
@@ -112,15 +113,16 @@ class AntiFloodMixin:
         min_ids: List[str] = []
         hour_ids: List[str] = []
 
-        repeat_enabled = self._cfg("repeat_detect_enabled", True)
-        repeat_window = self._safe_int(self.config.get("repeat_detect_window_seconds", 120), 120)
-        repeat_count_limit = self._safe_int(self.config.get("repeat_detect_count", 3), 3)
-        long_text_enabled = self._cfg("long_text_detect_enabled", True)
-        long_text_threshold = self._safe_int(self.config.get("long_text_threshold", 500), 500)
+        repeat_enabled = self._cfg("repeat_detect_enabled", True, group_id=group_id)
+        repeat_window = self._cfg_int("repeat_detect_window_seconds", 120, group_id=group_id)
+        repeat_count_limit = self._cfg_int("repeat_detect_count", 3, group_id=group_id)
+        long_text_enabled = self._cfg("long_text_detect_enabled", True, group_id=group_id)
+        long_text_threshold = self._cfg_int("long_text_threshold", 500, group_id=group_id)
 
         current_text = ""
         current_len = 0
         repeat_count = 0
+        repeat_ids: List[str] = []
 
         for entry in reversed(dq):
             t, mid, norm_text, msg_len = self._unpack_entry(entry)
@@ -139,8 +141,10 @@ class AntiFloodMixin:
             if current_text == "":
                 current_text = norm_text
                 current_len = msg_len
+            # 重复消息：在主循环内同步统计次数并收集消息 ID，避免末尾再次遍历队列。
             if repeat_enabled and repeat_window > 0 and current_text and dt < repeat_window and norm_text == current_text:
                 repeat_count += 1
+                repeat_ids.append(mid)
 
         if sec_limit > 0 and sec_count > sec_limit:
             return True, {"rate": "每秒", "count": sec_count, "limit": sec_limit,
@@ -165,7 +169,7 @@ class AntiFloodMixin:
                 "count": repeat_count,
                 "limit": repeat_count_limit,
                 "total_msgs": total_msgs,
-                "msg_ids": [mid for _, mid, txt, _ in [self._unpack_entry(e) for e in reversed(dq)] if txt == current_text][:repeat_count],
+                "msg_ids": repeat_ids[:repeat_count],
             }
         return False, None
 

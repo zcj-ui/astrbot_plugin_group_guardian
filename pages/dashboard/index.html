@@ -398,7 +398,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="logo-icon">G</div>
         <div class="logo-text">
           <span class="logo-title">Group Guardian</span>
-          <span class="logo-ver" id="logoVer">v2.2.5</span>
+          <span class="logo-ver" id="logoVer">v2.3.0</span>
         </div>
       </div>
       <nav class="sidebar-nav">
@@ -421,6 +421,22 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <a class="nav-item" data-tab="rules">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19 3H5c-1.1 0-2 .9-2 2v14a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V5a2 2 0 0 0-2-2zm-8 14H7v-2h4v2zm6-4H7v-2h10v2zm0-4H7V7h10v2z"/></svg>
           <span>规则中心</span>
+        </a>
+        <a class="nav-item" data-tab="join">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M11 7L9.6 8.4l2.6 2.6H2v2h10.2l-2.6 2.6L11 17l5-5-5-5zm9 12h-8v2h8c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2h-8v2h8v14z"/></svg>
+          <span>入群审核</span>
+        </a>
+        <a class="nav-item" data-tab="perms">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 1L3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm0 10.99h7c-.53 4.12-3.28 7.79-7 8.94V12H5V6.3l7-3.11v8.8z"/></svg>
+          <span>权限管理</span>
+        </a>
+        <a class="nav-item" data-tab="groupcfg">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm13 0h2v3h3v2h-3v3h-2v-3h-3v-2h3v-3z"/></svg>
+          <span>多群配置</span>
+        </a>
+        <a class="nav-item" data-tab="tasks">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.2 14.2L11 13V7h1.5v5.2l4.5 2.7-.8 1.3z"/></svg>
+          <span>申诉/解禁</span>
         </a>
         <a class="nav-item" data-tab="settings">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
@@ -614,6 +630,100 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
       <div class="tab-panel" id="tab-rules">
         <div class="page-header"><h1>规则中心</h1></div>
         <div class="card card-full"><div class="card-header"><h2>违禁词热更新</h2></div><div class="settings-list" id="rulesCenterPage"></div></div>
+      </div>
+
+      <div class="tab-panel" id="tab-join">
+        <div class="page-header"><h1>入群审核</h1><button class="btn btn-ghost btn-sm" id="btnRefreshJoin">刷新</button></div>
+        <div class="card">
+          <div class="card-header"><h2>新增 / 编辑规则</h2></div>
+          <div class="settings-list" style="padding:14px 16px">
+            <p class="rules-subtle" style="margin-bottom:10px">按群配置加群申请的自动处理规则。群号填 <code>default</code> 表示对所有未单独配置的群生效。需在「设置 → 功能开关」开启入群自动审核。</p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+              <label style="font-size:12px;color:var(--text-secondary)">群号<br><input class="input-sm" id="jrGroup" placeholder="default 或 群号" /></label>
+              <label style="font-size:12px;color:var(--text-secondary)">默认动作<br>
+                <select class="input-sm" id="jrAction"><option value="manual">转人工</option><option value="accept">自动通过</option><option value="reject">自动拒绝</option></select></label>
+              <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:6px">启用
+                <span class="toggle"><input type="checkbox" id="jrEnabled" checked /><span class="slider"></span></span></label>
+            </div>
+            <div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:10px">
+              <label style="flex:1;min-width:200px;font-size:12px;color:var(--text-secondary)">通过关键词（逗号/换行分隔）<br><textarea class="input-md" id="jrAccept" style="min-height:60px"></textarea></label>
+              <label style="flex:1;min-width:200px;font-size:12px;color:var(--text-secondary)">拒绝关键词<br><textarea class="input-md" id="jrReject" style="min-height:60px"></textarea></label>
+            </div>
+            <label style="display:block;margin-top:10px;font-size:12px;color:var(--text-secondary)">拒绝理由<br><input class="input-md" id="jrReason" /></label>
+            <div style="margin-top:12px"><button class="btn btn-primary btn-sm" id="btnSaveJoinRule">保存规则</button></div>
+          </div>
+        </div>
+        <div class="card"><div class="card-header"><h2>已有规则</h2></div><div class="settings-list" id="joinRuleList"><p class="empty">加载中...</p></div></div>
+      </div>
+
+      <div class="tab-panel" id="tab-perms">
+        <div class="page-header"><h1>权限管理</h1><button class="btn btn-ghost btn-sm" id="btnRefreshPerms">刷新</button></div>
+        <div class="card">
+          <div class="card-header"><h2>群超管</h2></div>
+          <div class="list-manage">
+            <p class="rules-subtle" style="margin-bottom:8px">为指定群单独设置插件管理员（仅该群生效，不影响其它群）。</p>
+            <div class="list-add-row"><input class="input-sm" id="saGroup" placeholder="群号" /><input class="input-sm" id="saUser" placeholder="QQ号" /><button class="btn btn-primary btn-sm" id="btnAddSuperAdmin">添加</button></div>
+            <div class="list-items" id="superAdminList"><p class="empty">暂无</p></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>群管理员动态授权</h2></div>
+          <div class="list-manage">
+            <p class="rules-subtle" style="margin-bottom:8px">开启后该群群主/群管自动获得插件管理权限，被下管理后约 10 秒内失效。需在「设置」开启总开关「群管理员动态授权」。</p>
+            <div class="list-add-row">
+              <input class="input-sm" id="agGroup" placeholder="群号" />
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="agOwner" checked style="accent-color:var(--primary)" /> 群主</label>
+              <label style="display:flex;align-items:center;gap:4px;font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="agAdmin" checked style="accent-color:var(--primary)" /> 管理员</label>
+              <button class="btn btn-primary btn-sm" id="btnSaveGrant">保存</button>
+            </div>
+            <div class="list-items" id="grantList"><p class="empty">暂无</p></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>群权限黑名单</h2></div>
+          <div class="list-manage">
+            <p class="rules-subtle" style="margin-bottom:8px">移除某群管在指定群的 bot 管理权限（优先级最高）。</p>
+            <div class="list-add-row"><input class="input-sm" id="abGroup" placeholder="群号" /><input class="input-sm" id="abUser" placeholder="QQ号" /><button class="btn btn-danger btn-sm" id="btnAddBlock">移除其权限</button></div>
+            <div class="list-items" id="blockList"><p class="empty">暂无</p></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-groupcfg">
+        <div class="page-header"><h1>多群配置</h1><button class="btn btn-ghost btn-sm" id="btnRefreshGroupCfg">刷新群列表</button></div>
+        <div class="card">
+          <div class="card-header"><h2>选择群</h2><div class="header-actions"><input type="text" class="input-sm" id="gcGroupSearch" placeholder="搜索群号/群名..." /></div></div>
+          <div class="settings-list" style="padding:10px 16px">
+            <p class="rules-subtle" style="margin-bottom:8px">为每个群单独配置功能开关与阈值。未设置的项<strong>继承全局</strong>（设置页的值）。<strong>仅白名单群可配置</strong>（白名单为空时所有群均可配）。</p>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px">
+              <input class="input-sm" id="gcManualGroup" placeholder="直接输入白名单群号" style="width:160px" />
+              <button class="btn btn-primary btn-sm" id="gcManualLoad">加载该群配置</button>
+              <span class="rules-subtle" id="gcConfiguredHint"></span>
+            </div>
+            <div class="group-grid" id="gcGroupGrid"><p class="empty">点击刷新加载群列表</p></div>
+          </div>
+        </div>
+        <div class="card" id="gcConfigCard" style="display:none">
+          <div class="card-header">
+            <h2 id="gcConfigTitle">群配置</h2>
+            <div class="header-actions">
+              <button class="btn btn-danger btn-sm" id="gcClearAll">清空该群配置</button>
+            </div>
+          </div>
+          <div class="settings-list" id="gcConfigList" style="padding:8px 16px"></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-tasks">
+        <div class="page-header"><h1>申诉 / 解禁</h1><button class="btn btn-ghost btn-sm" id="btnRefreshTasks">刷新</button></div>
+        <div class="card">
+          <div class="card-header"><h2>申诉记录</h2></div>
+          <div class="log-container" id="appealList"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>定时解禁计划</h2></div>
+          <div class="log-container" id="unbanList"><p class="empty">加载中...</p></div>
+        </div>
       </div>
 
       <div class="tab-panel" id="tab-settings">
@@ -861,6 +971,10 @@ function switchTab(tabName) {
   if (tabName === 'records') { loadUsers(); loadLogs(); }
   if (tabName === 'flood') loadFlood();
   if (tabName === 'rules') { renderRuleCenterShell(); loadRuleCenter(); }
+  if (tabName === 'join') loadJoinRules();
+  if (tabName === 'perms') { loadSuperAdmins(); loadGrants(); loadBlocks(); }
+  if (tabName === 'groupcfg') loadGroupCfgGroups();
+  if (tabName === 'tasks') { loadAppeals(); loadUnbans(); }
   if (tabName === 'settings') loadSettings();
 }
 
@@ -887,7 +1001,7 @@ async function loadOverview() {
     $('#statUserBlackCount').textContent = d.user_black_list_count != null ? d.user_black_list_count : '--';
     $('#statAdminCount').textContent = d.admin_list_count != null ? d.admin_list_count : '--';
     $('#statTotalLogs').textContent = d.total_logs != null ? d.total_logs : '--';
-    $('#logoVer').textContent = d.version || 'v2.2.5';
+    $('#logoVer').textContent = d.version || 'v2.3.0';
     var banner = $('#disclaimerBanner');
     if (banner) banner.style.display = d.disclaimer_agreed ? 'none' : 'block';
   }
@@ -1117,19 +1231,34 @@ function renderMembers(members) {
     '<span class="ms-item"><span class="ms-dot admin"></span> 管理员 ' + adminCount + '</span>' +
     '<span class="ms-item"><span class="ms-dot member"></span> 成员 ' + (filtered.length - ownerCount - adminCount) + '</span>' +
     '<span class="ms-item">共 ' + filtered.length + ' 人</span>';
-  $('#memberList').innerHTML = filtered.map(function(m) {
+  // 批量操作工具栏：勾选多个成员后统一执行
+  var batchBar = '<div class="member-batchbar" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;border-bottom:1px solid var(--border)">' +
+    '<label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary)"><input type="checkbox" id="memberCheckAll" style="width:15px;height:15px;accent-color:var(--primary)" /> 全选</label>' +
+    '<select class="input-sm" id="memberBatchAction" style="width:auto">' +
+      '<option value="ban">禁言</option><option value="unban">解禁</option><option value="kick">踢出</option>' +
+      '<option value="set_card">设名片</option><option value="set_title">设头衔</option>' +
+      '<option value="set_admin">设管理</option><option value="unset_admin">取消管理</option></select>' +
+    '<input class="input-sm" id="memberBatchExtra" placeholder="参数(时长/名片/头衔)" style="width:150px" />' +
+    '<button class="btn btn-primary btn-sm" id="btnMemberBatch">对选中执行</button>' +
+    '<span class="muted" id="memberBatchHint" style="font-size:12px;color:var(--text-muted)">已选 0 人</span></div>';
+  $('#memberList').innerHTML = batchBar + filtered.map(function(m) {
     var roleName = ROLE_NAME[m.role] || m.role;
     var roleCls = m.role === 'owner' ? 'role-owner' : m.role === 'admin' ? 'role-admin' : 'role-member';
     var titleHtml = m.title ? '<span class="member-title" title="' + esc(m.title) + '">' + esc(m.title) + '</span>' : '';
     var adminBtn = m.is_plugin_admin
       ? '<button class="btn btn-outline btn-sm" data-action="remove-admin" data-uid="' + esc(m.user_id) + '">移除管理</button>'
       : '<button class="btn btn-primary btn-sm" data-action="add-admin" data-uid="' + esc(m.user_id) + '">设为管理</button>';
+    // 远程操作按钮：禁言/踢（调用 remote/execute）
+    var opBtns =
+      '<button class="btn btn-outline btn-sm" data-rm="ban" data-uid="' + esc(m.user_id) + '">禁言</button>' +
+      '<button class="btn btn-danger btn-sm" data-rm="kick" data-uid="' + esc(m.user_id) + '">踢</button>';
     return '<div class="member-item">' +
+      '<input type="checkbox" class="member-ck" data-uid="' + esc(m.user_id) + '" style="width:15px;height:15px;accent-color:var(--primary);flex-shrink:0" />' +
       '<img class="member-avatar" data-uid-avatar="' + esc(m.user_id) + '" />' +
       '<span class="member-name">' + esc(m.display_name) + '</span>' +
       '<span class="member-role ' + roleCls + '">' + roleName + '</span>' + titleHtml +
       '<span class="member-uid">' + esc(m.user_id) + '</span>' +
-      '<span class="member-actions">' + adminBtn + '</span></div>';
+      '<span class="member-actions" style="display:flex;gap:4px">' + opBtns + adminBtn + '</span></div>';
   }).join('');
 
   $$('.member-avatar', $('#memberList')).forEach(function(img) {
@@ -1154,6 +1283,42 @@ function renderMembers(members) {
       CACHED_GROUP_ID = null;
       openMemberPanel(CURRENT_GROUP);
     });
+  });
+  // 单个远程操作（禁言默认10分钟 / 踢）
+  $$('[data-rm]', $('#memberList')).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var action = btn.dataset.rm;
+      var params = { user_id: btn.dataset.uid };
+      if (action === 'ban') params.duration_minutes = 10;
+      var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params });
+      toast((r && r.message) || (r && r.status === 'error' ? r.message : '已执行'), r && r.status === 'error' ? 'error' : 'success');
+    });
+  });
+  // 批量操作
+  var checkAll = $('#memberCheckAll');
+  var updateHint = function() {
+    var n = $$('.member-ck:checked', $('#memberList')).length;
+    if ($('#memberBatchHint')) $('#memberBatchHint').textContent = '已选 ' + n + ' 人';
+  };
+  if (checkAll) checkAll.addEventListener('change', function() {
+    $$('.member-ck', $('#memberList')).forEach(function(c) { c.checked = checkAll.checked; });
+    updateHint();
+  });
+  $$('.member-ck', $('#memberList')).forEach(function(c) { c.addEventListener('change', updateHint); });
+  var btnBatch = $('#btnMemberBatch');
+  if (btnBatch) btnBatch.addEventListener('click', async function() {
+    var ids = $$('.member-ck:checked', $('#memberList')).map(function(c) { return c.dataset.uid; });
+    if (!ids.length) { toast('请先勾选成员', 'error'); return; }
+    var action = $('#memberBatchAction').value;
+    var extra = ($('#memberBatchExtra').value || '').trim();
+    var params = { user_ids: ids };
+    if (action === 'ban') params.duration_minutes = parseInt(extra) || 10;
+    if (action === 'set_card') params.card = extra;
+    if (action === 'set_title') params.title = extra;
+    var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params });
+    toast((r && r.message) || '已执行', r && r.status === 'error' ? 'error' : 'success');
+    CACHED_GROUP_ID = null;
+    openMemberPanel(CURRENT_GROUP);
   });
 }
 
@@ -2322,6 +2487,244 @@ async function loadFlood() {
   }
 }
 
+/* ============ v2.4.0 新增：入群审核 / 权限管理 / 申诉解禁 ============ */
+// 入群审核规则
+async function loadJoinRules() {
+  var box = $('#joinRuleList');
+  box.innerHTML = '<p class="empty">加载中...</p>';
+  var res = await safeGet('join_rules');
+  if (res && res.status === 'error') { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  var list = res || [];
+  if (!list.length) { box.innerHTML = '<p class="empty">暂无规则</p>'; return; }
+  box.innerHTML = list.map(function(r) {
+    return '<div class="setting-item"><div class="setting-info">' +
+      '<div class="setting-label">群 ' + esc(r.group_id) + ' · ' + (r.enabled ? '<span class="badge badge-success">启用</span>' : '<span class="badge badge-default">停用</span>') + '</div>' +
+      '<div class="setting-desc">默认动作: ' + esc(r.default_action) + ' · 通过词 ' + (r.accept_keywords || []).length + ' · 拒绝词 ' + (r.reject_keywords || []).length + '</div></div>' +
+      '<div style="display:flex;gap:6px"><button class="btn btn-outline btn-sm" data-jredit=\'' + esc(JSON.stringify(r)) + '\'>编辑</button>' +
+      '<button class="btn btn-danger btn-sm" data-jrdel="' + esc(r.group_id) + '">删除</button></div></div>';
+  }).join('');
+  $$('[data-jrdel]', box).forEach(function(b) {
+    b.addEventListener('click', async function() {
+      await safePost('join_rules/delete', { group_id: b.dataset.jrdel });
+      toast('已删除', 'success'); loadJoinRules();
+    });
+  });
+  $$('[data-jredit]', box).forEach(function(b) {
+    b.addEventListener('click', function() {
+      var r = JSON.parse(b.dataset.jredit);
+      $('#jrGroup').value = r.group_id; $('#jrAction').value = r.default_action;
+      $('#jrEnabled').checked = r.enabled;
+      $('#jrAccept').value = (r.accept_keywords || []).join('\n');
+      $('#jrReject').value = (r.reject_keywords || []).join('\n');
+      $('#jrReason').value = r.reject_reason || '';
+    });
+  });
+}
+async function saveJoinRule() {
+  var r = await safePost('join_rules/save', {
+    group_id: ($('#jrGroup').value || 'default').trim(),
+    accept_keywords: $('#jrAccept').value, reject_keywords: $('#jrReject').value,
+    default_action: $('#jrAction').value, reject_reason: $('#jrReason').value, enabled: $('#jrEnabled').checked
+  });
+  toast(r && r.status === 'error' ? r.message : '已保存规则', r && r.status === 'error' ? 'error' : 'success');
+  loadJoinRules();
+}
+
+// 权限管理：群超管
+async function loadSuperAdmins() {
+  var box = $('#superAdminList');
+  var res = await safeGet('super_admin');
+  var list = (res && res.status === 'error') ? [] : (res || []);
+  box.innerHTML = list.length ? list.map(function(it) {
+    return '<span class="list-tag list-tag-user">群' + esc(it.group_id) + ':' + esc(it.user_id) +
+      '<button class="btn-remove" data-sa-g="' + esc(it.group_id) + '" data-sa-u="' + esc(it.user_id) + '">&times;</button></span>';
+  }).join('') : '<p class="empty">暂无</p>';
+  $$('.btn-remove', box).forEach(function(b) {
+    b.addEventListener('click', async function() {
+      await safePost('super_admin/remove', { group_id: b.dataset.saG, user_id: b.dataset.saU });
+      toast('已移除', 'success'); loadSuperAdmins();
+    });
+  });
+}
+// 权限管理：动态授权
+async function loadGrants() {
+  var box = $('#grantList');
+  var res = await safeGet('admin_grant');
+  var list = (res && res.status === 'error') ? [] : (res || []);
+  box.innerHTML = list.length ? list.map(function(g) {
+    return '<div class="setting-item"><div class="setting-info"><div class="setting-label">群 ' + esc(g.group_id) +
+      ' ' + (g.enabled ? '<span class="badge badge-success">启用</span>' : '<span class="badge badge-default">停用</span>') + '</div>' +
+      '<div class="setting-desc">群主:' + (g.grant_owner ? '✓' : '✗') + ' 管理员:' + (g.grant_admin ? '✓' : '✗') + '</div></div>' +
+      '<button class="btn btn-danger btn-sm" data-grant-del="' + esc(g.group_id) + '">删除</button></div>';
+  }).join('') : '<p class="empty">暂无</p>';
+  $$('[data-grant-del]', box).forEach(function(b) {
+    b.addEventListener('click', async function() {
+      await safePost('admin_grant/delete', { group_id: b.dataset.grantDel });
+      toast('已删除', 'success'); loadGrants();
+    });
+  });
+}
+// 权限管理：群权限黑名单
+async function loadBlocks() {
+  var box = $('#blockList');
+  var res = await safeGet('admin_block');
+  var list = (res && res.status === 'error') ? [] : (res || []);
+  box.innerHTML = list.length ? list.map(function(it) {
+    return '<span class="list-tag list-tag-black">群' + esc(it.group_id) + ':' + esc(it.user_id) +
+      '<button class="btn-remove" data-ab-g="' + esc(it.group_id) + '" data-ab-u="' + esc(it.user_id) + '">&times;</button></span>';
+  }).join('') : '<p class="empty">暂无</p>';
+  $$('.btn-remove', box).forEach(function(b) {
+    b.addEventListener('click', async function() {
+      await safePost('admin_block/remove', { group_id: b.dataset.abG, user_id: b.dataset.abU });
+      toast('已恢复其权限', 'success'); loadBlocks();
+    });
+  });
+}
+
+// 申诉记录
+async function loadAppeals() {
+  var box = $('#appealList');
+  box.innerHTML = '<p class="empty">加载中...</p>';
+  var res = await safeGet('appeals', { limit: 100 });
+  var list = (res && res.status === 'error') ? [] : (res || []);
+  if (!list.length) { box.innerHTML = '<p class="empty">暂无申诉</p>'; return; }
+  var stMap = { waiting: '待处理', approved: '已通过', rejected: '已驳回', expired: '已超时' };
+  var stCls = { waiting: 'badge-warning', approved: 'badge-success', rejected: 'badge-danger', expired: 'badge-default' };
+  box.innerHTML = '<table class="log-table"><thead><tr><th>群号</th><th>用户</th><th>原因</th><th>状态</th></tr></thead><tbody>' +
+    list.map(function(a) {
+      return '<tr><td>' + esc(a.group_id) + '</td><td>' + esc(a.user_id) + '</td><td class="reason-cell">' + esc(a.reason) +
+        '</td><td><span class="badge ' + (stCls[a.status] || 'badge-default') + '">' + esc(stMap[a.status] || a.status) + '</span></td></tr>';
+    }).join('') + '</tbody></table>';
+}
+// 定时解禁
+async function loadUnbans() {
+  var box = $('#unbanList');
+  box.innerHTML = '<p class="empty">加载中...</p>';
+  var res = await safeGet('scheduled_unbans');
+  var list = (res && res.status === 'error') ? [] : (res || []);
+  if (!list.length) { box.innerHTML = '<p class="empty">暂无计划</p>'; return; }
+  box.innerHTML = '<table class="log-table"><thead><tr><th>群号</th><th>用户</th><th>解禁时间</th><th>操作</th></tr></thead><tbody>' +
+    list.map(function(u) {
+      return '<tr><td>' + esc(u.group_id) + '</td><td>' + esc(u.user_id) + '</td><td>' + fmtTime(u.unban_at) +
+        '</td><td><button class="btn btn-danger btn-sm" data-unban="' + u.id + '">取消</button></td></tr>';
+    }).join('') + '</tbody></table>';
+  $$('[data-unban]', box).forEach(function(b) {
+    b.addEventListener('click', async function() {
+      await safePost('scheduled_unbans/delete', { id: parseInt(b.dataset.unban) });
+      toast('已取消', 'success'); loadUnbans();
+    });
+  });
+}
+
+/* ====== 多群配置 ====== */
+var GC_GROUPS = [];
+var GC_CONFIGURED = [];
+var GC_CUR = null;
+var GC_WHITE_ENABLED = false;
+async function loadGroupCfgGroups() {
+  var grid = $('#gcGroupGrid');
+  grid.innerHTML = '<p class="empty">加载中...</p>';
+  var cfgRes = await safeGet('configured_groups');
+  GC_CONFIGURED = (cfgRes && cfgRes.status === 'error') ? [] : (cfgRes || []);
+  $('#gcConfiguredHint').textContent = GC_CONFIGURED.length ? ('已配置 ' + GC_CONFIGURED.length + ' 个群') : '暂无群单独配置';
+  // 拉统计判断白名单是否启用（>0 则仅白名单群可配）
+  var stats = await safeGet('stats');
+  var whiteCount = (stats && stats.group_white_list_count) || 0;
+  var res = await safeGet('groups');
+  if (res && res.status === 'error') { grid.innerHTML = '<p class="empty">' + esc(res.message) + '（可直接输入白名单群号配置）</p>'; return; }
+  var all = res || [];
+  // 仅白名单群可配置：白名单非空时只显示白名单群，为空时（=全部群启用）显示全部
+  GC_GROUPS = whiteCount > 0 ? all.filter(function(g) { return g.is_white; }) : all;
+  GC_WHITE_ENABLED = whiteCount > 0;
+  renderGcGroups(GC_GROUPS);
+}
+function renderGcGroups(list) {
+  var grid = $('#gcGroupGrid');
+  if (!list.length) {
+    grid.innerHTML = GC_WHITE_ENABLED
+      ? '<p class="empty">白名单中暂无群。请先在「群管理」把群加入白名单，或直接输入白名单群号配置。</p>'
+      : '<p class="empty">暂无群</p>';
+    return;
+  }
+  grid.innerHTML = list.map(function(g) {
+    var cfgBadge = GC_CONFIGURED.indexOf(String(g.group_id)) !== -1 ? '<span class="group-badge badge-white">已配置</span>' : '';
+    return '<div class="group-card" data-gcid="' + esc(g.group_id) + '">' +
+      '<img class="group-avatar" src="https://p.qlogo.cn/gh/' + esc(g.group_id) + '/' + esc(g.group_id) + '/0" onerror="this.style.visibility=\'hidden\'" />' +
+      '<div class="group-info"><div class="group-name">' + esc(g.group_name || g.group_id) + '</div>' +
+      '<div class="group-meta"><span class="group-id">' + esc(g.group_id) + '</span> ' + cfgBadge + '</div></div></div>';
+  }).join('');
+  $$('[data-gcid]', grid).forEach(function(c) {
+    c.addEventListener('click', function() { openGroupCfg(c.dataset.gcid); });
+  });
+}
+async function openGroupCfg(gid) {
+  GC_CUR = String(gid);
+  $('#gcConfigCard').style.display = '';
+  $('#gcConfigTitle').textContent = '群配置 · ' + gid;
+  var box = $('#gcConfigList');
+  box.innerHTML = '<p class="empty">加载中...</p>';
+  var res = await safeGet('group_config', { group_id: gid });
+  if (res && res.status === 'error') { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  renderGroupCfgItems(res.items || []);
+}
+function renderGroupCfgItems(items) {
+  var box = $('#gcConfigList');
+  box.innerHTML = items.map(function(it) {
+    var inherited = it.override === null || it.override === undefined;
+    var gv = it.global_value;
+    var globalText = it.type === 'bool' ? (gv ? '开' : '关') : String(gv);
+    var control;
+    if (it.type === 'bool') {
+      // 三态：继承全局 / 强制开 / 强制关
+      var cur = inherited ? 'inherit' : (String(it.override).toLowerCase() === 'true' ? 'on' : 'off');
+      control = '<select class="input-sm gc-sel" data-key="' + esc(it.key) + '" data-type="bool">' +
+        '<option value="inherit"' + (cur === 'inherit' ? ' selected' : '') + '>继承全局（' + globalText + '）</option>' +
+        '<option value="on"' + (cur === 'on' ? ' selected' : '') + '>强制开启</option>' +
+        '<option value="off"' + (cur === 'off' ? ' selected' : '') + '>强制关闭</option></select>';
+    } else {
+      // 整型：留空=继承；填值=覆盖
+      var val = inherited ? '' : esc(it.override);
+      control = '<input class="input-sm gc-int" data-key="' + esc(it.key) + '" data-type="int" placeholder="继承(' + esc(globalText) + ')" value="' + val + '" style="width:130px" />' +
+        '<button class="btn btn-outline btn-sm gc-int-save" data-key="' + esc(it.key) + '">保存</button>' +
+        '<button class="btn btn-ghost btn-sm gc-int-clear" data-key="' + esc(it.key) + '">继承</button>';
+    }
+    return '<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(it.description) +
+      (inherited ? '' : ' <span class="badge badge-warning">已覆盖</span>') +
+      '</div><div class="setting-desc">' + esc(it.key) + '</div></div><div style="display:flex;gap:6px;align-items:center">' + control + '</div></div>';
+  }).join('');
+  // bool 三态下拉
+  $$('.gc-sel', box).forEach(function(sel) {
+    sel.addEventListener('change', async function() {
+      var key = sel.dataset.key, v = sel.value;
+      if (v === 'inherit') {
+        await safePost('group_config/delete', { group_id: GC_CUR, key: key });
+        toast('已恢复继承', 'success');
+      } else {
+        await safePost('group_config/set', { group_id: GC_CUR, key: key, value: v === 'on' });
+        toast('已设置', 'success');
+      }
+      openGroupCfg(GC_CUR);
+    });
+  });
+  // 整型保存/继承
+  $$('.gc-int-save', box).forEach(function(b) {
+    b.addEventListener('click', async function() {
+      var key = b.dataset.key;
+      var inp = box.querySelector('.gc-int[data-key="' + key + '"]');
+      var v = (inp.value || '').trim();
+      if (v === '') { await safePost('group_config/delete', { group_id: GC_CUR, key: key }); }
+      else { await safePost('group_config/set', { group_id: GC_CUR, key: key, value: v }); }
+      toast('已保存', 'success'); openGroupCfg(GC_CUR);
+    });
+  });
+  $$('.gc-int-clear', box).forEach(function(b) {
+    b.addEventListener('click', async function() {
+      await safePost('group_config/delete', { group_id: GC_CUR, key: b.dataset.key });
+      toast('已恢复继承', 'success'); openGroupCfg(GC_CUR);
+    });
+  });
+}
+
 async function init() {
   initTabs();
   if (!REBUILD_STATUS_TIMER) {
@@ -2337,6 +2740,49 @@ async function init() {
   $('#btnRefreshUsers').addEventListener('click', loadUsers);
   $('#btnRefreshLogs').addEventListener('click', loadLogs);
   $('#btnSaveSettings').addEventListener('click', saveSettings);
+
+  // v2.4.0 新增功能的事件绑定（防御式，元素不存在则跳过）
+  var bindClick = function(id, fn) { var el = document.getElementById(id); if (el) el.addEventListener('click', fn); };
+  bindClick('btnRefreshJoin', loadJoinRules);
+  bindClick('btnSaveJoinRule', saveJoinRule);
+  bindClick('btnRefreshPerms', function() { loadSuperAdmins(); loadGrants(); loadBlocks(); });
+  bindClick('btnAddSuperAdmin', async function() {
+    var g = $('#saGroup').value.trim(), u = $('#saUser').value.trim();
+    if (!g || !u) { toast('请填群号和QQ', 'error'); return; }
+    await safePost('super_admin/add', { group_id: g, user_id: u });
+    toast('已添加群超管', 'success'); loadSuperAdmins();
+  });
+  bindClick('btnSaveGrant', async function() {
+    var g = $('#agGroup').value.trim();
+    if (!g) { toast('请填群号', 'error'); return; }
+    await safePost('admin_grant/save', { group_id: g, grant_owner: $('#agOwner').checked, grant_admin: $('#agAdmin').checked, enabled: true });
+    toast('已保存（需在设置开启总开关）', 'success'); loadGrants();
+  });
+  bindClick('btnAddBlock', async function() {
+    var g = $('#abGroup').value.trim(), u = $('#abUser').value.trim();
+    if (!g || !u) { toast('请填群号和QQ', 'error'); return; }
+    await safePost('admin_block/add', { group_id: g, user_id: u });
+    toast('已移除其bot权限', 'success'); loadBlocks();
+  });
+  bindClick('btnRefreshTasks', function() { loadAppeals(); loadUnbans(); });
+  bindClick('btnRefreshGroupCfg', loadGroupCfgGroups);
+  bindClick('gcManualLoad', function() {
+    var g = ($('#gcManualGroup').value || '').trim();
+    if (!g) { toast('请输入群号', 'error'); return; }
+    openGroupCfg(g);
+  });
+  bindClick('gcClearAll', async function() {
+    if (!GC_CUR) return;
+    await safePost('group_config/clear', { group_id: GC_CUR });
+    toast('已清空该群配置', 'success'); openGroupCfg(GC_CUR); loadGroupCfgGroups();
+  });
+  var gcSearch = document.getElementById('gcGroupSearch');
+  if (gcSearch) gcSearch.addEventListener('input', function() {
+    var q = gcSearch.value.trim().toLowerCase();
+    renderGcGroups(GC_GROUPS.filter(function(g) {
+      return String(g.group_name || '').toLowerCase().indexOf(q) !== -1 || String(g.group_id).indexOf(q) !== -1;
+    }));
+  });
 
   $$('#dashRange .dash-range-btn').forEach(function(btn) {
     btn.addEventListener('click', function() { setDashRange(parseInt(btn.dataset.r)); });

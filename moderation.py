@@ -1,13 +1,29 @@
 # -*- coding: utf-8 -*-
 import json
 import re
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 from astrbot.api import logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 CONTEXT_MESSAGE_MAX_CHARS = 200
 CONTEXT_TOTAL_MAX_CHARS = 3000
+
+
+class _LLMErrorBag:
+    """收集 LLM 调用过程中的错误信息，自动去重。"""
+
+    def __init__(self) -> None:
+        self.errors = []
+        self._seen = set()
+
+    def add(self, err: str) -> None:
+        if err and err not in self._seen:
+            self._seen.add(err)
+            self.errors.append(err)
+
+    def summary(self, limit: int = 5) -> str:
+        return "; ".join(self.errors[:limit]) if self.errors else "无任何可用Provider"
 
 
 class ModerationMixin:
@@ -36,7 +52,7 @@ class ModerationMixin:
         """
         user_id = self._try_get_sender_id(event)
         msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-        if not self._cfg("anti_flood_enabled", True) or not user_id or not msg_id:
+        if not self._cfg("anti_flood_enabled", True, group_id=group_id) or not user_id or not msg_id:
             return False, None
         if await self._is_admin(event):
             return False, None
@@ -48,12 +64,14 @@ class ModerationMixin:
         if not is_flooding:
             return False, None
         user_name = event.get_sender_name()
-        mute_dur = self._safe_int(self.config.get("anti_flood_mute_duration", 300), 300)
-        recall_enabled = self._cfg("anti_flood_recall_enabled", True)
-        recall_threshold = self._safe_int(self.config.get("anti_flood_recall_threshold", 20), 20)
+        mute_dur = self._cfg_int("anti_flood_mute_duration", 300, group_id=group_id)
+        recall_enabled = self._cfg("anti_flood_recall_enabled", True, group_id=group_id)
+        recall_threshold = self._cfg_int("anti_flood_recall_threshold", 20, group_id=group_id)
         try:
             if mute_dur > 0:
                 await self._mute_member(event, mute_dur)
+                # F3：登记定时解禁（仅在开关开启时生效）
+                self._schedule_unban(group_id, user_id, mute_dur)
             flood_total = flood_info.get("total_msgs", flood_info.get("count", 0))
             if recall_enabled and flood_total >= recall_threshold and flood_info.get("msg_ids"):
                 for fid in flood_info["msg_ids"]:
@@ -78,6 +96,13 @@ class ModerationMixin:
             self._log_moderation(group_id, user_id, user_name,
                                  f"[刷屏] {flood_info['rate']} {flood_info['count']}条/上限{flood_info['limit']}条",
                                  action, notice, [])
+            # F2：开启申诉模式时登记申诉并群内 @ 当事人（失败不影响处罚）
+            if self._cfg("appeal_enabled", False, group_id=group_id):
+                try:
+                    await self._open_appeal(event, group_id, user_id, user_name,
+                                            f"刷屏（{flood_info['rate']}）", action, mute_dur)
+                except Exception as _e:
+                    logger.debug(f"[GroupMgr] 开启申诉失败: {_e}")
             event.stop_event()
             return True, notice
         except Exception as e:
@@ -143,144 +168,123 @@ class ModerationMixin:
             return response.completion_text
         return str(response)
 
+    def _normalize_llm_moderation_result(self, result: dict) -> dict:
+        # LLM 可能把布尔值输出为字符串，必须显式归一化，避免 "false" 被 Python 当作真值。
+        if not isinstance(result, dict):
+            return {"violation": False, "reason": "LLM返回结构异常"}
+        raw_violation = result.get("violation", False)
+        if isinstance(raw_violation, bool):
+            violation = raw_violation
+        elif isinstance(raw_violation, (int, float)):
+            violation = raw_violation != 0
+        elif isinstance(raw_violation, str):
+            violation = raw_violation.strip().lower() in ("true", "1", "yes", "是", "违规")
+        else:
+            violation = False
+        reason = str(result.get("reason", "") or "无理由")
+        return {"violation": violation, "reason": reason}
+
+    async def _invoke_provider_methods(self, prov, pid: str, system_prompt: str,
+                                       prompt: str, errors: "_LLMErrorBag") -> Optional[str]:
+        """在单个 Provider 实例上按优先级尝试 text_chat/chat/invoke/complete。
+
+        每个方法都尝试多种参数签名以兼容不同 Provider 实现；
+        参数签名不匹配（TypeError/ValueError）静默跳过，其它异常记入 errors。
+        """
+        combined = system_prompt + "\n\n" + prompt
+        # (方法名, [候选参数签名]) —— text_chat 优先用命名参数，其它方法用拼接字符串
+        method_signatures = [
+            ("text_chat", [((), {"system_prompt": system_prompt, "prompt": prompt}),
+                           ((combined,), {})]),
+            ("chat", [((combined,), {}), ((), {"prompt": combined})]),
+            ("invoke", [((combined,), {}), ((), {"prompt": combined})]),
+            ("complete", [((combined,), {}), ((), {"prompt": combined})]),
+        ]
+        for meth, signatures in method_signatures:
+            fn = getattr(prov, meth, None)
+            if not fn:
+                continue
+            for args, kwargs in signatures:
+                try:
+                    r = await fn(*args, **kwargs)
+                    if r:
+                        return self._extract_llm_text(r)
+                except (TypeError, ValueError):
+                    continue  # 签名不匹配，尝试下一种
+                except Exception as e:
+                    errors.add(f"{pid}.{meth}: {str(e)[:120]}")
+                    continue
+        return None
+
+    async def _call_llm_by_provider_id(self, pid: str, system_prompt: str,
+                                       prompt: str, errors: "_LLMErrorBag") -> str:
+        """通过 Provider ID 调用 LLM：优先 context.llm_generate()，回退到实例方法。"""
+        if hasattr(self.context, "llm_generate"):
+            try:
+                resp = await self.context.llm_generate(
+                    chat_provider_id=pid, prompt=prompt, system_prompt=system_prompt)
+                if resp:
+                    return self._extract_llm_text(resp)
+            except Exception as e:
+                errors.add(f"llm_generate({pid}): {str(e)[:120]}")
+        prov = self.context.get_provider_by_id(pid) if hasattr(self.context, "get_provider_by_id") else None
+        if prov:
+            result = await self._invoke_provider_methods(prov, pid, system_prompt, prompt, errors)
+            if result:
+                return result
+        raise RuntimeError(f"Provider {pid} 不可用")
+
     async def _call_llm_safe(self, system_prompt: str, prompt: str) -> str:
         # 多级 Provider 调用的安全封装，按以下优先级逐级尝试：
         # 1) configured_id —— 用户在配置中手动指定的 LLM Provider ID
         # 2) get_all_providers() —— 遍历所有已注册的 Provider，逐一尝试
         # 3) provider_manager.get_using_provider() —— 获取当前正在使用的 Provider
         # 若所有级别均失败，则抛出 RuntimeError 并汇总前 5 条错误信息。
-
-        configured_id = str(self.config.get("moderation_llm_provider_id", "")).strip()
-        errors = []
-        error_set = set()
-
-        def _add_error(err: str):
-            # 去重记录错误信息，避免反复记录相同错误占用 error 列表空间。
-            if err not in error_set:
-                error_set.add(err)
-                errors.append(err)
-
-        async def _try_text_chat(prov, pid: str) -> str:
-            # 尝试调用 provider.text_chat() 方法。
-            # 尝试两种签名风格以兼容不同 Provider 实现：
-            #   签名1: text_chat(system_prompt=..., prompt=...) —— 标准命名参数
-            #   签名2: text_chat(system_prompt + "\n\n" + prompt) —— 直接传拼接后的字符串
-            # 如果某签名抛出 TypeError/ValueError（参数不匹配），静默跳到下一种。
-            if not hasattr(prov, 'text_chat'):
-                return None
-            signatures = [
-                ((), {'system_prompt': system_prompt, 'prompt': prompt}),
-                ((system_prompt + "\n\n" + prompt,), {}),
-            ]
-            for args, kwargs in signatures:
-                try:
-                    r = await prov.text_chat(*args, **kwargs)
-                    if r:
-                        return str(r)
-                except (TypeError, ValueError):
-                    # 参数签名不匹配（如不支持命名参数），尝试下一种。
-                    continue
-                except Exception as e:
-                    _add_error(f"{pid}.text_chat: {str(e)[:120]}")
-                    continue
-            return None
-
-        async def _try_provider(prov, pid: str) -> str:
-            # 在单个 Provider 上尝试所有可能的调用方式。
-            # 优先尝试 text_chat()，若失败则依次尝试 chat()、invoke()、complete() 等老式方法名。
-            # 每种方法也尝试多种参数签名以兼容不同实现。
-            result = await _try_text_chat(prov, pid)
-            if result:
-                return result
-            for meth in ('chat', 'invoke', 'complete'):
-                fn = getattr(prov, meth, None)
-                if not fn:
-                    continue
-                signatures = [
-                    ((system_prompt + "\n\n" + prompt,), {}),
-                    ((), {'prompt': system_prompt + "\n\n" + prompt}),
-                ]
-                for args, kwargs in signatures:
-                    try:
-                        r = await fn(*args, **kwargs)
-                        if r:
-                            return str(r)
-                    except (TypeError, ValueError):
-                        continue
-                    except Exception as e:
-                        _add_error(f"{pid}.{meth}: {str(e)[:120]}")
-                        continue
-            return None
-
-        async def _try_by_id(pid: str) -> str:
-            # 通过 Provider ID 获取并调用 LLM。
-            # 优先使用 context.llm_generate()（AstrBot 提供的高级 API，支持多种参数），
-            # 若失败则回退到 context.get_provider_by_id() 获取 Provider 实例后手动调用。
-            if hasattr(self.context, 'llm_generate'):
-                try:
-                    resp = await self.context.llm_generate(
-                        chat_provider_id=pid, prompt=prompt, system_prompt=system_prompt)
-                    if resp:
-                        return self._extract_llm_text(resp)
-                except Exception as e:
-                    _add_error(f"llm_generate({pid}): {str(e)[:120]}")
-            prov = self.context.get_provider_by_id(pid) if hasattr(self.context, 'get_provider_by_id') else None
-            if prov:
-                result = await _try_provider(prov, pid)
-                if result:
-                    return result
-            raise RuntimeError(f"Provider {pid} 不可用")
+        errors = _LLMErrorBag()
 
         # ---------- 第一级：用户配置的指定 Provider ----------
-        # 如果用户在配置中手动指定了 moderation_llm_provider_id，优先使用。
-        # 适用于用户希望审核流量走独立 LLM（与日常对话模型隔离）的场景。
+        configured_id = str(self.config.get("moderation_llm_provider_id", "")).strip()
         if configured_id:
             try:
-                result = await _try_by_id(configured_id)
+                result = await self._call_llm_by_provider_id(configured_id, system_prompt, prompt, errors)
                 logger.info(f"[GroupMgr] LLM审核使用指定provider: {configured_id}")
                 return result
             except Exception as e:
-                _add_error(f"指定{configured_id}: {str(e)[:120]}")
+                errors.add(f"指定{configured_id}: {str(e)[:120]}")
 
         # ---------- 第二级：遍历所有已注册的 Provider ----------
-        # 若未指定或指定 Provider 不可用，则通过 get_all_providers()
-        # 获取 AstrBot 中注册的所有 Provider，依次尝试调用。
         try:
-            ps = (self.context.get_all_providers() if hasattr(self.context, 'get_all_providers') else []) or []
+            providers = (self.context.get_all_providers() if hasattr(self.context, "get_all_providers") else []) or []
         except Exception as e:
-            ps = []
-            _add_error(f"get_all_providers: {str(e)[:120]}")
-
-        for p in ps:
+            providers = []
+            errors.add(f"get_all_providers: {str(e)[:120]}")
+        for p in providers:
             try:
-                meta = p.meta()
-                pid = meta.id
-                result = await _try_by_id(pid)
+                pid = p.meta().id
+                result = await self._call_llm_by_provider_id(pid, system_prompt, prompt, errors)
                 logger.info(f"[GroupMgr] LLM审核使用provider: {pid}")
                 return result
             except Exception as e:
-                _add_error(str(e)[:80])
+                errors.add(str(e)[:80])
                 continue
 
         # ---------- 第三级：provider_manager 的当前 Provider ----------
-        # 最后的兜底方案：通过 provider_manager.get_using_provider()
-        # 获取 AstrBot 当前正在使用的默认 Provider（通常是主对话模型）。
         try:
-            pm = getattr(self.context, 'provider_manager', None)
-            if pm and hasattr(pm, 'get_using_provider'):
+            pm = getattr(self.context, "provider_manager", None)
+            if pm and hasattr(pm, "get_using_provider"):
                 up = pm.get_using_provider()
                 if up:
-                    result = await _try_provider(up, str(getattr(up, 'provider_name', up)))
+                    result = await self._invoke_provider_methods(
+                        up, str(getattr(up, "provider_name", up)), system_prompt, prompt, errors)
                     if result:
                         logger.info("[GroupMgr] LLM审核使用provider_manager")
                         return result
         except Exception as e:
-            _add_error(f"provider_manager: {str(e)[:120]}")
+            errors.add(f"provider_manager: {str(e)[:120]}")
 
         # ---------- 所有级别均失败 ----------
-        # 汇总前 5 条错误信息抛出异常，提示用户检查 AstrBot 的 LLM Provider 配置。
-        detail = '; '.join(errors[:5]) if errors else '无任何可用Provider'
-        raise RuntimeError(f"LLM调用失败({detail})。请检查AstrBot是否已配置LLM Provider")
+        raise RuntimeError(f"LLM调用失败({errors.summary()})。请检查AstrBot是否已配置LLM Provider")
+
 
     async def _call_llm_for_moderation(self, event: AiocqhttpMessageEvent,
                                         text: str, hit_types: Dict[str, bool],
@@ -435,7 +439,7 @@ class ModerationMixin:
                 json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group())
-                return result
+                return self._normalize_llm_moderation_result(result)
             else:
                 # LLM 完全没有返回 JSON 格式，可能是模型不兼容或提示词被忽略。
                 logger.warning(f"[GroupMgr] LLM返回非JSON格式: {llm_response[:200]}")
@@ -754,7 +758,7 @@ class ModerationMixin:
                             image_urls=[image_url],
                         )
                         if r:
-                            return str(r)
+                            return self._extract_llm_text(r)
                     except TypeError:
                         pass
                     # 降级方案：将图片 URL 拼入 prompt 文本末尾，适合不支持 image_urls 命名参数的 Provider。
@@ -763,7 +767,7 @@ class ModerationMixin:
                             system_prompt + "\n\n图片URL: " + image_url + "\n\n" + prompt,
                         )
                         if r:
-                            return str(r)
+                            return self._extract_llm_text(r)
                     except Exception as _e:
                         logger.debug(f"[GroupMgr] OCR LLM单次调用失败: {_e}")
 
@@ -815,7 +819,9 @@ class ModerationMixin:
         group_id = self._get_group_id(event)
         if not group_id:
             return
+        # 发送者信息在整条管线中复用，避免在各分支里重复调用 OneBot 取值逻辑。
         user_id = self._try_get_sender_id(event)
+        user_name = event.get_sender_name()
         if user_id and self._user_white_set and user_id in self._user_white_set:
             return
         # 群黑名单：在黑名单中的群完全不处理（与白名单的"不处理白名单外的群"逻辑对应）。
@@ -832,7 +838,7 @@ class ModerationMixin:
             return
         if not self._should_scan_message(event):
             return
-        if not self._cfg("enabled"):
+        if not self._cfg("enabled", group_id=group_id):
             return
         if not self.config.get("disclaimer_agreed", False):
             return
@@ -846,7 +852,7 @@ class ModerationMixin:
                     await self._kick_member(event)
                     await self._mute_member(event, 60)
                     notice = self.config.get("ban_notice", "[群管] {name}({uid}) 已被踢出（黑名单）")
-                    yield event.plain_result(notice.replace("{name}", event.get_sender_name()).replace("{uid}", user_id).replace("{group}", group_id))
+                    yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id))
                     event.stop_event()
                 except Exception as e:
                     logger.warning(f"[GroupMgr] 黑名单执行出错: {e}")
@@ -905,7 +911,7 @@ class ModerationMixin:
         forward_is_qq_favorite = False
         if has_forward:
             forward_text, forward_is_qq_favorite = await self._resolve_forward_messages(event)
-            scan_forward = self._cfg("scan_forward_msg", True)
+            scan_forward = self._cfg("scan_forward_msg", True, group_id=group_id)
             if forward_text and scan_forward:
                 if text:
                     text = text + '\n' + forward_text
@@ -913,15 +919,13 @@ class ModerationMixin:
                     text = forward_text
 
         # QQ 收藏消息检测：如果消息内容包含 QQ 收藏特征，直接撤回（不经过正常审核）。
-        if self._cfg("recall_qq_favorite_enabled", True):
+        if self._cfg("recall_qq_favorite_enabled", True, group_id=group_id):
             is_qq_fav = forward_is_qq_favorite or await self._check_qq_favorite_non_forward(event)
             if is_qq_fav:
                 try:
                     msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
                     if msg_id:
                         await self._recall_msg(event, msg_id)
-                        user_name = event.get_sender_name()
-                        user_id = self._try_get_sender_id(event)
                         yield event.plain_result(f"[群管] 检测到QQ收藏内容，已自动撤回")
                         self._log_moderation(group_id, user_id, user_name, "[QQ收藏消息]", "撤回", "QQ收藏内容自动撤回", image_urls)
                         event.stop_event()
@@ -929,13 +933,16 @@ class ModerationMixin:
                     logger.warning(f"[GroupMgr] QQ收藏撤回失败: {e}")
                 return
 
-        if not self.auto_moderate_enabled:
+        # 自动审核开关：群覆盖优先，否则用全局运行时开关（/自动审核 指令控制）
+        _am_override = self._get_group_override(group_id, "auto_moderate_enabled")
+        _auto_moderate = self._parse_bool_str(_am_override) if _am_override is not None else self.auto_moderate_enabled
+        if not _auto_moderate:
             return
 
         # ===== 步骤 C：OCR 图片识别 =====
-        if image_urls and self._cfg("ocr_enabled", False):
+        if image_urls and self._cfg("ocr_enabled", False, group_id=group_id):
             ocr_urls = image_urls
-            if not self._cfg("scan_sticker_enabled", True):
+            if not self._cfg("scan_sticker_enabled", True, group_id=group_id):
                 # 如果配置了不扫描表情包，过滤掉表情包类图片。
                 ocr_urls = [u for u in image_urls if not self._is_sticker_image(u)]
             if ocr_urls:
@@ -957,8 +964,6 @@ class ModerationMixin:
             return
         if len(text) > 5000:
             text = text[:5000]
-        user_id = self._try_get_sender_id(event)
-        user_name = event.get_sender_name()
 
         # ===== 步骤 D：正则/词库初筛 =====
         hit_types = {
@@ -975,26 +980,38 @@ class ModerationMixin:
         }
 
         swear_hit = False
-        if self._cfg("scan_swear", True) and hasattr(self, '_swear_matcher'):
+        if self._cfg("scan_swear", True, group_id=group_id) and hasattr(self, '_swear_matcher'):
             swear_hit = self._swear_matcher.is_match(text)
         hit_types["swear"] = swear_hit
 
         ad_hit = False
-        if self._cfg("scan_ad", True):
+        if self._cfg("scan_ad", True, group_id=group_id):
             ad_hit = self._is_ad_pattern(text)
         hit_types["ad"] = ad_hit
 
         lexicon_result = self._check_lexicon(text)
+        # 词库分类命中按群过滤：某群关闭了对应分类开关时，忽略该分类命中（实现按群词库开关）
+        _lex_keymap = {
+            "political": "lexicon_political_enabled", "porn": "lexicon_porn_enabled",
+            "violent_terror": "lexicon_violent_enabled", "reactionary": "lexicon_reactionary_enabled",
+            "weapons": "lexicon_weapons_enabled", "corruption": "lexicon_corruption_enabled",
+            "illegal_url": "lexicon_illegal_url_enabled",
+            "other": "lexicon_other_enabled", "supplement": "lexicon_other_enabled",
+            "livelihood": "lexicon_other_enabled", "tencent_ban": "lexicon_other_enabled",
+        }
         for cat, hit in lexicon_result.items():
-            if cat in hit_types:
-                hit_types[cat] = hit_types[cat] or hit
+            if cat in hit_types and hit:
+                cfg_key = _lex_keymap.get(cat)
+                if cfg_key and not self._cfg(cfg_key, True, group_id=group_id):
+                    continue  # 该群已关闭此词库分类
+                hit_types[cat] = True
 
         should_check = any(hit_types.values())
         if not should_check:
             return
 
         # ===== 步骤 E：LLM 二次审核 =====
-        llm_enabled = self._cfg("llm_moderation_enabled", True)
+        llm_enabled = self._cfg("llm_moderation_enabled", True, group_id=group_id)
 
         if not llm_enabled:
             # LLM 审核关闭时：直接按正则命中执行撤回+禁言。
@@ -1004,6 +1021,7 @@ class ModerationMixin:
                 msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
                 await self._recall_msg(event, msg_id)
                 await self._mute_member(event)
+                self._schedule_unban(group_id, user_id, self._safe_int(self.config.get("moderation_ban_duration", 1800), 1800))
                 notice = self.config.get("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）")
                 yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id))
                 self._log_moderation(group_id, user_id, user_name, text, "撤回+禁言", reason, image_urls)
@@ -1037,13 +1055,14 @@ class ModerationMixin:
                 except Exception as recall_err:
                     logger.warning(f"[GroupMgr] 撤回消息失败: {recall_err}")
 
-            if self._cfg("llm_moderation_ban", True):
+            if self._cfg("llm_moderation_ban", True, group_id=group_id):
                 try:
                     await self._mute_member(event)
+                    self._schedule_unban(group_id, user_id, self._safe_int(self.config.get("moderation_ban_duration", 1800), 1800))
                 except Exception as ban_err:
                     logger.warning(f"[GroupMgr] 禁言失败: {ban_err}")
 
-            if self._cfg("auto_moderate_notice", True):
+            if self._cfg("auto_moderate_notice", True, group_id=group_id):
                 try:
                     notice = self.config.get("ban_notice", "[群管] {name}({uid}) 的消息已被撤回（违规内容）")
                     yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id))

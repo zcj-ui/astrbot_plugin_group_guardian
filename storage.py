@@ -35,6 +35,18 @@ class SQLiteStorage:
         except OSError:
             return 0.0
 
+    @staticmethod
+    def _positive_ints(values: Iterable[int]) -> List[int]:
+        ids: List[int] = []
+        for value in values or []:
+            try:
+                item = int(value)
+            except (TypeError, ValueError):
+                continue
+            if item > 0:
+                ids.append(item)
+        return ids
+
     @contextmanager
     def _connect(self):
         # 使用 contextmanager 确保连接在退出 with 块时总是通过 finally 关闭，防止泄漏。
@@ -105,6 +117,93 @@ class SQLiteStorage:
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_rules_category ON moderation_rules(category)")
+        # ===== v2.4.0 新增表 =====
+        # F1 入群审核规则（按群，group_id='default' 为全局兜底）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS join_audit_rules ("
+            "group_id TEXT PRIMARY KEY, "
+            "accept_keywords TEXT, "
+            "reject_keywords TEXT, "
+            "default_action TEXT, "
+            "reject_reason TEXT, "
+            "enabled INTEGER NOT NULL DEFAULT 1"
+            ")"
+        )
+        # F2 刷屏申诉会话状态机
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS appeals ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "reason TEXT, "
+            "penalty TEXT, "
+            "mute_duration INTEGER, "
+            "status TEXT NOT NULL, "
+            "created_at INTEGER NOT NULL, "
+            "expire_at INTEGER NOT NULL, "
+            "decided_at INTEGER"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_appeals_user_status ON appeals(user_id, status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_appeals_expire ON appeals(expire_at)")
+        # F3 定时解禁计划
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scheduled_unbans ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "unban_at INTEGER NOT NULL, "
+            "created_at INTEGER NOT NULL, "
+            "UNIQUE(group_id, user_id)"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_unban_at ON scheduled_unbans(unban_at)")
+        # F5 群管理员动态授权（按群）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS group_admin_grant ("
+            "group_id TEXT PRIMARY KEY, "
+            "grant_owner INTEGER NOT NULL DEFAULT 1, "
+            "grant_admin INTEGER NOT NULL DEFAULT 1, "
+            "enabled INTEGER NOT NULL DEFAULT 1"
+            ")"
+        )
+        # 配置迁移：单群管理类名单（群白/群黑/用户黑/用户白/管理员）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS managed_lists ("
+            "list_type TEXT NOT NULL, "
+            "value TEXT NOT NULL, "
+            "UNIQUE(list_type, value)"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_managed_lists_type ON managed_lists(list_type)")
+        # F5 增强：群超管（某群专属的插件管理员，仅在该群生效，WebUI 单独设置）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS group_super_admins ("
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "UNIQUE(group_id, user_id)"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_super_admins_group ON group_super_admins(group_id)")
+        # F5 增强：群级 bot 权限黑名单（群主可移除本群某群管的 bot 管理权限，优先级最高）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS group_admin_block ("
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "UNIQUE(group_id, user_id)"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_admin_block_group ON group_admin_block(group_id)")
+        # 多群独立配置：每个群对任意配置项的覆盖值（value 存字符串，读取时按类型解析）
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS group_configs ("
+            "group_id TEXT NOT NULL, "
+            "key TEXT NOT NULL, "
+            "value TEXT, "
+            "UNIQUE(group_id, key)"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_group_configs_group ON group_configs(group_id)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -256,7 +355,7 @@ class SQLiteStorage:
         return bool(cur.rowcount)
 
     def delete_moderation_rules(self, rule_ids: Iterable[int]) -> int:
-        ids = [int(x) for x in rule_ids if int(x) > 0]
+        ids = self._positive_ints(rule_ids)
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
@@ -275,7 +374,7 @@ class SQLiteStorage:
         return bool(cur.rowcount)
 
     def toggle_moderation_rules(self, rule_ids: Iterable[int], enabled: bool) -> int:
-        ids = [int(x) for x in rule_ids if int(x) > 0]
+        ids = self._positive_ints(rule_ids)
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
@@ -506,7 +605,7 @@ class SQLiteStorage:
         return bool(cur.rowcount)
 
     def delete_lexicon_keywords(self, keyword_ids: Iterable[int]) -> int:
-        ids = [int(x) for x in keyword_ids if int(x) > 0]
+        ids = self._positive_ints(keyword_ids)
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
@@ -627,7 +726,7 @@ class SQLiteStorage:
 
     def delete_logs(self, ids: Iterable[int]) -> int:
         # 按 id 列表批量删除审核日志，返回实际删除条数。
-        ids = list(ids)
+        ids = self._positive_ints(ids)
         if not ids:
             return 0
         placeholders = ",".join("?" for _ in ids)
@@ -639,7 +738,8 @@ class SQLiteStorage:
     def delete_all_logs(self) -> int:
         # 清空审核日志表，返回删除的总条数。
         with self._connect() as conn:
-            count = self.count_logs()
+            row = conn.execute("SELECT COUNT(*) AS c FROM moderation_logs").fetchone()
+            count = int(row["c"] or 0)
             conn.execute("DELETE FROM moderation_logs")
             conn.commit()
         return count
@@ -710,3 +810,441 @@ class SQLiteStorage:
                 (since,),
             ).fetchall()
         return [{"hour": r["hour"], "count": r["count"] or 0} for r in rows]
+
+    # ============================================================
+    # v2.4.0 新增：F1 入群审核规则
+    # ============================================================
+    def get_join_audit_rule(self, group_id: str) -> Optional[dict]:
+        # 读取某个群的入群审核规则；group_id 传 'default' 取全局兜底规则。
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT group_id, accept_keywords, reject_keywords, default_action, reject_reason, enabled "
+                "FROM join_audit_rules WHERE group_id=?",
+                (str(group_id),),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "group_id": row["group_id"],
+            "accept_keywords": self._loads_list(row["accept_keywords"]),
+            "reject_keywords": self._loads_list(row["reject_keywords"]),
+            "default_action": row["default_action"] or "manual",
+            "reject_reason": row["reject_reason"] or "",
+            "enabled": bool(row["enabled"]),
+        }
+
+    def list_join_audit_rules(self) -> List[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT group_id, accept_keywords, reject_keywords, default_action, reject_reason, enabled "
+                "FROM join_audit_rules ORDER BY group_id"
+            ).fetchall()
+        return [
+            {
+                "group_id": r["group_id"],
+                "accept_keywords": self._loads_list(r["accept_keywords"]),
+                "reject_keywords": self._loads_list(r["reject_keywords"]),
+                "default_action": r["default_action"] or "manual",
+                "reject_reason": r["reject_reason"] or "",
+                "enabled": bool(r["enabled"]),
+            }
+            for r in rows
+        ]
+
+    def save_join_audit_rule(self, group_id: str, accept_keywords: List[str], reject_keywords: List[str],
+                             default_action: str = "manual", reject_reason: str = "", enabled: bool = True) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO join_audit_rules("
+                "group_id, accept_keywords, reject_keywords, default_action, reject_reason, enabled"
+                ") VALUES(?, ?, ?, ?, ?, ?)",
+                (
+                    str(group_id),
+                    json.dumps(accept_keywords or [], ensure_ascii=False),
+                    json.dumps(reject_keywords or [], ensure_ascii=False),
+                    default_action or "manual",
+                    reject_reason or "",
+                    1 if enabled else 0,
+                ),
+            )
+            conn.commit()
+
+    def delete_join_audit_rule(self, group_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM join_audit_rules WHERE group_id=?", (str(group_id),))
+            conn.commit()
+        return bool(cur.rowcount)
+
+    # ============================================================
+    # v2.4.0 新增：F2 刷屏申诉
+    # ============================================================
+    def open_appeal(self, group_id: str, user_id: str, reason: str, penalty: str,
+                    mute_duration: int, created_at: int, expire_at: int) -> int:
+        # 登记一条 waiting 申诉；若同群同人已有 waiting，先作废旧的（标记 expired）再新建。
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE appeals SET status='expired', decided_at=? "
+                "WHERE group_id=? AND user_id=? AND status='waiting'",
+                (created_at, str(group_id), str(user_id)),
+            )
+            cur = conn.execute(
+                "INSERT INTO appeals(group_id, user_id, reason, penalty, mute_duration, status, created_at, expire_at) "
+                "VALUES(?, ?, ?, ?, ?, 'waiting', ?, ?)",
+                (str(group_id), str(user_id), reason or "", penalty or "", int(mute_duration or 0), created_at, expire_at),
+            )
+            conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def get_waiting_appeal(self, user_id: str) -> Optional[dict]:
+        # 取某用户当前 waiting 的申诉（私聊裁决时用）。取最近一条。
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM appeals WHERE user_id=? AND status='waiting' ORDER BY id DESC LIMIT 1",
+                (str(user_id),),
+            ).fetchone()
+        return self._appeal_row_to_dict(row) if row else None
+
+    def set_appeal_status(self, appeal_id: int, status: str, decided_at: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE appeals SET status=?, decided_at=? WHERE id=?",
+                (status, int(decided_at), int(appeal_id)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def list_expired_waiting_appeals(self, now_ts: int) -> List[dict]:
+        # 列出已过期但仍是 waiting 的申诉，供后台任务标记 expired。
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM appeals WHERE status='waiting' AND expire_at <= ?",
+                (int(now_ts),),
+            ).fetchall()
+        return [self._appeal_row_to_dict(r) for r in rows]
+
+    def list_appeals(self, status: str = "", limit: int = 200) -> List[dict]:
+        with self._connect() as conn:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM appeals WHERE status=? ORDER BY id DESC LIMIT ?",
+                    (status, int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM appeals ORDER BY id DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
+        return [self._appeal_row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def _appeal_row_to_dict(row) -> dict:
+        return {
+            "id": row["id"],
+            "group_id": row["group_id"] or "",
+            "user_id": row["user_id"] or "",
+            "reason": row["reason"] or "",
+            "penalty": row["penalty"] or "",
+            "mute_duration": row["mute_duration"] or 0,
+            "status": row["status"] or "",
+            "created_at": row["created_at"] or 0,
+            "expire_at": row["expire_at"] or 0,
+            "decided_at": row["decided_at"] or 0,
+        }
+
+    # ============================================================
+    # v2.4.0 新增：F3 定时解禁
+    # ============================================================
+    def add_scheduled_unban(self, group_id: str, user_id: str, unban_at: int, created_at: int) -> None:
+        # 登记/更新一条定时解禁计划（同群同人唯一，新计划覆盖旧的）。
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO scheduled_unbans(group_id, user_id, unban_at, created_at) "
+                "VALUES(?, ?, ?, ?)",
+                (str(group_id), str(user_id), int(unban_at), int(created_at)),
+            )
+            conn.commit()
+
+    def list_due_unbans(self, now_ts: int) -> List[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, group_id, user_id, unban_at FROM scheduled_unbans WHERE unban_at <= ? ORDER BY unban_at",
+                (int(now_ts),),
+            ).fetchall()
+        return [{"id": r["id"], "group_id": r["group_id"], "user_id": r["user_id"], "unban_at": r["unban_at"]} for r in rows]
+
+    def list_all_scheduled_unbans(self) -> List[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, group_id, user_id, unban_at FROM scheduled_unbans ORDER BY unban_at"
+            ).fetchall()
+        return [{"id": r["id"], "group_id": r["group_id"], "user_id": r["user_id"], "unban_at": r["unban_at"]} for r in rows]
+
+    def delete_scheduled_unban(self, unban_id: int) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM scheduled_unbans WHERE id=?", (int(unban_id),))
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def delete_scheduled_unban_by_target(self, group_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM scheduled_unbans WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    # ============================================================
+    # v2.4.0 新增：F5 群管理员动态授权
+    # ============================================================
+    def get_group_admin_grant(self, group_id: str) -> Optional[dict]:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT group_id, grant_owner, grant_admin, enabled FROM group_admin_grant WHERE group_id=?",
+                (str(group_id),),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "group_id": row["group_id"],
+            "grant_owner": bool(row["grant_owner"]),
+            "grant_admin": bool(row["grant_admin"]),
+            "enabled": bool(row["enabled"]),
+        }
+
+    def list_group_admin_grants(self) -> List[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT group_id, grant_owner, grant_admin, enabled FROM group_admin_grant ORDER BY group_id"
+            ).fetchall()
+        return [
+            {
+                "group_id": r["group_id"],
+                "grant_owner": bool(r["grant_owner"]),
+                "grant_admin": bool(r["grant_admin"]),
+                "enabled": bool(r["enabled"]),
+            }
+            for r in rows
+        ]
+
+    def save_group_admin_grant(self, group_id: str, grant_owner: bool, grant_admin: bool, enabled: bool) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO group_admin_grant(group_id, grant_owner, grant_admin, enabled) "
+                "VALUES(?, ?, ?, ?)",
+                (str(group_id), 1 if grant_owner else 0, 1 if grant_admin else 0, 1 if enabled else 0),
+            )
+            conn.commit()
+
+    def delete_group_admin_grant(self, group_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM group_admin_grant WHERE group_id=?", (str(group_id),))
+            conn.commit()
+        return bool(cur.rowcount)
+
+    # ============================================================
+    # v2.4.0 新增：单群管理类名单（managed_lists）
+    # ============================================================
+    _MANAGED_LIST_TYPES = ("group_white", "group_black", "user_black", "user_white", "admin")
+
+    def load_managed_list(self, list_type: str) -> List[str]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT value FROM managed_lists WHERE list_type=? ORDER BY value",
+                (str(list_type),),
+            ).fetchall()
+        return [r["value"] for r in rows]
+
+    def count_managed_list(self, list_type: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM managed_lists WHERE list_type=?",
+                (str(list_type),),
+            ).fetchone()
+        return int(row["c"] or 0)
+
+    def add_managed_list_value(self, list_type: str, value: str) -> bool:
+        value = str(value).strip()
+        if not value:
+            return False
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO managed_lists(list_type, value) VALUES(?, ?)",
+                (str(list_type), value),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def remove_managed_list_value(self, list_type: str, value: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM managed_lists WHERE list_type=? AND value=?",
+                (str(list_type), str(value).strip()),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def seed_managed_list(self, list_type: str, values: Iterable[str]) -> int:
+        # 一次性迁移：把旧 config 名单导入 DB（INSERT OR IGNORE 去重）。
+        items = [(str(list_type), str(v).strip()) for v in (values or []) if str(v).strip()]
+        if not items:
+            return 0
+        with self._connect() as conn:
+            cur = conn.executemany(
+                "INSERT OR IGNORE INTO managed_lists(list_type, value) VALUES(?, ?)",
+                items,
+            )
+            conn.commit()
+        return int(cur.rowcount or 0)
+
+    @staticmethod
+    def _loads_list(raw) -> List[str]:
+        # 把 DB 里存的 JSON 数组字符串还原成 list[str]，异常时返回空列表。
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+            return [str(x) for x in data] if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    # ============================================================
+    # v2.4.0 新增：群超管 group_super_admins
+    # ============================================================
+    def list_group_super_admins(self, group_id: str = "") -> List[dict]:
+        # 列出群超管：传 group_id 则只列该群，否则列全部。
+        with self._connect() as conn:
+            if group_id:
+                rows = conn.execute(
+                    "SELECT group_id, user_id FROM group_super_admins WHERE group_id=? ORDER BY user_id",
+                    (str(group_id),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT group_id, user_id FROM group_super_admins ORDER BY group_id, user_id"
+                ).fetchall()
+        return [{"group_id": r["group_id"], "user_id": r["user_id"]} for r in rows]
+
+    def is_group_super_admin(self, group_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM group_super_admins WHERE group_id=? AND user_id=? LIMIT 1",
+                (str(group_id), str(user_id)),
+            ).fetchone()
+        return row is not None
+
+    def add_group_super_admin(self, group_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO group_super_admins(group_id, user_id) VALUES(?, ?)",
+                (str(group_id), str(user_id)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def remove_group_super_admin(self, group_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM group_super_admins WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    # ============================================================
+    # v2.4.0 新增：群级 bot 权限黑名单 group_admin_block
+    # ============================================================
+    def list_group_admin_blocks(self, group_id: str = "") -> List[dict]:
+        with self._connect() as conn:
+            if group_id:
+                rows = conn.execute(
+                    "SELECT group_id, user_id FROM group_admin_block WHERE group_id=? ORDER BY user_id",
+                    (str(group_id),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT group_id, user_id FROM group_admin_block ORDER BY group_id, user_id"
+                ).fetchall()
+        return [{"group_id": r["group_id"], "user_id": r["user_id"]} for r in rows]
+
+    def is_group_admin_blocked(self, group_id: str, user_id: str) -> bool:
+        # 该用户在该群是否被剥夺了 bot 管理权限（群主可设，优先级最高）。
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM group_admin_block WHERE group_id=? AND user_id=? LIMIT 1",
+                (str(group_id), str(user_id)),
+            ).fetchone()
+        return row is not None
+
+    def add_group_admin_block(self, group_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO group_admin_block(group_id, user_id) VALUES(?, ?)",
+                (str(group_id), str(user_id)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def remove_group_admin_block(self, group_id: str, user_id: str) -> bool:
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM group_admin_block WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    # ============================================================
+    # v2.3.0 新增：多群独立配置 group_configs
+    # ============================================================
+    def get_group_config(self, group_id: str, key: str):
+        # 读取某群对某配置项的覆盖值（字符串），不存在返回 None。
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT value FROM group_configs WHERE group_id=? AND key=?",
+                (str(group_id), str(key)),
+            ).fetchone()
+        return row["value"] if row else None
+
+    def get_group_configs(self, group_id: str) -> Dict[str, str]:
+        # 读取某群的全部配置覆盖，返回 {key: value(str)}。
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT key, value FROM group_configs WHERE group_id=?",
+                (str(group_id),),
+            ).fetchall()
+        return {r["key"]: r["value"] for r in rows}
+
+    def set_group_config(self, group_id: str, key: str, value: str) -> None:
+        # 设置/更新某群某配置项的覆盖值。
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO group_configs(group_id, key, value) VALUES(?, ?, ?)",
+                (str(group_id), str(key), str(value)),
+            )
+            conn.commit()
+
+    def delete_group_config(self, group_id: str, key: str) -> bool:
+        # 删除某群某配置项的覆盖（恢复为继承全局）。
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM group_configs WHERE group_id=? AND key=?",
+                (str(group_id), str(key)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def clear_group_configs(self, group_id: str) -> int:
+        # 清空某群的全部配置覆盖（整群恢复继承全局）。
+        with self._connect() as conn:
+            cur = conn.execute("DELETE FROM group_configs WHERE group_id=?", (str(group_id),))
+            conn.commit()
+        return int(cur.rowcount or 0)
+
+    def list_configured_groups(self) -> List[str]:
+        # 列出所有有自定义配置的群号。
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT group_id FROM group_configs ORDER BY group_id"
+            ).fetchall()
+        return [r["group_id"] for r in rows]
