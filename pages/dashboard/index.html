@@ -961,7 +961,17 @@ function fmtTime(ts) {
 var ROLE_NAME = { owner: '群主', admin: '管理员', member: '成员' };
 
 function unwrapApiResponse(r) {
-  if (r && r.status === 'success' && Object.prototype.hasOwnProperty.call(r, 'data')) return r.data;
+  if (r && r.status === 'success' && Object.prototype.hasOwnProperty.call(r, 'data')) {
+    var data = r.data;
+    if (data && typeof data === 'object') {
+      try {
+        Object.defineProperty(data, '_api_meta', { value: { stale: !!r.stale, message: r.message || '' }, configurable: true });
+      } catch(e) {
+        data._api_meta = { stale: !!r.stale, message: r.message || '' };
+      }
+    }
+    return data;
+  }
   return r;
 }
 
@@ -1274,6 +1284,7 @@ async function loadGroups(force) {
   grid.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('groups', force ? { force: 1 } : undefined);
   if (isApiError(res)) { grid.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  if (res && res._api_meta && res._api_meta.message) toast(res._api_meta.message, res._api_meta.stale ? 'warning' : 'info');
   CONFIG._groups = res;
   renderGroups(res);
 }

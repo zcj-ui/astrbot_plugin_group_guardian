@@ -121,6 +121,43 @@ class WebMixin:
     async def _call_onebot_web(self, client, action: str, timeout: float = 8.0, **kwargs):
         return await asyncio.wait_for(client.call_action(action, **kwargs), timeout=timeout)
 
+    @staticmethod
+    def _format_web_error(e: Exception) -> str:
+        msg = str(e).strip()
+        return msg or e.__class__.__name__
+
+    def _fallback_web_groups(self) -> list:
+        group_ids = set()
+        group_ids.update(str(x) for x in getattr(self, "group_white_list", []) if x)
+        group_ids.update(str(x) for x in getattr(self, "group_black_list", []) if x)
+        try:
+            group_ids.update(str(x) for x in self._storage.list_configured_groups() if x)
+        except Exception:
+            pass
+        for item in list(getattr(self, "_moderation_logs", [])):
+            gid = str(item.get("group_id", "")).strip()
+            if gid:
+                group_ids.add(gid)
+        today_start = self._today_start()
+        today_blocked_map = {}
+        for item in list(getattr(self, "_moderation_logs", [])):
+            if item.get("ts", 0) >= today_start and "撤回" in item.get("action", ""):
+                gid = str(item.get("group_id", "")).strip()
+                if gid:
+                    today_blocked_map[gid] = today_blocked_map.get(gid, 0) + 1
+        return [
+            {
+                "group_id": gid,
+                "group_name": f"群 {gid}",
+                "member_count": 0,
+                "avatar": f"https://p.qlogo.cn/gh/{gid}/{gid}/",
+                "is_white": gid in getattr(self, "_group_white_set", set()),
+                "is_black": gid in getattr(self, "_group_black_set", set()),
+                "today_blocked": today_blocked_map.get(gid, 0),
+            }
+            for gid in sorted(group_ids)
+        ]
+
     def _register_web_apis(self):
         # 遍历路由表，每项含 path / handler / methods / desc，统一注册到 self.context.register_web_api。
         try:
@@ -895,9 +932,20 @@ class WebMixin:
         except asyncio.TimeoutError:
             if cache.get("data"):
                 return jsonify({"status": "success", "data": cache.get("data", []), "stale": True})
+            fallback = self._fallback_web_groups()
+            if fallback:
+                self._web_group_cache = {"ts": now, "data": fallback}
+                return jsonify({"status": "success", "data": fallback, "stale": True, "message": "获取群列表超时，已显示本地缓存/配置群"})
             return jsonify({"status": "error", "message": "获取群列表超时，请稍后重试"})
         except Exception as e:
-            return jsonify({"status": "error", "message": f"获取群列表失败: {e}"})
+            logger.warning(f"[GroupMgr] WebUI 获取群列表失败: {e!r}")
+            if cache.get("data"):
+                return jsonify({"status": "success", "data": cache.get("data", []), "stale": True, "message": f"获取群列表失败，已显示缓存: {self._format_web_error(e)}"})
+            fallback = self._fallback_web_groups()
+            if fallback:
+                self._web_group_cache = {"ts": now, "data": fallback}
+                return jsonify({"status": "success", "data": fallback, "stale": True, "message": f"获取群列表失败，已显示本地配置群: {self._format_web_error(e)}"})
+            return jsonify({"status": "error", "message": f"获取群列表失败: {self._format_web_error(e)}"})
 
     async def _web_get_group_members(self):
         # 获取指定群的成员列表，附带头像、角色、头衔、是否为插件管理员等丰富信息。
@@ -947,7 +995,10 @@ class WebMixin:
                 return jsonify({"status": "success", "data": cached.get("data", []), "stale": True})
             return jsonify({"status": "error", "message": "获取群成员超时，请稍后重试"})
         except Exception as e:
-            return jsonify({"status": "error", "message": f"获取群成员失败: {e}"})
+            logger.warning(f"[GroupMgr] WebUI 获取群成员失败 group={group_id}: {e!r}")
+            if cached:
+                return jsonify({"status": "success", "data": cached.get("data", []), "stale": True, "message": f"获取群成员失败，已显示缓存: {self._format_web_error(e)}"})
+            return jsonify({"status": "error", "message": f"获取群成员失败: {self._format_web_error(e)}"})
 
     async def _web_whitelist_add(self):
         try:
