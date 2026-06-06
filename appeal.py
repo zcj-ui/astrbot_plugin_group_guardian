@@ -22,6 +22,9 @@ from astrbot.api.event import AstrMessageEvent
 
 
 class AppealMixin:
+    APPEAL_MAX_ATTEMPTS = 2
+    APPEAL_TEXT_PROMPT = "请用文字说明你的申诉理由。"
+
     async def _open_appeal(self, event: AstrMessageEvent, group_id: str, user_id: str,
                            user_name: str, reason: str, penalty: str, mute_duration: int) -> None:
         """处罚后登记申诉并群内 @ 当事人。失败不影响已执行的处罚。"""
@@ -94,13 +97,12 @@ class AppealMixin:
 
         statement = self._extract_private_statement(event)
         if not statement:
-            if not appeal.get("prompt_sent"):
-                self._storage.mark_appeal_prompted(appeal["id"])
-                yield event.plain_result("请用文字说明你的申诉理由。")
+            if self._mark_prompt_once(appeal):
+                yield event.plain_result(self.APPEAL_TEXT_PROMPT)
             return
         # 并发互斥：原子地把申诉从 waiting 抢占为 judging。用户连发多条私聊时只有第一条
         # 能抢到，后续请求抢不到直接退出，避免重复调用 LLM 复核、重复解禁、重复回复。
-        attempt_no = self._storage.claim_appeal_attempt(appeal["id"], 2)
+        attempt_no = self._storage.claim_appeal_attempt(appeal["id"], self.APPEAL_MAX_ATTEMPTS)
         if not attempt_no:
             return
 
@@ -132,18 +134,31 @@ class AppealMixin:
             tip = "申诉通过，已为你解除禁言。" if unbanned else "申诉通过。（解禁可能需要机器人具备管理员权限）"
             yield event.plain_result(f"{tip}\n复核说明：{verdict.get('reason', '')}")
         else:
-            self._log_moderation(group_id, user_id, event.get_sender_name(),
-                                 f"[申诉] {statement[:100]}", "申诉驳回",
-                                 verdict.get("reason", ""), [])
-            if attempt_no < 2:
-                self._storage.reopen_appeal_waiting(appeal["id"])
-                yield event.plain_result(
-                    "本次申诉未通过，处罚暂维持。你还有 1 次申诉机会，可以继续用文字补充说明。\n"
-                    f"复核说明：{verdict.get('reason', '')}"
-                )
-            else:
-                self._storage.set_appeal_status(appeal["id"], "rejected", now)
-                yield event.plain_result(f"申诉未通过，处罚维持。\n复核说明：{verdict.get('reason', '')}")
+            yield event.plain_result(
+                self._handle_rejected_appeal(event, appeal, group_id, user_id, statement, verdict, attempt_no, now)
+            )
+
+    def _mark_prompt_once(self, appeal: dict) -> bool:
+        if appeal.get("prompt_sent"):
+            return False
+        self._storage.mark_appeal_prompted(appeal["id"])
+        return True
+
+    def _handle_rejected_appeal(self, event: AstrMessageEvent, appeal: dict, group_id: str,
+                                user_id: str, statement: str, verdict: dict,
+                                attempt_no: int, now: int) -> str:
+        self._log_moderation(group_id, user_id, event.get_sender_name(),
+                             f"[申诉] {statement[:100]}", "申诉驳回",
+                             verdict.get("reason", ""), [])
+        remaining = max(0, self.APPEAL_MAX_ATTEMPTS - attempt_no)
+        if remaining:
+            self._storage.reopen_appeal_waiting(appeal["id"])
+            return (
+                f"本次申诉未通过，处罚暂维持。你还有 {remaining} 次申诉机会，可以继续用文字补充说明。\n"
+                f"复核说明：{verdict.get('reason', '')}"
+            )
+        self._storage.set_appeal_status(appeal["id"], "rejected", now)
+        return f"申诉未通过，处罚维持。\n复核说明：{verdict.get('reason', '')}"
 
     def _extract_private_statement(self, event: AstrMessageEvent) -> str:
         """从私聊事件中提取用户实际输入的文本。
