@@ -255,25 +255,25 @@
         "description": "防刷屏总开关",
         "type": "bool",
         "default": true,
-        "hint": "开启后自动检测并处理刷屏行为（每秒/每分钟/每小时消息数超限时禁言+可选撤回）。所有消息类型均计入，包括转发、QQ收藏、图片等"
+        "hint": "开启后自动检测并处理刷屏行为。按滑动窗口统计最近1秒/60秒/3600秒内的消息数，不按自然日累计；所有消息类型均计入，包括转发、QQ收藏、图片等"
     },
     "anti_flood_rate_per_second": {
-        "description": "每秒消息上限（0=关闭本项检测）",
+        "description": "最近1秒消息上限（0=关闭本项检测）",
         "type": "int",
         "default": 5,
-        "hint": "用户每秒消息数超过此值判定为刷屏。设为 0 可关闭每秒检测，仅保留分钟/小时检测"
+        "hint": "用户最近1秒消息数超过此值判定为刷屏。填写5表示第6条触发；设为0可关闭本档"
     },
     "anti_flood_rate_per_minute": {
-        "description": "每分钟消息上限（0=关闭本项检测）",
+        "description": "最近1分钟消息上限（0=关闭本项检测）",
         "type": "int",
         "default": 20,
-        "hint": "用户每分钟消息数超过此值判定为刷屏。设为 0 可关闭每分钟检测，仅保留秒/小时检测"
+        "hint": "用户最近60秒消息数超过此值判定为刷屏。填写20表示第21条触发；设为0可关闭本档"
     },
     "anti_flood_rate_per_hour": {
-        "description": "每小时消息上限（0=关闭本项检测）",
+        "description": "最近1小时消息上限（0=关闭本项检测）",
         "type": "int",
         "default": 60,
-        "hint": "用户每小时消息数超过此值判定为刷屏。设为 0 可关闭每小时检测，仅保留秒/分钟检测"
+        "hint": "用户最近3600秒消息数超过此值判定为刷屏，不按自然小时或当天累计；设为0可关闭本档"
     },
     "anti_flood_night_enabled": {
         "description": "凌晨/夜间独立限速开关",
@@ -294,22 +294,22 @@
         "hint": "按服务器本地时间判断。开始小时与结束小时相同表示全天使用夜间阈值"
     },
     "anti_flood_night_rate_per_second": {
-        "description": "夜间每秒消息上限（0=关闭本项检测）",
+        "description": "夜间最近1秒消息上限（0=关闭本项检测）",
         "type": "int",
         "default": 3,
-        "hint": "夜间时段用户每秒消息数超过此值判定为刷屏"
+        "hint": "夜间时段用户最近1秒消息数超过此值判定为刷屏"
     },
     "anti_flood_night_rate_per_minute": {
-        "description": "夜间每分钟消息上限（0=关闭本项检测）",
+        "description": "夜间最近1分钟消息上限（0=关闭本项检测）",
         "type": "int",
         "default": 10,
-        "hint": "夜间时段用户每分钟消息数超过此值判定为刷屏"
+        "hint": "夜间时段用户最近60秒消息数超过此值判定为刷屏"
     },
     "anti_flood_night_rate_per_hour": {
-        "description": "夜间每小时消息上限（0=关闭本项检测）",
+        "description": "夜间最近1小时消息上限（0=关闭本项检测）",
         "type": "int",
         "default": 30,
-        "hint": "夜间时段用户每小时消息数超过此值判定为刷屏"
+        "hint": "夜间时段用户最近3600秒消息数超过此值判定为刷屏，不按当天累计"
     },
     "anti_flood_mute_duration": {
         "description": "刷屏禁言时长（秒，0=仅撤回不禁言）",

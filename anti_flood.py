@@ -151,7 +151,7 @@ class AntiFloodMixin:
     ) -> Tuple[bool, Optional[dict]]:
         """检查用户是否触发刷屏阈值。
 
-        检测顺序：每秒 -> 每分钟 -> 每小时，任一档位触发即返回。
+        检测顺序：最近1秒 -> 最近60秒 -> 最近3600秒，任一滑动窗口超过上限即返回。
 
         Args:
             group_id: 群号。
@@ -160,7 +160,7 @@ class AntiFloodMixin:
         Returns:
             (False, None) —— 未触发任何阈值。
             (True, dict)  —— 已触发，dict 包含
-                ``rate``       该时间窗口的名称（"每秒"/"每分钟"/"每小时"）
+                ``rate``       该时间窗口的名称（"每秒"/"每分钟"/"每小时"，夜间会加前缀）
                 ``count``      窗口内的消息数
                 ``limit``      配置的阈值
                 ``total_msgs`` 队列中的总消息数
