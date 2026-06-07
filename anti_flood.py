@@ -19,6 +19,7 @@ class AntiFloodMixin:
 
     特性:
         * 三档独立速率：每秒 / 每分钟 / 每小时，单档设为 0 即关闭
+        * 可选夜间独立阈值：按本机时区判断小时，夜间开启后覆盖日间三档上限
         * 所有消息类型均计入（文本/图片/转发/QQ 收藏/JSON/App）
         * 管理员完全豁免（在 moderation.py 管线中提前 return）
     """
@@ -103,6 +104,48 @@ class AntiFloodMixin:
         """
         return self._cfg_int(key, default, group_id=group_id)
 
+    @staticmethod
+    def _clamp_hour(value: int) -> int:
+        return max(0, min(int(value), 23))
+
+    def _is_anti_flood_night_time(self, group_id: str = None, now_ts: float = None) -> bool:
+        """判断当前是否处于夜间独立限速时段。
+
+        start == end 表示全天使用夜间阈值；跨天区间如 23 -> 6 表示 23:00-次日 06:00。
+        """
+        if not self._cfg("anti_flood_night_enabled", False, group_id=group_id):
+            return False
+        start = self._clamp_hour(self._cfg_int("anti_flood_night_start_hour", 0, group_id=group_id))
+        end = self._clamp_hour(self._cfg_int("anti_flood_night_end_hour", 6, group_id=group_id))
+        hour = time.localtime(now_ts if now_ts is not None else time.time()).tm_hour
+        if start == end:
+            return True
+        if start < end:
+            return start <= hour < end
+        return hour >= start or hour < end
+
+    def _get_effective_rate_limits(self, group_id: str = None, now_ts: float = None) -> dict:
+        """返回当前时段实际使用的秒/分/时阈值。"""
+        limits = {
+            "per_second": self._get_rate_limit("anti_flood_rate_per_second", 5, group_id=group_id),
+            "per_minute": self._get_rate_limit("anti_flood_rate_per_minute", 20, group_id=group_id),
+            "per_hour": self._get_rate_limit("anti_flood_rate_per_hour", 60, group_id=group_id),
+            "night": False,
+        }
+        if not self._is_anti_flood_night_time(group_id=group_id, now_ts=now_ts):
+            return limits
+        limits.update({
+            "per_second": self._get_rate_limit("anti_flood_night_rate_per_second", limits["per_second"], group_id=group_id),
+            "per_minute": self._get_rate_limit("anti_flood_night_rate_per_minute", limits["per_minute"], group_id=group_id),
+            "per_hour": self._get_rate_limit("anti_flood_night_rate_per_hour", limits["per_hour"], group_id=group_id),
+            "night": True,
+        })
+        return limits
+
+    @staticmethod
+    def _rate_label(name: str, night: bool) -> str:
+        return f"夜间{name}" if night else name
+
     def _check_anti_flood(
         self, group_id: str, user_id: str
     ) -> Tuple[bool, Optional[dict]]:
@@ -131,9 +174,11 @@ class AntiFloodMixin:
         total_msgs = len(dq)
         now = time.time()
 
-        sec_limit = self._get_rate_limit("anti_flood_rate_per_second", 5, group_id=group_id)
-        min_limit = self._get_rate_limit("anti_flood_rate_per_minute", 20, group_id=group_id)
-        hour_limit = self._get_rate_limit("anti_flood_rate_per_hour", 60, group_id=group_id)
+        limits = self._get_effective_rate_limits(group_id=group_id, now_ts=now)
+        sec_limit = limits["per_second"]
+        min_limit = limits["per_minute"]
+        hour_limit = limits["per_hour"]
+        night = bool(limits.get("night"))
         sec_count = 0
         min_count = 0
         hour_count = 0
@@ -175,13 +220,13 @@ class AntiFloodMixin:
                 repeat_ids.append(mid)
 
         if sec_limit > 0 and sec_count > sec_limit:
-            return True, {"rate": "每秒", "count": sec_count, "limit": sec_limit,
+            return True, {"rate": self._rate_label("每秒", night), "count": sec_count, "limit": sec_limit,
                           "total_msgs": total_msgs, "msg_ids": sec_ids}
         if min_limit > 0 and min_count > min_limit:
-            return True, {"rate": "每分钟", "count": min_count, "limit": min_limit,
+            return True, {"rate": self._rate_label("每分钟", night), "count": min_count, "limit": min_limit,
                           "total_msgs": total_msgs, "msg_ids": min_ids}
         if hour_limit > 0 and hour_count > hour_limit:
-            return True, {"rate": "每小时", "count": hour_count, "limit": hour_limit,
+            return True, {"rate": self._rate_label("每小时", night), "count": hour_count, "limit": hour_limit,
                           "total_msgs": total_msgs, "msg_ids": hour_ids}
         if long_text_enabled and long_text_threshold > 0 and current_len > long_text_threshold:
             return True, {
@@ -240,6 +285,8 @@ class AntiFloodMixin:
         """
         result = {
             "enabled": self._cfg("anti_flood_enabled", True),
+            "night_enabled": self._cfg("anti_flood_night_enabled", False),
+            "night_active": self._is_anti_flood_night_time(),
             "tracked_groups": 0,
             "tracked_users": 0,
             "groups": {},

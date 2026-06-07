@@ -275,6 +275,42 @@
         "default": 60,
         "hint": "用户每小时消息数超过此值判定为刷屏。设为 0 可关闭每小时检测，仅保留秒/分钟检测"
     },
+    "anti_flood_night_enabled": {
+        "description": "凌晨/夜间独立限速开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后在指定夜间时段使用单独的每秒/每分钟/每小时消息上限。适合凌晨低活跃时段收紧刷屏阈值"
+    },
+    "anti_flood_night_start_hour": {
+        "description": "夜间限速开始小时（0-23）",
+        "type": "int",
+        "default": 0,
+        "hint": "按服务器本地时间判断。0 表示 00:00；支持跨天区间，如 23 到 6 表示 23:00-次日06:00"
+    },
+    "anti_flood_night_end_hour": {
+        "description": "夜间限速结束小时（0-23）",
+        "type": "int",
+        "default": 6,
+        "hint": "按服务器本地时间判断。开始小时与结束小时相同表示全天使用夜间阈值"
+    },
+    "anti_flood_night_rate_per_second": {
+        "description": "夜间每秒消息上限（0=关闭本项检测）",
+        "type": "int",
+        "default": 3,
+        "hint": "夜间时段用户每秒消息数超过此值判定为刷屏"
+    },
+    "anti_flood_night_rate_per_minute": {
+        "description": "夜间每分钟消息上限（0=关闭本项检测）",
+        "type": "int",
+        "default": 10,
+        "hint": "夜间时段用户每分钟消息数超过此值判定为刷屏"
+    },
+    "anti_flood_night_rate_per_hour": {
+        "description": "夜间每小时消息上限（0=关闭本项检测）",
+        "type": "int",
+        "default": 30,
+        "hint": "夜间时段用户每小时消息数超过此值判定为刷屏"
+    },
     "anti_flood_mute_duration": {
         "description": "刷屏禁言时长（秒，0=仅撤回不禁言）",
         "type": "int",

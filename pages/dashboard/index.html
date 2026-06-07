@@ -400,7 +400,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="logo-icon">G</div>
         <div class="logo-text">
           <span class="logo-title">Group Guardian</span>
-          <span class="logo-ver" id="logoVer">v2.3.2</span>
+          <span class="logo-ver" id="logoVer">v2.3.4</span>
         </div>
       </div>
       <nav class="sidebar-nav">
@@ -614,6 +614,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
             <div id="floodRateSec" style="min-width:120px"><span style="color:var(--text-muted);font-size:12px">每秒上限</span><br><strong id="floodRateSecVal" style="font-size:18px">--</strong></div>
             <div id="floodRateMin" style="min-width:120px"><span style="color:var(--text-muted);font-size:12px">每分钟上限</span><br><strong id="floodRateMinVal" style="font-size:18px">--</strong></div>
             <div id="floodRateHour" style="min-width:120px"><span style="color:var(--text-muted);font-size:12px">每小时上限</span><br><strong id="floodRateHourVal" style="font-size:18px">--</strong></div>
+            <div style="min-width:120px"><span style="color:var(--text-muted);font-size:12px">夜间限速</span><br><strong id="floodNightStatus" style="font-size:18px">--</strong></div>
+            <div style="min-width:160px"><span style="color:var(--text-muted);font-size:12px">夜间阈值</span><br><strong id="floodNightRates" style="font-size:18px">--</strong></div>
             <div style="min-width:120px"><span style="color:var(--text-muted);font-size:12px">禁言时长</span><br><strong id="floodMuteDuration" style="font-size:18px">--</strong></div>
             <div style="min-width:120px"><span style="color:var(--text-muted);font-size:12px">撤回阈值</span><br><strong id="floodRecallThreshold" style="font-size:18px">--</strong></div>
           </div>
@@ -1147,7 +1149,7 @@ async function loadOverview() {
     $('#statUserBlackCount').textContent = d.user_black_list_count != null ? d.user_black_list_count : '--';
     $('#statAdminCount').textContent = d.admin_list_count != null ? d.admin_list_count : '--';
     $('#statTotalLogs').textContent = d.total_logs != null ? d.total_logs : '--';
-    $('#logoVer').textContent = d.version || 'v2.3.2';
+    $('#logoVer').textContent = d.version || 'v2.3.4';
     var banner = $('#disclaimerBanner');
     if (banner) banner.style.display = d.disclaimer_agreed ? 'none' : 'block';
   }
@@ -1663,6 +1665,7 @@ var AUDIT_TOGGLES = [
   { key: 'recall_qq_favorite_enabled', label: 'QQ收藏撤回', desc: '检测到QQ收藏转发内容自动撤回' },
   { key: 'anti_flood_enabled', label: '防刷屏', desc: '检测消息发送频率，超限自动禁言' },
   { key: 'anti_flood_recall_enabled', label: '刷屏撤回', desc: '刷屏消息自动批量撤回' },
+  { key: 'anti_flood_night_enabled', label: '夜间限速', desc: '凌晨时段使用独立刷屏阈值' },
   { key: 'repeat_detect_enabled', label: '重复消息检测', desc: '检测短时间内重复发送相同内容' },
   { key: 'long_text_detect_enabled', label: '长文本检测', desc: '检测超长消息刷屏' },
 ];
@@ -1770,6 +1773,7 @@ var MANUAL_SETTING_KEYS = {
   recall_qq_favorite_enabled: true,
   anti_flood_enabled: true,
   anti_flood_recall_enabled: true,
+  anti_flood_night_enabled: true,
   repeat_detect_enabled: true,
   long_text_detect_enabled: true,
   ocr_enabled: true,
@@ -1819,6 +1823,11 @@ var MANUAL_SETTING_KEYS = {
   anti_flood_rate_per_second: true,
   anti_flood_rate_per_minute: true,
   anti_flood_rate_per_hour: true,
+  anti_flood_night_start_hour: true,
+  anti_flood_night_end_hour: true,
+  anti_flood_night_rate_per_second: true,
+  anti_flood_night_rate_per_minute: true,
+  anti_flood_night_rate_per_hour: true,
   anti_flood_mute_duration: true,
   anti_flood_recall_threshold: true,
   repeat_detect_window_seconds: true,
@@ -2578,6 +2587,10 @@ function renderExtraSettings() {
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">每秒上限</div><div class="setting-desc">设 0 关闭每秒检测</div></div><input type="number" class="input-sm" id="inputFloodSec" value="' + (CONFIG.anti_flood_rate_per_second != null ? CONFIG.anti_flood_rate_per_second : 5) + '" min="0" max="99" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">每分钟上限</div><div class="setting-desc">设 0 关闭每分钟检测</div></div><input type="number" class="input-sm" id="inputFloodMin" value="' + (CONFIG.anti_flood_rate_per_minute != null ? CONFIG.anti_flood_rate_per_minute : 20) + '" min="0" max="999" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">每小时上限</div><div class="setting-desc">设 0 关闭每小时检测</div></div><input type="number" class="input-sm" id="inputFloodHour" value="' + (CONFIG.anti_flood_rate_per_hour != null ? CONFIG.anti_flood_rate_per_hour : 60) + '" min="0" max="9999" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">夜间时段</div><div class="setting-desc">按服务器本地时间，开始=结束表示全天使用夜间阈值</div></div><div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><input type="number" class="input-sm" id="inputFloodNightStart" value="' + (CONFIG.anti_flood_night_start_hour != null ? CONFIG.anti_flood_night_start_hour : 0) + '" min="0" max="23" style="width:72px" /><span style="color:var(--text-muted)">至</span><input type="number" class="input-sm" id="inputFloodNightEnd" value="' + (CONFIG.anti_flood_night_end_hour != null ? CONFIG.anti_flood_night_end_hour : 6) + '" min="0" max="23" style="width:72px" /></div></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">夜间每秒上限</div><div class="setting-desc">夜间独立阈值，设 0 关闭本档</div></div><input type="number" class="input-sm" id="inputFloodNightSec" value="' + (CONFIG.anti_flood_night_rate_per_second != null ? CONFIG.anti_flood_night_rate_per_second : 3) + '" min="0" max="99" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">夜间每分钟上限</div><div class="setting-desc">夜间独立阈值，设 0 关闭本档</div></div><input type="number" class="input-sm" id="inputFloodNightMin" value="' + (CONFIG.anti_flood_night_rate_per_minute != null ? CONFIG.anti_flood_night_rate_per_minute : 10) + '" min="0" max="999" style="width:80px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">夜间每小时上限</div><div class="setting-desc">夜间独立阈值，设 0 关闭本档</div></div><input type="number" class="input-sm" id="inputFloodNightHour" value="' + (CONFIG.anti_flood_night_rate_per_hour != null ? CONFIG.anti_flood_night_rate_per_hour : 30) + '" min="0" max="9999" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">禁言时长（秒）</div><div class="setting-desc">设 0 仅撤回不禁言</div></div><input type="number" class="input-sm" id="inputFloodMute" value="' + (CONFIG.anti_flood_mute_duration != null ? CONFIG.anti_flood_mute_duration : 300) + '" min="0" max="2592000" style="width:100px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">撤回阈值（条数）</div><div class="setting-desc">超限达此数才撤回消息</div></div><input type="number" class="input-sm" id="inputFloodRecallThreshold" value="' + (CONFIG.anti_flood_recall_threshold != null ? CONFIG.anti_flood_recall_threshold : 20) + '" min="1" max="9999" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">重复消息窗口（秒）</div><div class="setting-desc">设 0 关闭重复消息检测</div></div><input type="number" class="input-sm" id="inputRepeatWindow" value="' + (CONFIG.repeat_detect_window_seconds != null ? CONFIG.repeat_detect_window_seconds : 120) + '" min="0" max="3600" style="width:100px" /></div>' +
@@ -2696,6 +2709,16 @@ async function saveSettings() {
   if (floodMin) payload.anti_flood_rate_per_minute = parseInt(floodMin.value, 10) || 0;
   var floodHour = $('#inputFloodHour');
   if (floodHour) payload.anti_flood_rate_per_hour = parseInt(floodHour.value, 10) || 0;
+  var floodNightStart = $('#inputFloodNightStart');
+  if (floodNightStart) payload.anti_flood_night_start_hour = parseIntOrDefault(floodNightStart.value, 0);
+  var floodNightEnd = $('#inputFloodNightEnd');
+  if (floodNightEnd) payload.anti_flood_night_end_hour = parseIntOrDefault(floodNightEnd.value, 6);
+  var floodNightSec = $('#inputFloodNightSec');
+  if (floodNightSec) payload.anti_flood_night_rate_per_second = parseInt(floodNightSec.value, 10) || 0;
+  var floodNightMin = $('#inputFloodNightMin');
+  if (floodNightMin) payload.anti_flood_night_rate_per_minute = parseInt(floodNightMin.value, 10) || 0;
+  var floodNightHour = $('#inputFloodNightHour');
+  if (floodNightHour) payload.anti_flood_night_rate_per_hour = parseInt(floodNightHour.value, 10) || 0;
   var floodMute = $('#inputFloodMute');
   if (floodMute) {
     var vFloodMute = parseInt(floodMute.value, 10);
@@ -2762,6 +2785,19 @@ async function loadFlood() {
     $('#floodRateSecVal').textContent = CONFIG.anti_flood_rate_per_second > 0 ? CONFIG.anti_flood_rate_per_second + ' 条/秒' : '已关闭';
     $('#floodRateMinVal').textContent = CONFIG.anti_flood_rate_per_minute > 0 ? CONFIG.anti_flood_rate_per_minute + ' 条/分' : '已关闭';
     $('#floodRateHourVal').textContent = CONFIG.anti_flood_rate_per_hour > 0 ? CONFIG.anti_flood_rate_per_hour + ' 条/时' : '已关闭';
+    var nightStart = CONFIG.anti_flood_night_start_hour != null ? CONFIG.anti_flood_night_start_hour : 0;
+    var nightEnd = CONFIG.anti_flood_night_end_hour != null ? CONFIG.anti_flood_night_end_hour : 6;
+    var nightEnabled = !!CONFIG.anti_flood_night_enabled;
+    $('#floodNightStatus').textContent = nightEnabled ? ((d.night_active ? '生效中 ' : '已开启 ') + nightStart + ':00-' + nightEnd + ':00') : '未开启';
+    $('#floodNightStatus').style.color = nightEnabled ? (d.night_active ? 'var(--warning)' : 'var(--text)') : 'var(--text-muted)';
+    if (nightEnabled) {
+      var nSec = CONFIG.anti_flood_night_rate_per_second != null ? CONFIG.anti_flood_night_rate_per_second : 3;
+      var nMin = CONFIG.anti_flood_night_rate_per_minute != null ? CONFIG.anti_flood_night_rate_per_minute : 10;
+      var nHour = CONFIG.anti_flood_night_rate_per_hour != null ? CONFIG.anti_flood_night_rate_per_hour : 30;
+      $('#floodNightRates').textContent = nSec + '/秒 · ' + nMin + '/分 · ' + nHour + '/时';
+    } else {
+      $('#floodNightRates').textContent = '--';
+    }
     $('#floodMuteDuration').textContent = CONFIG.anti_flood_mute_duration + ' 秒';
     $('#floodRecallThreshold').textContent = CONFIG.anti_flood_recall_enabled ? (CONFIG.anti_flood_recall_threshold + ' 条') : '未开启';
   }
