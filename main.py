@@ -237,7 +237,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("禁言")
     async def cmd_ban(self, event: AstrMessageEvent):
-        '''禁言指定群成员。用法: /禁言 <QQ号> <分钟>'''
+        '''禁言指定群成员。用法: /禁言 <QQ号> <秒数>'''
         async for item in CommandsMixin.cmd_ban(self, event):
             yield item
 
@@ -381,14 +381,14 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     # 注意：AstrBot 的 handler 必须使用 yield 发送消息，所以这里用 async for/yield 转发，
     # 不能直接用 return await。如果业务函数最终 yield None，AstrBot 框架会跳过空回复。
     @filter.llm_tool(name="ban_group_member")
-    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_minutes: int = 10):
+    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_seconds: int = 600):
         '''禁言群成员。当用户要求禁言某人时使用此工具。
 
         Args:
             user_id(string): 要禁言的用户QQ号
-            duration_minutes(number): 禁言时长（分钟），默认10分钟
+            duration_seconds(number): 禁言时长（秒），默认600秒
         '''
-        async for item in LlmToolsMixin.ban_group_member_tool(self, event, user_id, duration_minutes):
+        async for item in LlmToolsMixin.ban_group_member_tool(self, event, user_id, duration_seconds):
             yield item
 
     @filter.llm_tool(name="unban_group_member")
@@ -607,7 +607,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("批量禁言")
     async def cmd_batch_ban(self, event: AstrMessageEvent):
-        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长分钟]'''
+        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长秒数]'''
         async for item in CommandsMixin.cmd_batch_ban(self, event):
             yield item
 
@@ -641,14 +641,14 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
 
     # F4 批量管理 LLM 工具
     @filter.llm_tool(name="batch_ban_members")
-    async def batch_ban_members_tool(self, event: AstrMessageEvent, user_ids: str, duration_minutes: int = 10):
+    async def batch_ban_members_tool(self, event: AstrMessageEvent, user_ids: str, duration_seconds: int = 600):
         '''批量禁言多个群成员。当用户要求同时禁言多人时使用此工具。
 
         Args:
             user_ids(array): 要禁言的用户QQ号列表
-            duration_minutes(number): 禁言时长（分钟），默认10分钟
+            duration_seconds(number): 禁言时长（秒），默认600秒
         '''
-        async for item in LlmToolsMixin.batch_ban_members_tool(self, event, user_ids, duration_minutes):
+        async for item in LlmToolsMixin.batch_ban_members_tool(self, event, user_ids, duration_seconds):
             yield item
 
     @filter.llm_tool(name="batch_kick_members")
