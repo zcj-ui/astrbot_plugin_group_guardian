@@ -270,6 +270,8 @@ class WebMixin:
                 ("/group_config/delete", self._web_delete_group_config, ["POST"], "删除某群某配置项（恢复继承）"),
                 ("/group_config/clear", self._web_clear_group_config, ["POST"], "清空某群全部独立配置"),
                 ("/configured_groups", self._web_configured_groups, ["GET"], "列出有独立配置的群"),
+                ("/group_config/batch_set", self._web_batch_set_group_config, ["POST"], "批量设置某群配置"),
+                ("/group_config/copy", self._web_copy_group_config, ["POST"], "从其他群复制配置"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(
@@ -283,7 +285,6 @@ class WebMixin:
             logger.warning(f"[GroupMgr] 注册 WebUI API 失败: {e}")
 
     async def _web_stats(self):
-        # 返回插件全局概览：版本、黑白名单数、规则数、词库大小、今日拦截/放行/总计。
         today_start = self._today_start()
         sc = self._stats_cache
         if sc["today_start"] == today_start:
@@ -303,6 +304,8 @@ class WebMixin:
                     elif "放行" in action:
                         today_passed += 1
             sc.update(today_start=today_start, blocked=today_blocked, passed=today_passed, total=today_total)
+        swear_count = self._swear_matcher.ac_count + self._swear_matcher.regex_count if hasattr(self, '_swear_matcher') else 0
+        ad_count = self._ad_matcher.ac_count + self._ad_matcher.regex_count if hasattr(self, '_ad_matcher') else 0
         stats = {
             "plugin_name": PLUGIN_NAME,
             "version": PLUGIN_VERSION,
@@ -313,8 +316,8 @@ class WebMixin:
             "user_black_list_count": len(self.user_black_list),
             "user_white_list_count": len(self.user_white_list),
             "admin_list_count": len(self._get_admin_list()),
-            "swear_patterns_count": len(self._storage.load_moderation_rules("swear")),
-            "ad_patterns_count": len(self._storage.load_moderation_rules("ad")),
+            "swear_patterns_count": swear_count,
+            "ad_patterns_count": ad_count,
             "lexicon_categories_count": len(self._lexicon),
             "lexicon_total_keywords": sum(
                 len(cat.get("keywords", [])) for cat in self._lexicon.values()
@@ -323,6 +326,8 @@ class WebMixin:
             "today_total": today_total,
             "today_blocked": today_blocked,
             "today_passed": today_passed,
+            "configured_groups_count": len(self._storage.list_configured_groups()),
+            "super_admin_count": len(self._storage.list_group_super_admins()),
         }
         return jsonify({"status": "success", "data": stats})
 
@@ -738,13 +743,21 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_get_logs(self):
-        # 分页查询审核日志（SQLite），limit 参数最大 200 条。
         try:
             limit = min(int(quart_request.args.get("limit", 50)), 200)
         except (ValueError, TypeError):
             limit = 50
-        logs = self._storage.list_logs(limit=limit)
-        return jsonify({"status": "success", "data": logs})
+        try:
+            offset = max(0, self._safe_int(quart_request.args.get("offset", 0), 0))
+        except (ValueError, TypeError):
+            offset = 0
+        group_id = quart_request.args.get("group_id", "").strip()
+        user_id = quart_request.args.get("user_id", "").strip()
+        action = quart_request.args.get("action", "").strip()
+        logs = self._storage.list_logs(limit=limit, offset=offset,
+                                       group_id=group_id, user_id=user_id, action=action)
+        total = self._storage.count_logs_filtered(group_id=group_id, user_id=user_id, action=action)
+        return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
 
     def _get_log_by_id(self, target_id: int):
         # 辅助方法：先查 SQLite，找不到再回退到内存缓存 _moderation_logs。
@@ -834,13 +847,14 @@ class WebMixin:
             return str(e), 500, _cors
 
     async def _web_get_moderation_users(self):
-        # 聚合被撤回消息的用户列表，按违规次数降序排列。
-        # 支持 action 参数过滤（如只查"LLM撤回"），每人最多保留 50 条最近记录。
         logs = self._storage.list_logs(limit=5000)
         action_filter = quart_request.args.get("action", "").strip()
+        group_filter = quart_request.args.get("group_id", "").strip()
         user_map = {}
         for log in logs:
             if action_filter and action_filter not in log.get("action", ""):
+                continue
+            if group_filter and log.get("group_id", "") != group_filter:
                 continue
             uid = log.get("user_id", "")
             if not uid:
@@ -853,25 +867,30 @@ class WebMixin:
                     "count": 0,
                     "first_time": log.get("time", ""),
                     "last_time": log.get("time", ""),
+                    "groups": set(),
                     "records": [],
                 }
             u = user_map[uid]
             u["count"] += 1
             u["last_time"] = log.get("time", "")
+            gid = log.get("group_id", "")
+            if gid:
+                u["groups"].add(gid)
             if len(u["records"]) < 50:
                 u["records"].append({
                     "id": log.get("id"),
                     "time": log.get("time", ""),
                     "ts": log.get("ts", 0),
-                    "group_id": log.get("group_id", ""),
+                    "group_id": gid,
                     "msg_preview": log.get("msg_preview", ""),
-                    "msg_text": log.get("msg_text", ""),
                     "action": log.get("action", ""),
                     "reason": log.get("reason", ""),
-                    "image_urls": log.get("image_urls", []),
                 })
+        for u in user_map.values():
+            u["group_count"] = len(u["groups"])
+            u["groups"] = sorted(u["groups"])
         users = sorted(user_map.values(), key=lambda x: x["count"], reverse=True)
-        return jsonify({"status": "success", "data": users})
+        return jsonify({"status": "success", "data": users, "total": len(users)})
 
     async def _web_delete_logs(self):
         # 批量删除审核日志：支持按 id 列表删除或 delete_all=True 清空全部。
@@ -950,26 +969,24 @@ class WebMixin:
             result = await self._call_onebot_web(client, 'get_group_list', timeout=8.0)
             groups = self._extract_list_result(result)
             today_start = self._today_start()
-            white_set = self._group_white_set
             today_blocked_map = {}
             for l in list(self._moderation_logs):
                 if l.get("ts", 0) >= today_start and "撤回" in l.get("action", ""):
                     gid = str(l.get("group_id", ""))
-                    if gid in white_set:
+                    if gid:
                         today_blocked_map[gid] = today_blocked_map.get(gid, 0) + 1
+            configured_set = set(self._storage.list_configured_groups())
             enriched = []
             for g in groups:
                 gid = str(g.get("group_id", ""))
-                member_count = g.get("member_count", 0)
-                is_white = gid in white_set
-                is_black = gid in self._group_black_set
                 enriched.append({
                     "group_id": gid,
                     "group_name": g.get("group_name", ""),
-                    "member_count": member_count,
+                    "member_count": g.get("member_count", 0),
                     "avatar": f"https://p.qlogo.cn/gh/{gid}/{gid}/",
-                    "is_white": is_white,
-                    "is_black": is_black,
+                    "is_white": gid in self._group_white_set,
+                    "is_black": gid in self._group_black_set,
+                    "has_config": gid in configured_set,
                     "today_blocked": today_blocked_map.get(gid, 0),
                 })
             self._web_group_cache = {"ts": now, "data": enriched}
@@ -1218,13 +1235,18 @@ class WebMixin:
                       total=total_today, group_stats=group_stats, user_stats=user_stats, user_names=user_names)
         group_ranking = sorted(group_stats.items(), key=lambda x: x[1], reverse=True)[:20]
         user_ranking = sorted(user_stats.items(), key=lambda x: x[1], reverse=True)[:20]
+        group_name_map = {}
+        cache_data = getattr(self, "_web_group_cache", {}).get("data", [])
+        for g in cache_data:
+            group_name_map[str(g.get("group_id", ""))] = g.get("group_name", "")
         return jsonify({
             "status": "success",
             "data": {
                 "total_today": total_today,
                 "blocked_today": blocked_today,
                 "passed_today": passed_today,
-                "group_ranking": [{"group_id": g, "count": c} for g, c in group_ranking],
+                "block_rate": round(blocked_today / total_today * 100, 1) if total_today > 0 else 0,
+                "group_ranking": [{"group_id": g, "group_name": group_name_map.get(g, ""), "count": c} for g, c in group_ranking],
                 "user_ranking": [{"user_id": u, "user_name": user_names.get(u, ""), "count": c} for u, c in user_ranking],
             }
         })
@@ -1544,8 +1566,30 @@ class WebMixin:
             return True
         return str(group_id) in self._group_white_set
 
+    _CONFIG_CATEGORIES = {
+        "enabled": "基础开关", "auto_moderate_enabled": "基础开关", "auto_moderate_notice": "基础开关",
+        "scan_swear": "审核规则", "scan_ad": "审核规则", "llm_moderation_enabled": "审核规则",
+        "llm_moderation_ban": "审核规则", "moderation_ban_duration": "审核规则", "ban_notice": "审核规则",
+        "scan_forward_msg": "审核规则", "recall_qq_favorite_enabled": "审核规则",
+        "ocr_enabled": "OCR", "ocr_prompt_template": "OCR",
+        "ocr_custom_system_prompt": "OCR", "ocr_custom_user_prompt": "OCR", "scan_sticker_enabled": "OCR",
+        "anti_flood_enabled": "防刷屏", "anti_flood_rate_per_second": "防刷屏",
+        "anti_flood_rate_per_minute": "防刷屏", "anti_flood_rate_per_hour": "防刷屏",
+        "anti_flood_mute_duration": "防刷屏", "anti_flood_recall_enabled": "防刷屏",
+        "anti_flood_recall_threshold": "防刷屏",
+        "anti_flood_night_enabled": "夜间限速", "anti_flood_night_start_hour": "夜间限速",
+        "anti_flood_night_end_hour": "夜间限速", "anti_flood_night_rate_per_second": "夜间限速",
+        "anti_flood_night_rate_per_minute": "夜间限速", "anti_flood_night_rate_per_hour": "夜间限速",
+        "repeat_detect_enabled": "重复检测", "repeat_detect_window_seconds": "重复检测",
+        "repeat_detect_count": "重复检测", "long_text_detect_enabled": "重复检测", "long_text_threshold": "重复检测",
+        "appeal_enabled": "申诉", "appeal_window_minutes": "申诉", "appeal_context_count": "申诉",
+        "appeal_at_template": "申诉",
+        "auto_unban_enabled": "定时解禁", "auto_unban_permanent_hours": "定时解禁",
+        "join_audit_enabled": "入群审核", "join_reject_use_lexicon": "入群审核",
+        "join_default_action": "入群审核", "join_reject_reason": "入群审核",
+    }
+
     async def _web_get_group_config(self):
-        # 返回某群的独立配置项：每项含全局默认值、该群覆盖值（无则 null）、类型，供前端渲染三态控件。
         try:
             group_id = str(quart_request.args.get("group_id", "")).strip()
             if not group_id:
@@ -1565,9 +1609,11 @@ class WebMixin:
                     "hint": meta.get("hint", ""),
                     "options": meta.get("options", []),
                     "global_value": global_val,
-                    "override": overrides.get(key),  # 字符串或 None（None=继承全局）
+                    "override": overrides.get(key),
+                    "category": self._CONFIG_CATEGORIES.get(key, "功能开关"),
                 })
-            return jsonify({"status": "success", "data": {"group_id": group_id, "items": items}})
+            override_count = len(overrides)
+            return jsonify({"status": "success", "data": {"group_id": group_id, "items": items, "override_count": override_count}})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
@@ -1630,8 +1676,66 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_configured_groups(self):
-        # 列出所有有独立配置的群号。
         try:
-            return jsonify({"status": "success", "data": self._storage.list_configured_groups()})
+            groups = self._storage.list_configured_groups()
+            details = []
+            for gid in groups:
+                overrides = self._storage.get_group_configs(gid)
+                details.append({"group_id": gid, "override_count": len(overrides)})
+            return jsonify({"status": "success", "data": details})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_batch_set_group_config(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            items = data.get("items", {})
+            if not group_id or not isinstance(items, dict):
+                return jsonify({"status": "error", "message": "缺少 group_id 或 items"})
+            if not self._group_config_allowed(group_id):
+                return jsonify({"status": "error", "message": "仅白名单群可进行多群配置"})
+            overridable = set(self._group_overridable_keys())
+            updated = []
+            for key, value in items.items():
+                if key not in overridable:
+                    continue
+                meta = self._config_schema.get(key, {})
+                ftype = meta.get("type", "bool")
+                if ftype == "bool":
+                    value = "true" if self._parse_bool(value, False) else "false"
+                elif ftype == "int":
+                    value = str(self._normalize_int_config_value(key, value))
+                else:
+                    value = "" if value is None else str(value)
+                self._storage.set_group_config(group_id, key, value)
+                updated.append(key)
+            self._invalidate_group_cfg_cache(group_id)
+            return jsonify({"status": "success", "group_id": group_id, "updated": updated, "count": len(updated)})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_copy_group_config(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            source_id = str(data.get("source_group_id", "")).strip()
+            target_id = str(data.get("target_group_id", "")).strip()
+            if not source_id or not target_id:
+                return jsonify({"status": "error", "message": "缺少 source_group_id 或 target_group_id"})
+            if source_id == target_id:
+                return jsonify({"status": "error", "message": "源群和目标群不能相同"})
+            if not self._group_config_allowed(target_id):
+                return jsonify({"status": "error", "message": "目标群不在白名单中"})
+            source_configs = self._storage.get_group_configs(source_id)
+            if not source_configs:
+                return jsonify({"status": "error", "message": "源群没有独立配置"})
+            overridable = set(self._group_overridable_keys())
+            copied = 0
+            for key, value in source_configs.items():
+                if key in overridable:
+                    self._storage.set_group_config(target_id, key, value)
+                    copied += 1
+            self._invalidate_group_cfg_cache(target_id)
+            return jsonify({"status": "success", "source": source_id, "target": target_id, "copied": copied})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})

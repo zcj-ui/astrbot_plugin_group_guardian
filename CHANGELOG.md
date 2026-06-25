@@ -20,6 +20,21 @@
 - **日志预览扩展**: `msg_preview` 从 100 字符扩展到 200 字符，WebUI 审核日志列表展示更完整
 - **代码重构**: `_is_admin` / `_is_plugin_admin` 提取公共方法 `_get_all_admin_ids()` / `_is_group_admin_blocked()`，消除重复代码
 
+### WebUI 优化
+
+- **统计面板增强**: `_web_stats` 不再每次查库计算规则数量，改用内存匹配器属性；新增 `configured_groups_count`、`super_admin_count` 字段
+- **群列表增强**: 每个群新增 `has_config` 字段标记是否有独立配置；今日拦截统计不再限制只在白名单群内
+- **今日统计增强**: `_web_today_stats` 新增 `block_rate` 拦截率和群名映射，前端无需二次查询
+- **日志查询增强**: `_web_get_logs` 支持 `group_id` / `user_id` / `action` 过滤参数和 `offset` 分页，返回 `total` 总数
+- **用户聚合增强**: `_web_get_moderation_users` 支持 `group_id` 过滤，返回用户涉及群数和群列表
+- **已配置群列表**: `_web_configured_groups` 返回每群覆盖配置项数量
+
+### 多群管理优化
+
+- **配置分类标签**: `_web_get_group_config` 每项新增 `category` 分类字段（基础开关/审核规则/防刷屏/夜间限速/OCR/申诉/入群审核等），前端可按分类分组展示
+- **批量设置 API**: 新增 `/group_config/batch_set` 接口，一次设置多个配置项
+- **跨群复制配置**: 新增 `/group_config/copy` 接口，从源群复制全部独立配置到目标群
+
 ## v2.3.4 - 2026-06-07
 
 ### 功能增强

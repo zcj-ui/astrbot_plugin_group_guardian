@@ -722,14 +722,40 @@ class SQLiteStorage:
             os.remove(self.legacy_logs_path)
         return imported
 
-    def list_logs(self, limit: int = 200, offset: int = 0) -> List[dict]:
-        # 按 id 降序分页加载日志，用于 WebUI 展示。
+    def list_logs(self, limit: int = 200, offset: int = 0,
+                  group_id: str = "", user_id: str = "", action: str = "") -> List[dict]:
+        sql = "SELECT * FROM moderation_logs WHERE 1=1"
+        params: List[object] = []
+        if group_id:
+            sql += " AND group_id=?"
+            params.append(group_id)
+        if user_id:
+            sql += " AND user_id=?"
+            params.append(user_id)
+        if action:
+            sql += " AND action LIKE ?"
+            params.append(f"%{action}%")
+        sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM moderation_logs ORDER BY id DESC LIMIT ? OFFSET ?",
-                (limit, offset),
-            ).fetchall()
+            rows = conn.execute(sql, params).fetchall()
         return [self._row_to_log(r) for r in rows]
+
+    def count_logs_filtered(self, group_id: str = "", user_id: str = "", action: str = "") -> int:
+        sql = "SELECT COUNT(*) AS c FROM moderation_logs WHERE 1=1"
+        params: List[object] = []
+        if group_id:
+            sql += " AND group_id=?"
+            params.append(group_id)
+        if user_id:
+            sql += " AND user_id=?"
+            params.append(user_id)
+        if action:
+            sql += " AND action LIKE ?"
+            params.append(f"%{action}%")
+        with self._connect() as conn:
+            row = conn.execute(sql, params).fetchone()
+        return int(row["c"] or 0)
 
     def list_logs_asc(self, limit: int = 500) -> List[dict]:
         # 按 id 降序查询后反转返回（即实际升序），用于内存缓存按时间顺序回放。
