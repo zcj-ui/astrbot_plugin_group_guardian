@@ -23,33 +23,26 @@ class LlmToolsMixin:
     #   4. 异常兜底 — 所有 API / 处理异常由 except Exception 捕获并 yield 错误消息。
     # =============================================================================
 
-    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_minutes: int = 10):
+    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_seconds: int = 600):
         '''禁言群成员。当用户要求禁言某人时使用此工具。
 
         Args:
             user_id(string): 要禁言的用户QQ号
-            duration_minutes(number): 禁言时长（分钟），默认10分钟
+            duration_seconds(number): 禁言时长（秒），默认600秒
         '''
         try:
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "ban_enabled", "禁言", user_id, precheck_action="ban")
             if not ok:
                 yield event.plain_result(err)
                 return
-            # 4. 禁言时长处理：先 clamp 到 [1 分钟, 30 天]（单位分钟），再转秒。
-            # LLM 有时会把 number 传成字符串，这里统一容错。
-            duration_minutes = self._clamp_int(duration_minutes, 10, 1, 30 * 24 * 60)
-            duration_seconds = duration_minutes * 60
-            # 5. API 调用：_call_group_api 内部调 client.call_action('set_group_ban', ...)
-            #    并检查 API 返回码；失败时返回 (False, 错误信息)
+            duration_seconds = self._clamp_int(duration_seconds, 600, 60, 30 * 24 * 3600)
             ok, err = await self._call_group_api(client, 'set_group_ban', "禁言", group_id=gid, user_id=uid, duration=duration_seconds)
             if not ok:
                 yield event.plain_result(f"禁言失败: {err}")
                 return
             self._schedule_unban(str(gid), user_id, duration_seconds)
-            # 6. 构造成功响应（plain_result 将以纯文本形式回复）
-            yield event.plain_result(f"已禁言 {user_id} {duration_minutes}分钟")
+            yield event.plain_result(f"已禁言 {user_id} {duration_seconds}秒")
         except Exception as e:
-            # 7. 任何未预料的异常（网络断开、JSON 解析失败等）都被捕获并返回
             yield event.plain_result(f"禁言失败: {e}")
 
     async def unban_group_member_tool(self, event: AstrMessageEvent, user_id: str):
@@ -497,12 +490,12 @@ class LlmToolsMixin:
         except Exception as e:
             yield event.plain_result(f"上传失败: {e}")
 
-    async def batch_ban_members_tool(self, event: AstrMessageEvent, user_ids, duration_minutes: int = 10):
+    async def batch_ban_members_tool(self, event: AstrMessageEvent, user_ids, duration_seconds: int = 600):
         '''批量禁言多个群成员。当用户要求同时禁言多人时使用此工具。
 
         Args:
             user_ids(array): 要禁言的用户QQ号列表
-            duration_minutes(number): 禁言时长（分钟），默认10分钟
+            duration_seconds(number): 禁言时长（秒），默认600秒
         '''
         try:
             ok, err, client, gid = await self._prepare_group_action(event, "ban_enabled", "批量禁言")
@@ -513,7 +506,7 @@ class LlmToolsMixin:
             if not targets:
                 yield event.plain_result("未提供有效的 QQ 号列表")
                 return
-            minutes = self._clamp_int(duration_minutes, 10, 1, 30 * 24 * 60)
+            secs = self._clamp_int(duration_seconds, 600, 60, 30 * 24 * 3600)
             success, fail = 0, 0
             for uid in targets:
                 uid_int = self._safe_int(uid, 0)
@@ -523,14 +516,14 @@ class LlmToolsMixin:
                     await asyncio.sleep(0.1)
                     continue
                 done, _e = await self._call_group_api(client, 'set_group_ban', "批量禁言",
-                                                      group_id=gid, user_id=uid_int, duration=minutes * 60)
+                                                      group_id=gid, user_id=uid_int, duration=secs)
                 if done:
                     success += 1
-                    self._schedule_unban(str(gid), uid, minutes * 60)
+                    self._schedule_unban(str(gid), uid, secs)
                 else:
                     fail += 1
                 await asyncio.sleep(0.3)
-            yield event.plain_result(f"已批量禁言：成功 {success} 人，失败 {fail} 人，时长 {minutes} 分钟")
+            yield event.plain_result(f"已批量禁言：成功 {success} 人，失败 {fail} 人，时长 {secs} 秒")
         except Exception as e:
             yield event.plain_result(f"批量禁言失败: {e}")
 

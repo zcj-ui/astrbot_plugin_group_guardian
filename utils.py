@@ -486,7 +486,7 @@ class UtilitiesMixin:
             "user_id": user_id,
             "user_name": user_name,
             "msg_text": msg_text,
-            "msg_preview": msg_text[:100],
+            "msg_preview": msg_text[:200],
             "action": action,
             "reason": reason,
             "image_urls": valid_urls,

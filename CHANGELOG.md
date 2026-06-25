@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.4.0 - 2026-06-26
+
+### Bug 修复
+
+- **[Critical] 权限系统重构**: 移除所有 21 处 `@filter.permission_type(ADMIN)` 框架级装饰器。该装饰器仅认 AstrBot 全局 `admin_id`，会阻断插件管理员、群主、群超管、F5 动态授权等非全局管理员使用命令（Issue #5）。权限校验现统一由插件内部 `_is_admin` 4 级权限系统处理，安全性不降低
+- **[Critical] JSON/App 卡片消息审核遗漏**: 审核管线 `_handle_message` 步骤 B 未提取 json/app 类型消息段的文本内容，导致 JSON 卡片（分享链接、推广）和 App 消息完全绕过内容审核。新增 `_extract_json_card_text` / `_extract_app_card_text` 方法，提取 prompt/desc/title/jumpUrl 等字段送入审核
+- **[Critical] 嵌套转发消息未递归解析**: 转发消息中包含的二级转发仅标记为 `[嵌套转发]` 而不提取内容，用户可通过多层转发嵌套规避审核。现支持最多 2 层递归解析嵌套转发内容
+- **撤回通知不含违规原因**: `ban_notice` 模板现在支持 `{reason}` 变量，可展示具体违规原因
+- **禁言时长 double-read**: `_mute_member` 未接收 duration 参数导致重复读取配置，现在审核管线直接传入已计算的 ban_duration
+- **`cmd_revoke_admin_perm` 权限检查不完整**: 仅检查 `_get_admin_list()` 而遗漏 AstrBot 全局管理员，改用 `_is_plugin_admin`
+- **`recall_last` / `recall_all` 冗余权限检查**: 手写 3 步权限校验与 `_prepare_group_action` 重复，统一改用后者；`recall_all` 同时修复 @ 目标解析
+- **申诉非文字消息无反馈**: 用户发送图片/语音申诉时，仅首次提示后续无反馈，现每次非文字消息均回复提示
+- **调度器崩溃不恢复**: `_scheduler_loop` 异常后任务终止不再重启，现增加连续错误计数和自动暂停恢复机制
+
+### 功能变更
+
+- **禁言时长单位改为秒**: `/禁言`、`/批量禁言` 命令及 `ban_group_member` / `batch_ban_members` LLM Tool 的时长参数从分钟改为秒，与 OneBot 协议和 QQ 平台原生单位一致（Issue #6, PR #7）
+- **日志预览扩展**: `msg_preview` 从 100 字符扩展到 200 字符，WebUI 审核日志列表展示更完整
+- **代码重构**: `_is_admin` / `_is_plugin_admin` 提取公共方法 `_get_all_admin_ids()` / `_is_group_admin_blocked()`，消除重复代码
+
 ## v2.3.4 - 2026-06-07
 
 ### 功能增强

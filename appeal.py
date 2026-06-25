@@ -132,6 +132,8 @@ class AppealMixin:
         if not statement:
             if self._mark_prompt_once(appeal):
                 yield event.plain_result(self.APPEAL_TEXT_PROMPT)
+            else:
+                yield event.plain_result("请发送文字说明申诉理由，不支持图片/语音/表情。")
             return
         # 并发互斥：原子地把申诉从 waiting 抢占为 judging。用户连发多条私聊时只有第一条
         # 能抢到，后续请求抢不到直接退出，避免重复调用 LLM 复核、重复解禁、重复回复。

@@ -558,12 +558,69 @@ class ModerationMixin:
                     return True
         return False
 
-    async def _resolve_forward_messages(self, event: AiocqhttpMessageEvent) -> Tuple[str, bool]:
-        # 解析合并转发（Forward）消息中的每条单条消息内容，将所有文字拼合为一段文本。
-        # 一次转发可能包含多条消息、多种 CQ 码类型（text/image/json/app 等），
-        # 需要递归遍历并提取其中的文字部分。
-        # 返回格式："[转发]发送者昵称: 消息内容"
-        # 第二个返回值 is_qq_favorite 标记是否包含 QQ 收藏来源的内容。
+    @staticmethod
+    def _extract_json_card_text(seg_data: dict) -> str:
+        raw = seg_data.get('data', '') if isinstance(seg_data, dict) else ''
+        if not raw:
+            return ''
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return raw[:500]
+        elif isinstance(raw, dict):
+            parsed = raw
+        else:
+            return str(raw)[:500]
+        parts = []
+        for key in ('prompt', 'desc', 'title', 'source_name'):
+            val = parsed.get(key, '') or (parsed.get('meta', {}) or {}).get('detail_1', {}).get(key, '')
+            if val:
+                parts.append(str(val))
+        url = parsed.get('jumpUrl', '') or parsed.get('qqdocurl', '')
+        if not url:
+            meta = parsed.get('meta', {}) or {}
+            for mk in meta.values():
+                if isinstance(mk, dict):
+                    url = mk.get('jumpUrl', '') or mk.get('qqdocurl', '') or mk.get('url', '')
+                    if url:
+                        break
+        if url:
+            parts.append(url)
+        return ' '.join(parts)
+
+    @staticmethod
+    def _extract_app_card_text(seg_data: dict) -> str:
+        raw = seg_data.get('content', '') if isinstance(seg_data, dict) else ''
+        if not raw:
+            return ''
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except Exception:
+                return raw[:500]
+        elif isinstance(raw, dict):
+            parsed = raw
+        else:
+            return str(raw)[:500]
+        parts = []
+        for key in ('prompt', 'desc', 'title'):
+            val = parsed.get(key, '')
+            if val:
+                parts.append(str(val))
+        url = parsed.get('url', '') or parsed.get('jumpUrl', '')
+        if not url:
+            meta = parsed.get('meta', {}) or {}
+            for mk in meta.values():
+                if isinstance(mk, dict):
+                    url = mk.get('jumpUrl', '') or mk.get('url', '')
+                    if url:
+                        break
+        if url:
+            parts.append(url)
+        return ' '.join(parts)
+
+    async def _resolve_forward_messages(self, event: AiocqhttpMessageEvent, nested_depth: int = 0) -> Tuple[str, bool]:
         client = await self._get_client(event)
         if not client:
             return "", False
@@ -606,9 +663,6 @@ class ModerationMixin:
                     nickname = sender.get('nickname', '未知') if isinstance(sender, dict) else '未知'
                     content = msg.get('message', '')
                     if isinstance(content, list):
-                        # 逐条解析转发内的 CQ 码段：text 提取文本，image 标记为[图片]，
-                        # forward 标记为[嵌套转发]（递归不支持，仅标记），
-                        # json/app 额外检查是否包含 QQ 收藏特征。
                         parts = []
                         for c_seg in content:
                             if isinstance(c_seg, dict):
@@ -622,17 +676,34 @@ class ModerationMixin:
                                 elif ct == 'image':
                                     parts.append('[图片]')
                                 elif ct == 'forward':
-                                    parts.append('[嵌套转发]')
+                                    nested_fid = cd.get('id', '')
+                                    if nested_fid and client and nested_depth < 2:
+                                        try:
+                                            nr = await client.call_action('get_forward_msg', message_id=nested_fid)
+                                            nr = self._extract_data_result(nr)
+                                            nested_msgs = (nr.get('messages', []) or nr.get('message', [])) if isinstance(nr, dict) else []
+                                            for nm in (nested_msgs if isinstance(nested_msgs, list) else []):
+                                                nc = nm.get('message', '')
+                                                ns = (nm.get('sender') or {}).get('nickname', '?') if isinstance(nm.get('sender'), dict) else '?'
+                                                nc_text = self._format_message_content(nc) if isinstance(nc, list) else str(nc)
+                                                if nc_text.strip():
+                                                    parts.append(f'[嵌套转发]{ns}: {nc_text.strip()[:200]}')
+                                        except Exception:
+                                            parts.append('[嵌套转发]')
+                                    else:
+                                        parts.append('[嵌套转发]')
                                 elif ct == 'json':
-                                    json_data = cd.get('data', '')
-                                    if self._is_qq_favorite_text(json_data if isinstance(json_data, str) else str(json_data)):
+                                    card_text = self._extract_json_card_text(cd)
+                                    if card_text:
+                                        parts.append(card_text)
+                                    if self._is_qq_favorite_text(cd.get('data', '') if isinstance(cd.get('data', ''), str) else str(cd.get('data', ''))):
                                         is_qq_favorite = True
-                                    parts.append(f'[{ct}]')
                                 elif ct == 'app':
-                                    app_content = cd.get('content', '')
-                                    if self._is_qq_favorite_text(app_content if isinstance(app_content, str) else str(app_content)):
+                                    card_text = self._extract_app_card_text(cd)
+                                    if card_text:
+                                        parts.append(card_text)
+                                    if self._is_qq_favorite_text(cd.get('content', '') if isinstance(cd.get('content', ''), str) else str(cd.get('content', ''))):
                                         is_qq_favorite = True
-                                    parts.append(f'[{ct}]')
                                 else:
                                     parts.append(f'[{ct}]')
                                 if not is_qq_favorite and self._check_dict_seg_qq_favorite(c_seg):
@@ -926,7 +997,6 @@ class ModerationMixin:
         image_urls = []
         has_forward = False
         for seg in (chain or []):
-            # 同时兼容 dict 格式和 MessageSegment 对象格式。
             if isinstance(seg, dict):
                 seg_type = seg.get('type', '')
                 seg_data = seg.get('data', {}) or {}
@@ -942,6 +1012,10 @@ class ModerationMixin:
                     mf_url = seg_data.get('url', '') or ''
                     if mf_url:
                         image_urls.append(mf_url)
+                elif seg_type == 'json':
+                    raw_text_parts.append(self._extract_json_card_text(seg_data))
+                elif seg_type == 'app':
+                    raw_text_parts.append(self._extract_app_card_text(seg_data))
             else:
                 seg_cls = type(seg).__name__
                 if seg_cls == 'Plain' or hasattr(seg, 'text'):
@@ -956,8 +1030,6 @@ class ModerationMixin:
                             img_url = seg_data.get('url', '') or seg_data.get('file', '')
                     if img_url:
                         image_urls.append(img_url)
-                    else:
-                        logger.debug(f"[GroupMgr] Image段无URL: {seg}")
                 elif seg_cls == 'MarketFace' or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'market_face'):
                     mf_url = getattr(seg, 'url', '') or ''
                     if not mf_url and hasattr(seg, 'data'):
@@ -966,6 +1038,10 @@ class ModerationMixin:
                             mf_url = seg_data.get('url', '') or ''
                     if mf_url:
                         image_urls.append(mf_url)
+                elif seg_cls in ('Json',) or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'json'):
+                    raw_text_parts.append(self._extract_json_card_text(getattr(seg, 'data', {}) or {}))
+                elif seg_cls in ('App',) or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'app'):
+                    raw_text_parts.append(self._extract_app_card_text(getattr(seg, 'data', {}) or {}))
         text = ''.join(raw_text_parts).strip()
 
         # 解析合并转发消息中的文字内容。
@@ -1085,10 +1161,10 @@ class ModerationMixin:
                     return
                 ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
                 self._mark_moderation_penalty(group_id, user_id, ban_duration)
-                await self._mute_member(event)
+                await self._mute_member(event, ban_duration)
                 self._schedule_unban(group_id, user_id, ban_duration)
                 notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）", group_id=group_id)
-                yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id))
+                yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
                 self._log_moderation(group_id, user_id, user_name, text, "撤回+禁言", reason, image_urls)
                 event.stop_event()
             except Exception as e:
@@ -1132,7 +1208,7 @@ class ModerationMixin:
 
             if self._cfg("llm_moderation_ban", True, group_id=group_id):
                 try:
-                    await self._mute_member(event)
+                    await self._mute_member(event, ban_duration)
                     self._schedule_unban(group_id, user_id, ban_duration)
                 except Exception as ban_err:
                     logger.warning(f"[GroupMgr] 禁言失败: {ban_err}")
@@ -1140,7 +1216,7 @@ class ModerationMixin:
             if self._cfg("auto_moderate_notice", True, group_id=group_id):
                 try:
                     notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 的消息已被撤回（违规内容）", group_id=group_id)
-                    yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id))
+                    yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
                 except Exception as notice_err:
                     logger.warning(f"[GroupMgr] 发送通知失败: {notice_err}")
 

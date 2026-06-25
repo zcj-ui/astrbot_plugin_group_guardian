@@ -211,38 +211,16 @@ class CommandsMixin:
 
     async def recall_last(self, event: AstrMessageEvent):
         '''撤回群内最新一条或多条消息'''
-        # 撤回开关按群生效
-        ok, msg = self._cfg_check("recall_enabled", "撤回消息", group_id=self._get_group_id(event))
+        ok, err, client, gid = await self._prepare_group_action(event, "recall_enabled", "撤回消息")
         if not ok:
-            yield event.plain_result(msg)
-            return
-        # _check_group_access 单独检查该群是否在白名单中，与 _cfg_check 形成两层校验
-        allowed, reason = self._check_group_access(event)
-        if not allowed:
-            yield event.plain_result(reason)
-            return
-        # 额外检查操作者是否为管理员，因为撤回是一个高危操作
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可以使用此功能")
+            yield event.plain_result(err)
             return
         args = event.message_str.split()
-        count = 1
-        if len(args) >= 2:
-            # _safe_int: 安全地将字符串转为 int，转换失败时返回默认值 1，避免程序崩溃
-            count = self._safe_int(args[1], 1)
-        # 限制单次最多撤回 10 条，防止误操作导致大量消息丢失
+        count = self._safe_int(args[1], 1) if len(args) >= 2 else 1
         count = max(1, min(count, 10))
-        group_id = self._get_group_id(event)
-        if not group_id:
-            yield event.plain_result("无法获取群号")
-            return
-        client = await self._get_client(event)
-        if not client:
-            yield event.plain_result("无法获取QQ客户端")
-            return
         try:
             # 拉取 count+1 条历史消息，确保即使最新消息是撤回目标也能获取到足够的历史
-            result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=count + 1)
+            result = await client.call_action('get_group_msg_history', group_id=gid, count=count + 1)
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
             recalled = 0
@@ -263,27 +241,24 @@ class CommandsMixin:
             yield event.plain_result(f"撤回失败: {e}")
 
     async def cmd_ban(self, event: AstrMessageEvent):
-        '''禁言指定群成员。用法: /禁言 <QQ号> <分钟>'''
+        '''禁言指定群成员。用法: /禁言 <QQ号> <秒数>'''
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法: /禁言 <QQ号> [时长(分钟)]\n示例: /禁言 123456 30")
+            yield event.plain_result("用法: /禁言 <QQ号> [时长(秒)]\n示例: /禁言 123456 1800")
             return
         try:
             user_id = str(args[1]).strip()
-            # _safe_int 防止 args[2] 为非数字时崩溃；默认 10 分钟；上限 43200 分钟（30 天），因为 OneBot 对此有限制
-            duration = min(max(self._safe_int(args[2], 10) if len(args) > 2 else 10, 1), 43200)
+            duration = min(max(self._safe_int(args[2], 600) if len(args) > 2 else 600, 60), 2592000)
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "ban_enabled", "禁言", user_id, precheck_action="ban")
             if not ok:
                 yield event.plain_result(err)
                 return
-            # _call_group_api: 封装 OneBot API 调用 + 错误处理 + 权限审计日志，统一返回成功/失败
-            # duration * 60 将用户输入的分钟转为秒（OneBot 单位）
-            ok, err = await self._call_group_api(client, 'set_group_ban', "禁言", group_id=gid, user_id=uid, duration=duration * 60)
+            ok, err = await self._call_group_api(client, 'set_group_ban', "禁言", group_id=gid, user_id=uid, duration=duration)
             if not ok:
                 yield event.plain_result(f"禁言失败: {err}")
                 return
-            self._schedule_unban(str(gid), user_id, duration * 60)
-            yield event.plain_result(f"已禁言 {user_id}，时长 {duration} 分钟")
+            self._schedule_unban(str(gid), user_id, duration)
+            yield event.plain_result(f"已禁言 {user_id}，时长 {duration} 秒")
         except Exception as e:
             yield event.plain_result(f"禁言失败: {e}")
 
@@ -635,7 +610,7 @@ class CommandsMixin:
         if not group_id:
             yield event.plain_result("请在群内使用此命令")
             return
-        # 权限：仅“白名单群的群主”或“插件全局管理员”可设置/取消本群管理员。
+        # 权限：仅"白名单群的群主"或"插件全局管理员"可设置/取消本群管理员。
         # 设置管理员属于高敏感操作，普通群管不应能借此扩张管理层。
         operator = self._try_get_sender_id(event)
         is_plugin_admin = await self._is_plugin_admin(event)
@@ -652,7 +627,7 @@ class CommandsMixin:
         at_targets = self._extract_at_targets(event)
         args = event.message_str.split()
         enable = True
-        # 解析“设置/取消”动作（可出现在任意位置）
+        # 解析"设置/取消"动作（可出现在任意位置）
         for tok in args[1:]:
             t = tok.strip().lower()
             if t in ("取消", "移除", "off", "0", "false", "down", "unset"):
@@ -740,7 +715,7 @@ class CommandsMixin:
 
     async def cmd_plugin_admin(self, event: AstrMessageEvent):
         '''管理插件管理员列表。用法: /设置管理插件 <QQ号> 添加/移除'''
-        # 管理“全局插件管理员名单”是最高敏感操作（决定谁能跨群管理整个插件），
+        # 管理"全局插件管理员名单"是最高敏感操作（决定谁能跨群管理整个插件），
         # 必须仅限现有插件全局管理员，群主/群管的群角色授权严禁修改此名单（防提权）。
         if not await self._is_plugin_admin(event):
             yield event.plain_result("仅插件管理员可以使用此功能")
@@ -771,40 +746,23 @@ class CommandsMixin:
 
     async def recall_all(self, event: AstrMessageEvent):
         '''批量撤回最近消息。用法: /批量撤回 [条数] 或 /批量撤回 @用户 [条数]'''
-        # 三层校验：全局/按群配置 check -> 群白名单 check -> 管理员身份 check
-        ok, msg = self._cfg_check("recall_enabled", "撤回消息", group_id=self._get_group_id(event))
+        ok, err, client, gid = await self._prepare_group_action(event, "recall_enabled", "撤回消息")
         if not ok:
-            yield event.plain_result(msg)
-            return
-        allowed, reason = self._check_group_access(event)
-        if not allowed:
-            yield event.plain_result(reason)
-            return
-        if not await self._is_admin(event):
-            yield event.plain_result("仅管理员可以使用此功能")
+            yield event.plain_result(err)
             return
         args = event.message_str.split()
         target_user = None
         count = 20
-        # 解析参数：数字为撤回条数，@xxx 或纯文字为指定用户 QQ
+        at_targets = self._extract_at_targets(event)
+        if at_targets:
+            target_user = at_targets[0]
         for arg in args[1:]:
             if arg.isdigit():
                 count = max(1, min(int(arg), 100))
-            elif arg.startswith('@'):
-                target_user = arg[1:]
-            else:
+            elif not target_user and not arg.startswith('@'):
                 target_user = arg
-        group_id = self._get_group_id(event)
-        if not group_id:
-            yield event.plain_result("无法获取群号")
-            return
-        client = await self._get_client(event)
-        if not client:
-            yield event.plain_result("无法获取QQ客户端")
-            return
         try:
-            # 拉取最多 100 条历史消息，在本地做过滤（而非服务端过滤）
-            result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=100)
+            result = await client.call_action('get_group_msg_history', group_id=gid, count=100)
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
             recalled = 0
@@ -831,23 +789,22 @@ class CommandsMixin:
             yield event.plain_result(f"撤回失败: {e}")
 
     async def cmd_batch_ban(self, event: AstrMessageEvent):
-        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长分钟]'''
+        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长秒数]'''
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法: /批量禁言 <QQ1> <QQ2> ... [时长分钟]\n示例: /批量禁言 111 222 333 30")
+            yield event.plain_result("用法: /批量禁言 <QQ1> <QQ2> ... [时长秒数]\n示例: /批量禁言 111 222 333 1800")
             return
         ok, err, client, gid = await self._prepare_group_action(event, "ban_enabled", "批量禁言")
         if not ok:
             yield event.plain_result(err)
             return
-        # 末位若为纯数字则当作时长（分钟），其余为 QQ 号
         tokens = args[1:]
-        duration = 10
-        if len(tokens) >= 2 and tokens[-1].isdigit() and len(tokens[-1]) <= 6:
-            duration = self._clamp_int(tokens[-1], 10, 1, 43200)
+        duration = 600
+        if len(tokens) >= 2 and tokens[-1].isdigit() and len(tokens[-1]) <= 7:
+            duration = self._clamp_int(tokens[-1], 600, 60, 2592000)
             tokens = tokens[:-1]
         targets = [t.strip() for t in tokens if t.strip().isdigit()]
-        targets = targets[:50]  # 单次上限 50 人
+        targets = targets[:50]
         if not targets:
             yield event.plain_result("未解析到有效 QQ 号")
             return
@@ -860,14 +817,14 @@ class CommandsMixin:
                 await asyncio.sleep(0.1)
                 continue
             done, _e = await self._call_group_api(client, 'set_group_ban', "批量禁言",
-                                                  group_id=gid, user_id=uid_int, duration=duration * 60)
+                                                  group_id=gid, user_id=uid_int, duration=duration)
             if done:
                 success += 1
-                self._schedule_unban(str(gid), uid, duration * 60)
+                self._schedule_unban(str(gid), uid, duration)
             else:
                 fail += 1
-            await asyncio.sleep(0.3)  # 防 API 限频
-        yield event.plain_result(f"批量禁言完成：成功 {success} 人，失败 {fail} 人，时长 {duration} 分钟")
+            await asyncio.sleep(0.3)
+        yield event.plain_result(f"批量禁言完成：成功 {success} 人，失败 {fail} 人，时长 {duration} 秒")
 
     async def cmd_batch_kick(self, event: AstrMessageEvent):
         '''批量踢出多人。用法: /批量踢人 <QQ1> <QQ2> ...'''
@@ -944,11 +901,9 @@ class CommandsMixin:
         if not group_id:
             yield event.plain_result("请在群内使用此命令")
             return
-        # 仅群主可操作（或全局插件管理员）
         operator = self._try_get_sender_id(event)
         role = await self._get_member_role(event, group_id, operator)
-        is_global_admin = operator in set(self._get_admin_list())
-        if role != "owner" and not is_global_admin:
+        if role != "owner" and not await self._is_plugin_admin(event):
             yield event.plain_result("仅群主或插件管理员可以管理本群的群管权限")
             return
         args = event.message_str.split()

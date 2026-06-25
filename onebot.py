@@ -15,7 +15,7 @@ class OneBotMixin:
     async def _get_client(self, event: AstrMessageEvent = None):
         # 三级回退：优先从 event.bot 取，其次用缓存的 self._client，最后遍历 platform_manager 查找可用实例。
         # AstrBot 文档里的 aiocqhttp client 调用形态是 client.api.call_action()；旧版本/部分适配器
-        # 也可能直接暴露 client.call_action()。这里统一归一化为“可直接 call_action 的对象”。
+        # 也可能直接暴露 client.call_action()。这里统一归一化为"可直接 call_action 的对象"。
         if event:
             client = self._normalize_action_client(getattr(event, 'bot', None))
             if client:
@@ -91,13 +91,31 @@ class OneBotMixin:
                 pass
         return ""
 
+    def _get_all_admin_ids(self) -> set:
+        # 合并插件管理员名单(DB) + AstrBot 全局 admin_id
+        try:
+            astrbot_admin_ids = []
+            ab_config = getattr(self.context, 'astrbot_config', None)
+            if ab_config:
+                astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
+            return set(self._get_admin_list()) | set(astrbot_admin_ids)
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 读取管理员名单失败: {e}")
+            return set(self._get_admin_list())
+
+    def _is_group_admin_blocked(self, group_id: str, user_id: str) -> bool:
+        if not group_id:
+            return False
+        try:
+            return self._storage.is_group_admin_blocked(group_id, user_id)
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 查询群权限黑名单失败: {e}")
+            return False
+
     async def _is_admin(self, event: AstrMessageEvent) -> bool:
-        # “群操作权限”判定（能否在当前群执行禁言/踢人等群管操作），判定顺序：
-        #   ① 群级 bot 权限黑名单(最高优先,群主可剥夺) → ② 全局插件管理员名单(任何群有效)
-        #   → ③ 群超管(该群专属) → ④ 群角色授权：仅当【该群在允许范围(白名单内/未设白名单且非黑名单)】
-        #      且角色为 owner/admin 时生效，按 F5 动态授权 / 老行为开关判定。
-        # 注意：④ 给的是“该群的群操作权限”，不等于插件管理员。插件级操作(管理插件管理员名单、
-        #      改全局开关等)请用 _is_plugin_admin 校验，群角色授权者无法执行。
+        # "群操作权限"判定，判定顺序：
+        #   ① 群级 bot 权限黑名单(最高优先) → ② 全局管理员名单
+        #   → ③ 群超管 → ④ 群角色授权（白名单内 + F5/legacy 开关）
         user_id = self._try_get_sender_id(event)
         if not user_id:
             logger.warning(f"[GroupMgr] _is_admin 无法获取user_id from {type(event).__name__}")
@@ -105,25 +123,13 @@ class OneBotMixin:
 
         group_id = self._get_group_id(event)
 
-        # ① 群级 bot 权限黑名单：群主可移除本群某群管的 bot 管理权限，优先级最高
-        if group_id:
-            try:
-                if self._storage.is_group_admin_blocked(group_id, user_id):
-                    return False
-            except Exception as e:
-                logger.debug(f"[GroupMgr] 查询群权限黑名单失败: {e}")
+        # ① 群级 bot 权限黑名单
+        if self._is_group_admin_blocked(group_id, user_id):
+            return False
 
-        # ② 全局管理员名单：self.admin_list(DB为准) + AstrBot 全局 admin_id
-        try:
-            astrbot_admin_ids = []
-            ab_config = getattr(self.context, 'astrbot_config', None)
-            if ab_config:
-                astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
-            all_admins = set(self._get_admin_list()) | set(astrbot_admin_ids)
-            if user_id in all_admins:
-                return True
-        except Exception as e:
-            logger.warning(f"[GroupMgr] 读取管理员名单失败: {e}")
+        # ② 全局管理员名单
+        if user_id in self._get_all_admin_ids():
+            return True
 
         if not group_id:
             return False
@@ -140,7 +146,7 @@ class OneBotMixin:
         if role not in ("admin", "owner"):
             return False
 
-        # 群角色授权仅在“允许管理的群”内生效：配置了白名单时必须在白名单内；
+        # 群角色授权仅在"允许管理的群"内生效：配置了白名单时必须在白名单内；
         # 未配置白名单时，黑名单群一律不授权。这样群主/群管的群操作权限被限定在
         # 其拥有管理权且被允许的群，避免任意群的群管自动获得本插件群操作能力。
         if self._group_white_set:
@@ -162,33 +168,17 @@ class OneBotMixin:
         return self._cfg("legacy_role_admin_enabled", True)
 
     async def _is_plugin_admin(self, event: AstrMessageEvent) -> bool:
-        """“插件全局管理员”判定：仅认全局插件管理员名单 + AstrBot 全局 admin_id。
+        """"插件全局管理员"判定：仅认全局插件管理员名单 + AstrBot 全局 admin_id。
 
-        与 _is_admin 的区别：群主/群管理员/群超管的“群角色授权”不算插件管理员。
-        用于真正的插件级操作（管理插件管理员名单、改全局运行开关等），
-        防止白名单群的群主把任意人提升为全局插件管理员（提权）。
+        与 _is_admin 的区别：群主/群管理员/群超管的"群角色授权"不算插件管理员。
+        用于真正的插件级操作（管理插件管理员名单、改全局运行开关等）。
         """
         user_id = self._try_get_sender_id(event)
         if not user_id:
             return False
-        # 群级 bot 权限黑名单同样优先：被本群剥夺权限者不应再被视为管理员
-        group_id = self._get_group_id(event)
-        if group_id:
-            try:
-                if self._storage.is_group_admin_blocked(group_id, user_id):
-                    return False
-            except Exception as e:
-                logger.debug(f"[GroupMgr] 查询群权限黑名单失败: {e}")
-        try:
-            astrbot_admin_ids = []
-            ab_config = getattr(self.context, 'astrbot_config', None)
-            if ab_config:
-                astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
-            all_admins = set(self._get_admin_list()) | set(astrbot_admin_ids)
-            return user_id in all_admins
-        except Exception as e:
-            logger.warning(f"[GroupMgr] 读取管理员名单失败: {e}")
+        if self._is_group_admin_blocked(self._get_group_id(event), user_id):
             return False
+        return user_id in self._get_all_admin_ids()
 
     async def _get_member_role(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
         """获取成员在群里的角色（member/admin/owner），带短 TTL 缓存。

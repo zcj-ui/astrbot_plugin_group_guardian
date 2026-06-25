@@ -44,30 +44,32 @@ class SchedulerMixin:
                 logger.debug("[GroupMgr] 调度器任务已取消")
 
     async def _scheduler_loop(self) -> None:
-        """调度主循环：按间隔轮询定时解禁与申诉超时。"""
+        consecutive_errors = 0
         while not self._scheduler_stop:
             interval = self._clamp_int(self.config.get("auto_unban_scan_interval", 60), 60, 10, 3600)
             try:
                 await asyncio.sleep(interval)
             except asyncio.CancelledError:
                 raise
+            except Exception:
+                await asyncio.sleep(60)
             if self._scheduler_stop:
                 break
             try:
                 await self._run_due_unbans()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[GroupMgr] 定时解禁任务出错: {e}")
-            try:
-                # 申诉超时清理由 AppealMixin 提供，未启用申诉时方法可能不存在
                 expire_fn = getattr(self, "_expire_appeals", None)
                 if expire_fn:
                     await expire_fn()
+                consecutive_errors = 0
             except asyncio.CancelledError:
                 raise
             except Exception as e:
-                logger.warning(f"[GroupMgr] 申诉超时清理出错: {e}")
+                consecutive_errors += 1
+                logger.warning(f"[GroupMgr] 调度任务出错({consecutive_errors}): {e}")
+                if consecutive_errors >= 10:
+                    logger.error("[GroupMgr] 调度器连续错误过多，暂停 5 分钟")
+                    await asyncio.sleep(300)
+                    consecutive_errors = 0
 
     async def _run_due_unbans(self) -> None:
         """执行所有到期的定时解禁。"""
