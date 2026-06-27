@@ -13,6 +13,35 @@ class UtilitiesMixin:
     # 跨模块共享的无副作用工具函数。
     # _format_message_content 负责把 OneBot 消息序列化为审核系统能用的纯文本字符串。
     # 日志和统计缓存不依赖第三方数据库，直接操作 Python 数据结构。
+
+    def _extract_at_targets(self, event) -> list:
+        """从消息链提取所有被 @ 的 QQ 号（按出现顺序，去重，排除 @全体）。
+
+        兼容 dict 段格式与对象段格式；@全体（qq='all'/0）会被忽略。
+        """
+        targets = []
+        seen = set()
+        try:
+            chain = event.get_messages() or []
+        except Exception:
+            chain = []
+        for seg in chain:
+            qq = None
+            if isinstance(seg, dict):
+                if seg.get("type") == "at":
+                    qq = (seg.get("data", {}) or {}).get("qq", "")
+            else:
+                seg_cls = type(seg).__name__
+                if seg_cls == "At" or (hasattr(seg, "type") and getattr(seg, "type", "") == "at"):
+                    qq = getattr(seg, "qq", "") or ""
+            qq = str(qq).strip()
+            if not qq or qq.lower() in ("all", "0"):
+                continue
+            if qq not in seen and qq.isdigit():
+                seen.add(qq)
+                targets.append(qq)
+        return targets
+
     _SEG_FORMATTERS = {
         'text':        lambda d: d.get('text', ''),
         'image':       lambda d: d.get('summary', '[图片]') or '[图片]',

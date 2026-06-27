@@ -241,14 +241,16 @@ class CommandsMixin:
             yield event.plain_result(f"撤回失败: {e}")
 
     async def cmd_ban(self, event: AstrMessageEvent):
-        '''禁言指定群成员。用法: /禁言 <QQ号> <秒数>'''
+        '''禁言指定群成员。用法: /禁言 <QQ号或@> <秒数>'''
         args = event.message_str.split()
-        if len(args) < 2:
-            yield event.plain_result("用法: /禁言 <QQ号> [时长(秒)]\n示例: /禁言 123456 1800")
+        # 优先从消息链中提取 @ 目标，兼容 @某人 的用法
+        at_targets = self._extract_at_targets(event)
+        if len(args) < 2 and not at_targets:
+            yield event.plain_result("用法: /禁言 <QQ号或@某人> [时长(秒)]\n示例: /禁言 123456 1800 或 /禁言 @张三 1800")
             return
         try:
-            user_id = str(args[1]).strip()
-            duration = min(max(self._safe_int(args[2], 600) if len(args) > 2 else 600, 60), 2592000)
+            user_id = at_targets[0] if at_targets else str(args[1]).strip()
+            duration = min(max(self._safe_int(args[2], 600) if len(args) > 2 else 600, 1), 2592000)
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "ban_enabled", "禁言", user_id, precheck_action="ban")
             if not ok:
                 yield event.plain_result(err)
@@ -263,13 +265,15 @@ class CommandsMixin:
             yield event.plain_result(f"禁言失败: {e}")
 
     async def cmd_unban(self, event: AstrMessageEvent):
-        '''解除指定群成员禁言。用法: /解禁 <QQ号>'''
+        '''解除指定群成员禁言。用法: /解禁 <QQ号或@>'''
         args = event.message_str.split()
-        if len(args) < 2:
-            yield event.plain_result("用法: /解禁 <QQ号>\n示例: /解禁 123456")
+        # 优先从消息链中提取 @ 目标，兼容 @某人 的用法
+        at_targets = self._extract_at_targets(event)
+        if len(args) < 2 and not at_targets:
+            yield event.plain_result("用法: /解禁 <QQ号或@某人>\n示例: /解禁 123456 或 /解禁 @张三")
             return
         try:
-            user_id = str(args[1]).strip()
+            user_id = at_targets[0] if at_targets else str(args[1]).strip()
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "unban_enabled", "解禁", user_id)
             if not ok:
                 yield event.plain_result(err)
@@ -284,13 +288,15 @@ class CommandsMixin:
             yield event.plain_result(f"解禁失败: {e}")
 
     async def cmd_kick(self, event: AstrMessageEvent):
-        '''将成员移出群聊。用法: /踢人 <QQ号>'''
+        '''将成员移出群聊。用法: /踢人 <QQ号或@>'''
         args = event.message_str.split()
-        if len(args) < 2:
-            yield event.plain_result("用法: /踢人 <QQ号>\n示例: /踢人 123456")
+        # 优先从消息链中提取 @ 目标，兼容 @某人 的用法
+        at_targets = self._extract_at_targets(event)
+        if len(args) < 2 and not at_targets:
+            yield event.plain_result("用法: /踢人 <QQ号或@某人>\n示例: /踢人 123456 或 /踢人 @张三")
             return
         try:
-            user_id = str(args[1]).strip()
+            user_id = at_targets[0] if at_targets else str(args[1]).strip()
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "kick_enabled", "踢人", user_id, precheck_action="kick")
             if not ok:
                 yield event.plain_result(err)
@@ -328,15 +334,18 @@ class CommandsMixin:
             yield event.plain_result(f"操作失败: {e}")
 
     async def cmd_set_card(self, event: AstrMessageEvent):
-        '''修改成员群名片。用法: /设置名片 <QQ号> <新名称>'''
+        '''修改成员群名片。用法: /设置名片 <QQ号或@> [新名称]'''
         args = event.message_str.split()
-        if len(args) < 3:
-            yield event.plain_result("用法: /设置名片 <QQ号> <名片内容>\n示例: /设置名片 123456 管理员")
+        # 优先从消息链中提取 @ 目标，兼容 @某人 的用法
+        at_targets = self._extract_at_targets(event)
+        # 参数检查：至少需要 2 个参数（命令 + QQ号或@），名片内容可选（为空时清除名片）
+        if len(args) < 2 and not at_targets:
+            yield event.plain_result("用法: /设置名片 <QQ号或@某人> [名片内容]\n示例: /设置名片 123456 管理员 或 /设置名片 @张三 管理员")
             return
         try:
-            user_id = str(args[1]).strip()
-            # 名片内容可能包含空格，使用 ' '.join(args[2:]) 保留原始格式
-            card = ' '.join(args[2:])
+            user_id = at_targets[0] if at_targets else str(args[1]).strip()
+            # 名片内容从 args[2:] 取，为空时清除名片
+            card = ' '.join(args[2:]) if len(args) > 2 else ''
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_card_enabled", "设置名片", user_id)
             if not ok:
                 yield event.plain_result(err)
