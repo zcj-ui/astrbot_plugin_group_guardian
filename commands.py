@@ -334,18 +334,18 @@ class CommandsMixin:
             yield event.plain_result(f"操作失败: {e}")
 
     async def cmd_set_card(self, event: AstrMessageEvent):
-        '''修改成员群名片。用法: /设置名片 <QQ号或@> <新名称>'''
+        '''修改成员群名片。用法: /设置名片 <QQ号或@> [新名称]'''
         args = event.message_str.split()
         # 优先从消息链中提取 @ 目标，兼容 @某人 的用法
         at_targets = self._extract_at_targets(event)
-        if len(args) < 3 and not at_targets:
-            yield event.plain_result("用法: /设置名片 <QQ号或@某人> <名片内容>\n示例: /设置名片 123456 管理员 或 /设置名片 @张三 管理员")
+        # 参数检查：至少需要 2 个参数（命令 + QQ号或@），名片内容可选（为空时清除名片）
+        if len(args) < 2 and not at_targets:
+            yield event.plain_result("用法: /设置名片 <QQ号或@某人> [名片内容]\n示例: /设置名片 123456 管理员 或 /设置名片 @张三 管理员")
             return
         try:
             user_id = at_targets[0] if at_targets else str(args[1]).strip()
-            # 名片内容：有 @ 时从 args[1:] 取（@ 不占 args 位置），无 @ 时从 args[2:] 取
-            card_start = 1 if at_targets else 2
-            card = ' '.join(args[card_start:])
+            # 名片内容从 args[2:] 取，为空时清除名片
+            card = ' '.join(args[2:]) if len(args) > 2 else ''
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_card_enabled", "设置名片", user_id)
             if not ok:
                 yield event.plain_result(err)
