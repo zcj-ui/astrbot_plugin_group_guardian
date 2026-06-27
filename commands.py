@@ -241,15 +241,17 @@ class CommandsMixin:
             yield event.plain_result(f"撤回失败: {e}")
 
     async def cmd_ban(self, event: AstrMessageEvent):
-        '''禁言指定群成员。用法: /禁言 <QQ号或@某人> <秒数>'''
+        '''禁言指定群成员。用法: /禁言 <QQ号或@某人> <分钟>'''
         args = event.message_str.split()
         at_targets = self._extract_at_targets(event)
         if len(args) < 2 and not at_targets:
-            yield event.plain_result("用法: /禁言 <QQ号或@某人> [时长(秒)]\n示例: /禁言 123456 1800 或 /禁言 @张三 1800")
+            yield event.plain_result("用法: /禁言 <QQ号或@某人> [时长(分钟)]\n示例: /禁言 123456 30 或 /禁言 @张三 30")
             return
         try:
             user_id = at_targets[0] if at_targets else str(args[1]).strip()
-            duration = min(max(self._safe_int(args[2] if len(args) > 2 else args[1] if at_targets and len(args) > 1 else 600, 600), 60), 2592000)
+            raw_min = args[2] if len(args) > 2 else (args[1] if at_targets and len(args) > 1 else None)
+            minutes = min(max(self._safe_int(raw_min, 10), 1), 43200)
+            duration = minutes * 60
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "ban_enabled", "禁言", user_id, precheck_action="ban")
             if not ok:
                 yield event.plain_result(err)
@@ -259,7 +261,7 @@ class CommandsMixin:
                 yield event.plain_result(f"禁言失败: {err}")
                 return
             self._schedule_unban(str(gid), user_id, duration)
-            yield event.plain_result(f"已禁言 {user_id}，时长 {duration} 秒")
+            yield event.plain_result(f"已禁言 {user_id}，时长 {minutes} 分钟")
         except Exception as e:
             yield event.plain_result(f"禁言失败: {e}")
 
@@ -792,19 +794,19 @@ class CommandsMixin:
             yield event.plain_result(f"撤回失败: {e}")
 
     async def cmd_batch_ban(self, event: AstrMessageEvent):
-        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长秒数]'''
+        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长分钟]'''
         args = event.message_str.split()
         if len(args) < 2:
-            yield event.plain_result("用法: /批量禁言 <QQ1> <QQ2> ... [时长秒数]\n示例: /批量禁言 111 222 333 1800")
+            yield event.plain_result("用法: /批量禁言 <QQ1> <QQ2> ... [时长分钟]\n示例: /批量禁言 111 222 333 30")
             return
         ok, err, client, gid = await self._prepare_group_action(event, "ban_enabled", "批量禁言")
         if not ok:
             yield event.plain_result(err)
             return
         tokens = args[1:]
-        duration = 600
-        if len(tokens) >= 2 and tokens[-1].isdigit() and len(tokens[-1]) <= 7:
-            duration = self._clamp_int(tokens[-1], 600, 60, 2592000)
+        minutes = 10
+        if len(tokens) >= 2 and tokens[-1].isdigit() and len(tokens[-1]) <= 6:
+            minutes = self._clamp_int(tokens[-1], 10, 1, 43200)
             tokens = tokens[:-1]
         targets = [t.strip() for t in tokens if t.strip().isdigit()]
         targets = targets[:50]
@@ -820,14 +822,14 @@ class CommandsMixin:
                 await asyncio.sleep(0.1)
                 continue
             done, _e = await self._call_group_api(client, 'set_group_ban', "批量禁言",
-                                                  group_id=gid, user_id=uid_int, duration=duration)
+                                                  group_id=gid, user_id=uid_int, duration=minutes * 60)
             if done:
                 success += 1
-                self._schedule_unban(str(gid), uid, duration)
+                self._schedule_unban(str(gid), uid, minutes * 60)
             else:
                 fail += 1
             await asyncio.sleep(0.3)
-        yield event.plain_result(f"批量禁言完成：成功 {success} 人，失败 {fail} 人，时长 {duration} 秒")
+        yield event.plain_result(f"批量禁言完成：成功 {success} 人，失败 {fail} 人，时长 {minutes} 分钟")
 
     async def cmd_batch_kick(self, event: AstrMessageEvent):
         '''批量踢出多人。用法: /批量踢人 <QQ1> <QQ2> ...'''
