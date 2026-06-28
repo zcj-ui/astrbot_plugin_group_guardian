@@ -12,6 +12,19 @@
 - **踢人自动撤回消息**: 新增 `kick_recall_enabled` 和 `kick_recall_count` 配置，踢人时自动撤回该成员最近消息（Issue #15）
 - **LLM 调用超时保护**: 审核和 OCR 的 LLM 调用增加 60 秒 `asyncio.wait_for` 超时，防止 Provider 挂起阻塞整个审核管线（#14 Major #2）
 
+### 重构
+
+- **审核管线拆分**: `_handle_message` 从 ~320 行拆分为 8 个独立方法（#14 Major #1, PR #17 思路吸收）：
+  - `_pre_check_message`: 同步前置检查（白名单/黑名单/功能开关）
+  - `_handle_user_blacklist`: 用户黑名单处理
+  - `_handle_qq_favorite`: QQ 收藏检测与撤回
+  - `_parse_message_chain`: 消息链解析（文本/图片/转发/JSON/App）
+  - `_apply_ocr`: OCR 图片识别
+  - `_initial_screening`: 正则/词库初筛
+  - `_execute_rule_penalty`: 规则违规处罚
+  - `_execute_llm_penalty`: LLM 违规处罚
+- **`_handle_message` 主函数降至 ~70 行编排逻辑**
+
 ### 优化
 
 - **CSV 导出文件名安全处理**: 词库导出文件名过滤特殊字符，防止 HTTP 头注入（#14 Minor #6）
