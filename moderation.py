@@ -907,42 +907,18 @@ class ModerationMixin:
     async def _handle_message(self, event: AiocqhttpMessageEvent):
         # ===== 审核管线的完整入口点 =====
         # 此方法由 main.py 注册为群消息事件处理器，每次群消息到来时调用。
-        # 按以下流水线顺序执行：
+        # 按以下流水线顺序执行，各步骤已拆分至独立方法：
         #
         # 步骤 A：群/用户级前置检查
-        #   - 提取 group_id，跳过空 group_id
-        #   - 黑名单群直接放行不处理
-        #   - 白名单模式：不在白名单的群也放行
-        #   - should_scan_message：跳过无有效内容的消息（纯系统消息、通知等）
-        #   - enabled 配置开关 + disclaimer_agreed 免责声明确认
-        #   - 管理员豁免：管理员不受审核
-        #   - 用户黑名单：黑名单用户直接踢出+禁言
-        #
-        # 步骤 B：消息内容提取
-        #   - 遍历 CQ 码段，提取文本（text）、图片 URL（image/market_face）、转发标记（forward）
-        #   - 若有转发，调用 _resolve_forward_messages 提取转发内文字
-        #   - 检查 QQ 收藏特征，若命中且 recall_qq_favorite_enabled 则直接撤回
-        #
-        # 步骤 C：OCR 图片识别（可选）
-        #   - 仅当 ocr_enabled 且存在图片 URL 时执行
-        #   - 若 scan_sticker_enabled=False 则跳过表情包类图片
-        #   - OCR 结果拼入 text，格式为 "[OCR识图内容]\n<识别文本>"
-        #
-        # 步骤 D：正则/词库初筛
-        #   - 脏话正则（_compiled_swear）
-        #   - 广告正则（_is_ad_pattern）
-        #   - 敏感词库_compiled_lexicon 的多分类匹配（政治/色情/暴恐等）
-        #   - 若均未命中则直接跳过（无违规嫌疑）
-        #
-        # 步骤 E：LLM 二次审核（可选）
-        #   - 仅当 llm_moderation_enabled 时调用
-        #   - 携带 30 条上下文 + 初筛的命中类型标签
-        #   - LLM 返回 JSON 含 violation bool + reason 字符串
-        #
-        # 步骤 F：违规处理
-        #   - LLM 判定违规 → 撤回消息 + 可选禁言 + 发送通知 + 记录日志
-        #   - LLM 判定不违规 → 写日志放行（便于后续排查误报）
-        #   - LLM 不可用 → 直接按正则命中判定结果执行撤回+禁言
+        #   - 同步预检 → _pre_check_message（用户/群黑白名单、消息内容、功能开关、免责声明）
+        #   - 防刷屏检测（_anti_flood_guard）
+        #   - 管理员豁免（_is_admin）
+        #   - 用户黑名单处理（kick + mute）
+        # 步骤 B：消息内容提取 → _parse_message_chain + forward/QQ收藏处理
+        # 步骤 C：OCR 图片识别 → _apply_ocr
+        # 步骤 D：正则/词库初筛 → _initial_screening
+        # 步骤 E：LLM 二次审核 → _call_llm_for_moderation（已有独立方法）
+        # 步骤 F：违规处理 → _execute_rule_penalty / _execute_llm_penalty
 
         group_id = self._get_group_id(event)
         if not group_id:
@@ -950,48 +926,252 @@ class ModerationMixin:
         # 发送者信息在整条管线中复用，避免在各分支里重复调用 OneBot 取值逻辑。
         user_id = self._try_get_sender_id(event)
         user_name = event.get_sender_name()
-        if user_id and self._user_white_set and user_id in self._user_white_set:
+
+        # ===== 步骤 A-1：同步前置检查 =====
+        # 用户白名单跳过、群黑白名单过滤、消息内容检查、功能开关、免责声明（无需 I/O 的快速路径）
+        if self._pre_check_message(event, group_id, user_id):
             return
-        # 群黑名单：在黑名单中的群完全不处理（与白名单的"不处理白名单外的群"逻辑对应）。
-        if self._group_black_set and group_id in self._group_black_set:
-            return
-        # 群白名单：如果启用了白名单模式，只有白名单中的群接受审核和防刷屏检测。
-        if self._group_white_set and group_id not in self._group_white_set:
-            return
-        # 防刷屏检测：所有消息类型（转发/QQ收藏/图片/JSON/App等）均计入，管理员豁免。
+
+        # ===== 步骤 A-2：防刷屏检测 =====
+        # 所有消息类型（转发/QQ收藏/图片/JSON/App等）均计入，管理员豁免。
         blocked, flood_notice = await self._anti_flood_guard(event, group_id)
         if blocked:
             if flood_notice:
                 yield event.plain_result(flood_notice)
             return
-        if not self._should_scan_message(event):
-            return
-        if not self._cfg("enabled", group_id=group_id):
-            return
-        if not self.config.get("disclaimer_agreed", False):
-            return
+
+        # ===== 步骤 A-3：管理员豁免 =====
         # 管理员完全豁免审核（包括黑名单检查），防止误处理管理员。
         if await self._is_admin(event):
             return
-        # 用户黑名单：直接踢出+禁言，不经过审核流程。
-        if self._user_black_set:
-            if user_id and user_id in self._user_black_set:
-                # 冷却去重：刚处理过的黑名单用户，其积压消息不再重复踢人/禁言/通知
-                if self._moderation_in_penalty_cooldown(group_id, user_id):
-                    event.stop_event()
-                    return
-                try:
-                    self._mark_moderation_penalty(group_id, user_id, 60)
-                    await self._kick_member(event)
-                    await self._mute_member(event, 60)
-                    notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被踢出（黑名单）", group_id=group_id)
-                    yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id))
-                    event.stop_event()
-                except Exception as e:
-                    logger.warning(f"[GroupMgr] 黑名单执行出错: {e}")
-                return
+
+        # ===== 步骤 A-4：用户黑名单处理 =====
+        # 黑名单用户直接踢出+禁言，不经过审核流程。
+        blacklist_handled, blacklist_notice = await self._handle_user_blacklist(event, group_id, user_id, user_name)
+        if blacklist_handled:
+            if blacklist_notice:
+                yield event.plain_result(blacklist_notice)
+            return
 
         # ===== 步骤 B：消息内容提取 =====
+        text, image_urls, has_forward = self._parse_message_chain(event)
+
+        # 解析合并转发消息中的文字内容。
+        forward_text = ""
+        forward_is_qq_favorite = False
+        if has_forward:
+            forward_text, forward_is_qq_favorite = await self._resolve_forward_messages(event)
+            scan_forward = self._cfg("scan_forward_msg", True, group_id=group_id)
+            if forward_text and scan_forward:
+                if text:
+                    text = text + '\n' + forward_text
+                else:
+                    text = forward_text
+
+        # QQ 收藏消息检测：如果消息内容包含 QQ 收藏特征，直接撤回（不经过正常审核）。
+        qq_fav_handled, qq_fav_notice = await self._handle_qq_favorite(event, group_id, user_id, user_name, image_urls, forward_is_qq_favorite)
+        if qq_fav_handled:
+            if qq_fav_notice:
+                yield event.plain_result(qq_fav_notice)
+            return
+
+        # 自动审核开关：群覆盖优先，否则用全局运行时开关（/自动审核 指令控制）
+        _am_override = self._get_group_override(group_id, "auto_moderate_enabled")
+        _auto_moderate = self._parse_bool_str(_am_override) if _am_override is not None else self.auto_moderate_enabled
+        if not _auto_moderate:
+            return
+
+        # ===== 步骤 C：OCR 图片识别 =====
+        text = await self._apply_ocr(text, image_urls, event, group_id)
+        if not text:
+            return
+
+        # ===== 步骤 D：正则/词库初筛 =====
+        hit_types = self._initial_screening(text, group_id)
+        if not any(hit_types.values()):
+            return
+
+        # ===== 步骤 E：LLM 二次审核 =====
+        llm_enabled = self._cfg("llm_moderation_enabled", True, group_id=group_id)
+
+        if not llm_enabled:
+            async for item in self._execute_rule_penalty(event, group_id, user_id, user_name, text, hit_types, image_urls):
+                yield item
+            return
+
+        logger.debug("[GroupMgr] 开始调用LLM审核...")
+        llm_result = await self._call_llm_for_moderation(event, text, hit_types, group_id=group_id)
+        logger.debug(f"[GroupMgr] LLM返回结果: {llm_result}")
+        is_violation = llm_result.get("violation", False)
+        reason = llm_result.get("reason", "无理由")
+
+        # ===== 步骤 F：违规处理 =====
+        hit_summary = ', '.join(k for k, v in hit_types.items() if v)
+        if not is_violation:
+            # LLM 判定不违规 → 记录日志放行（有助于后续排查误报和调优正则）。
+            logger.info(f"[GroupMgr] LLM审核通过: {user_name}({user_id}) in {group_id} | 命中类型={{{hit_summary}}} | 原因={reason}")
+            self._log_moderation(group_id, user_id, user_name, text, "LLM放行", reason, image_urls)
+            return
+
+        async for item in self._execute_llm_penalty(event, group_id, user_id, user_name, text, reason, hit_summary, image_urls):
+            yield item
+
+
+    async def _handle_user_blacklist(self, event: AiocqhttpMessageEvent, group_id: str,
+                                      user_id: str, user_name: str) -> Tuple[bool, Optional[str]]:
+        """步骤 A-4：用户黑名单处理。
+
+        黑名单用户直接踢出+禁言，不经过审核流程。
+        冷却去重：刚处理过的黑名单用户，其积压消息不再重复踢人/禁言/通知。
+
+        Returns:
+            (handled, notice_text): handled 为 True 时调用方应中止后续流程；
+            notice_text 非 None 时调用方需 yield 该通知文本。
+        """
+        if not (self._user_black_set and user_id and user_id in self._user_black_set):
+            return False, None
+        if self._moderation_in_penalty_cooldown(group_id, user_id):
+            event.stop_event()
+            return True, None
+        try:
+            self._mark_moderation_penalty(group_id, user_id, 60)
+            await self._kick_member(event)
+            await self._mute_member(event, 60)
+            notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被踢出（黑名单）", group_id=group_id)
+            notice = notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id)
+            event.stop_event()
+            return True, notice
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 黑名单执行出错: {e}")
+            return True, None
+
+    async def _handle_qq_favorite(self, event: AiocqhttpMessageEvent, group_id: str,
+                                   user_id: str, user_name: str,
+                                   image_urls: list,
+                                   forward_is_qq_favorite: bool) -> Tuple[bool, Optional[str]]:
+        """检测并处理 QQ 收藏消息。
+
+        如果消息内容包含 QQ 收藏特征，直接撤回（不经过正常审核）。
+
+        Returns:
+            (handled, notice_text): handled 为 True 时调用方应中止后续流程；
+            notice_text 非 None 时调用方需 yield 该通知文本。
+        """
+        if not self._cfg("recall_qq_favorite_enabled", True, group_id=group_id):
+            return False, None
+        is_qq_fav = forward_is_qq_favorite or await self._check_qq_favorite_non_forward(event)
+        if not is_qq_fav:
+            return False, None
+        try:
+            msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
+            if msg_id:
+                await self._recall_msg(event, msg_id)
+                self._log_moderation(group_id, user_id, user_name, "[QQ收藏消息]", "撤回", "QQ收藏内容自动撤回", image_urls)
+                event.stop_event()
+            return True, "[群管] 检测到QQ收藏内容，已自动撤回"
+        except Exception as e:
+            logger.warning(f"[GroupMgr] QQ收藏撤回失败: {e}")
+            return True, None
+
+    async def _execute_rule_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
+                                    user_id: str, user_name: str, text: str,
+                                    hit_types: dict, image_urls: list):
+        """LLM 审核关闭时：直接按正则命中执行撤回+禁言。"""
+        reason = "触发规则: " + ", ".join(k for k, v in hit_types.items() if v)
+        logger.info(f"[GroupMgr] {user_name}({user_id}) in {group_id} -> {reason}")
+        try:
+            msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
+            # 违规消息始终撤回；但禁言/通知/登记解禁在冷却期内不重复执行，
+            # 避免连发多条违规时重复禁言同一人并刷多条通知。
+            await self._recall_msg(event, msg_id)
+            if self._moderation_in_penalty_cooldown(group_id, user_id):
+                self._log_moderation(group_id, user_id, user_name, text, "撤回", reason, image_urls)
+                event.stop_event()
+                return
+            ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
+            self._mark_moderation_penalty(group_id, user_id, ban_duration)
+            await self._mute_member(event, ban_duration)
+            self._schedule_unban(group_id, user_id, ban_duration)
+            notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）", group_id=group_id)
+            yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
+            self._log_moderation(group_id, user_id, user_name, text, "撤回+禁言", reason, image_urls)
+            event.stop_event()
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 自动审核出错: {e}")
+
+    async def _execute_llm_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
+                                   user_id: str, user_name: str, text: str,
+                                   reason: str, hit_summary: str, image_urls: list):
+        """LLM 判定违规 → 执行撤回、禁言、通知、记录。"""
+        logger.info(f"[GroupMgr] LLM审核拦截: {user_name}({user_id}) in {group_id} | 命中类型={{{hit_summary}}} | 原因={reason}")
+
+        try:
+            msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
+            if msg_id:
+                try:
+                    await self._recall_msg(event, msg_id)
+                except Exception as recall_err:
+                    logger.warning(f"[GroupMgr] 撤回消息失败: {recall_err}")
+
+            # 冷却去重：违规消息已撤回；禁言/通知/登记解禁在冷却期内不重复执行，
+            # 避免连发多条违规时重复禁言同一人并刷多条通知。
+            in_cooldown = self._moderation_in_penalty_cooldown(group_id, user_id)
+            if in_cooldown:
+                self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
+                event.stop_event()
+                return
+            ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
+            self._mark_moderation_penalty(group_id, user_id, ban_duration)
+
+            if self._cfg("llm_moderation_ban", True, group_id=group_id):
+                try:
+                    await self._mute_member(event, ban_duration)
+                    self._schedule_unban(group_id, user_id, ban_duration)
+                except Exception as ban_err:
+                    logger.warning(f"[GroupMgr] 禁言失败: {ban_err}")
+
+            if self._cfg("auto_moderate_notice", True, group_id=group_id):
+                try:
+                    notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 的消息已被撤回（违规内容）", group_id=group_id)
+                    yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
+                except Exception as notice_err:
+                    logger.warning(f"[GroupMgr] 发送通知失败: {notice_err}")
+
+            self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
+            event.stop_event()
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 自动审核出错: {e}")
+            yield event.plain_result(f"[群管] 审核出错: {str(e)[:100]}")
+
+    def _pre_check_message(self, event: AiocqhttpMessageEvent, group_id: str,
+                           user_id: str) -> bool:
+        """步骤 A-1：同步前置检查（无需 I/O 的快速路径）。
+
+        包含：用户白名单跳过、群黑白名单过滤、消息内容检查、功能开关、免责声明。
+
+        Returns:
+            True 表示应中止后续处理，False 表示通过检查可继续。
+        """
+        if user_id and self._user_white_set and user_id in self._user_white_set:
+            return True
+        if self._group_black_set and group_id in self._group_black_set:
+            return True
+        if self._group_white_set and group_id not in self._group_white_set:
+            return True
+        if not self._should_scan_message(event):
+            return True
+        if not self._cfg("enabled", group_id=group_id):
+            return True
+        if not self.config.get("disclaimer_agreed", False):
+            return True
+        return False
+
+    def _parse_message_chain(self, event: AiocqhttpMessageEvent) -> tuple:
+        """从消息事件的消息链中解析文本、图片 URL、转发标记。
+
+        Returns:
+            (text, image_urls, has_forward) 三元组。
+        """
         chain = event.get_messages()
         raw_text_parts = []
         image_urls = []
@@ -1043,45 +1223,22 @@ class ModerationMixin:
                 elif seg_cls in ('App',) or (hasattr(seg, 'type') and getattr(seg, 'type', '') == 'app'):
                     raw_text_parts.append(self._extract_app_card_text(getattr(seg, 'data', {}) or {}))
         text = ''.join(raw_text_parts).strip()
+        return text, image_urls, has_forward
 
-        # 解析合并转发消息中的文字内容。
-        forward_text = ""
-        forward_is_qq_favorite = False
-        if has_forward:
-            forward_text, forward_is_qq_favorite = await self._resolve_forward_messages(event)
-            scan_forward = self._cfg("scan_forward_msg", True, group_id=group_id)
-            if forward_text and scan_forward:
-                if text:
-                    text = text + '\n' + forward_text
-                else:
-                    text = forward_text
+    async def _apply_ocr(self, text: str, image_urls: list, event: AiocqhttpMessageEvent,
+                         group_id: str) -> str:
+        """步骤 C：OCR 图片识别（可选）。
 
-        # QQ 收藏消息检测：如果消息内容包含 QQ 收藏特征，直接撤回（不经过正常审核）。
-        if self._cfg("recall_qq_favorite_enabled", True, group_id=group_id):
-            is_qq_fav = forward_is_qq_favorite or await self._check_qq_favorite_non_forward(event)
-            if is_qq_fav:
-                try:
-                    msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-                    if msg_id:
-                        await self._recall_msg(event, msg_id)
-                        yield event.plain_result(f"[群管] 检测到QQ收藏内容，已自动撤回")
-                        self._log_moderation(group_id, user_id, user_name, "[QQ收藏消息]", "撤回", "QQ收藏内容自动撤回", image_urls)
-                        event.stop_event()
-                except Exception as e:
-                    logger.warning(f"[GroupMgr] QQ收藏撤回失败: {e}")
-                return
+        仅当 ocr_enabled 且存在图片 URL 时执行。
+        若 scan_sticker_enabled=False 则跳过表情包类图片。
+        OCR 结果拼入 text，格式为 "[OCR识图内容]\\n<识别文本>"。
 
-        # 自动审核开关：群覆盖优先，否则用全局运行时开关（/自动审核 指令控制）
-        _am_override = self._get_group_override(group_id, "auto_moderate_enabled")
-        _auto_moderate = self._parse_bool_str(_am_override) if _am_override is not None else self.auto_moderate_enabled
-        if not _auto_moderate:
-            return
-
-        # ===== 步骤 C：OCR 图片识别 =====
+        Returns:
+            更新后的 text（含 OCR 结果）。若结果为纯图片无文字且 OCR 无结果则返回空字符串。
+        """
         if image_urls and self._cfg("ocr_enabled", False, group_id=group_id):
             ocr_urls = image_urls
             if not self._cfg("scan_sticker_enabled", True, group_id=group_id):
-                # 如果配置了不扫描表情包，过滤掉表情包类图片。
                 ocr_urls = [u for u in image_urls if not self._is_sticker_image(u)]
             if ocr_urls:
                 logger.info(f"[GroupMgr] OCR开始识别 {len(ocr_urls)} 张图片")
@@ -1093,17 +1250,25 @@ class ModerationMixin:
                         text = '[OCR识图内容]\n' + ocr_text
                     logger.info(f"[GroupMgr] OCR识别结果: {ocr_text[:100]}")
                 else:
-                    logger.debug(f"[GroupMgr] OCR识别返回空结果")
+                    logger.debug("[GroupMgr] OCR识别返回空结果")
 
-        # 纯图片无文字且 OCR 未产生结果 → 跳过后续审核。
         if not text:
             if image_urls:
-                logger.debug(f"[GroupMgr] 图片消息无文字且OCR未生效，跳过审核")
-            return
+                logger.debug("[GroupMgr] 图片消息无文字且OCR未生效，跳过审核")
+            return ""
         if len(text) > 5000:
             text = text[:5000]
+        return text
 
-        # ===== 步骤 D：正则/词库初筛 =====
+    def _initial_screening(self, text: str, group_id: str) -> dict:
+        """步骤 D：正则/词库初筛。
+
+        脏话正则 → 广告正则 → 敏感词库多分类匹配（含按群分类开关过滤）。
+        若均未命中则返回全为 False 的字典，由调用方决定是否跳过。
+
+        Returns:
+            hit_types dict（各分类的命中布尔值）。
+        """
         hit_types = {
             "swear": False,
             "ad": False,
@@ -1131,97 +1296,11 @@ class ModerationMixin:
         hit_types["ad"] = ad_hit
 
         lexicon_result = self._check_lexicon(text)
-        # 词库分类命中按群过滤：某群关闭了对应分类开关时，忽略该分类命中（实现按群词库开关）
         switch_map = self._lexicon_switch_map(group_id=group_id)
         for cat, hit in lexicon_result.items():
             if cat in hit_types and hit:
                 if not switch_map.get(cat, True):
-                    continue  # 该群已关闭此词库分类
+                    continue
                 hit_types[cat] = True
 
-        should_check = any(hit_types.values())
-        if not should_check:
-            return
-
-        # ===== 步骤 E：LLM 二次审核 =====
-        llm_enabled = self._cfg("llm_moderation_enabled", True, group_id=group_id)
-
-        if not llm_enabled:
-            # LLM 审核关闭时：直接按正则命中执行撤回+禁言。
-            reason = "触发规则: " + ", ".join(k for k, v in hit_types.items() if v)
-            logger.info(f"[GroupMgr] {user_name}({user_id}) in {group_id} -> {reason}")
-            try:
-                msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-                # 违规消息始终撤回；但禁言/通知/登记解禁在冷却期内不重复执行，
-                # 避免连发多条违规时重复禁言同一人并刷多条通知。
-                await self._recall_msg(event, msg_id)
-                if self._moderation_in_penalty_cooldown(group_id, user_id):
-                    self._log_moderation(group_id, user_id, user_name, text, "撤回", reason, image_urls)
-                    event.stop_event()
-                    return
-                ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
-                self._mark_moderation_penalty(group_id, user_id, ban_duration)
-                await self._mute_member(event, ban_duration)
-                self._schedule_unban(group_id, user_id, ban_duration)
-                notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）", group_id=group_id)
-                yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
-                self._log_moderation(group_id, user_id, user_name, text, "撤回+禁言", reason, image_urls)
-                event.stop_event()
-            except Exception as e:
-                logger.warning(f"[GroupMgr] 自动审核出错: {e}")
-            return
-
-        logger.debug(f"[GroupMgr] 开始调用LLM审核...")
-        llm_result = await self._call_llm_for_moderation(event, text, hit_types, group_id=group_id)
-        logger.debug(f"[GroupMgr] LLM返回结果: {llm_result}")
-        is_violation = llm_result.get("violation", False)
-        reason = llm_result.get("reason", "无理由")
-
-        # ===== 步骤 F：违规处理 =====
-        hit_summary = ', '.join(k for k, v in hit_types.items() if v)
-        if not is_violation:
-            # LLM 判定不违规 → 记录日志放行（有助于后续排查误报和调优正则）。
-            logger.info(f"[GroupMgr] LLM审核通过: {user_name}({user_id}) in {group_id} | 命中类型={{{hit_summary}}} | 原因={reason}")
-            self._log_moderation(group_id, user_id, user_name, text, "LLM放行", reason, image_urls)
-            return
-
-        # LLM 判定违规 → 执行撤回、禁言、通知、记录。
-        logger.info(f"[GroupMgr] LLM审核拦截: {user_name}({user_id}) in {group_id} | 命中类型={{{hit_summary}}} | 原因={reason}")
-
-        try:
-            msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-            if msg_id:
-                try:
-                    await self._recall_msg(event, msg_id)
-                except Exception as recall_err:
-                    logger.warning(f"[GroupMgr] 撤回消息失败: {recall_err}")
-
-            # 冷却去重：违规消息已撤回；禁言/通知/登记解禁在冷却期内不重复执行，
-            # 避免连发多条违规时重复禁言同一人并刷多条通知。
-            in_cooldown = self._moderation_in_penalty_cooldown(group_id, user_id)
-            if in_cooldown:
-                self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
-                event.stop_event()
-                return
-            ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
-            self._mark_moderation_penalty(group_id, user_id, ban_duration)
-
-            if self._cfg("llm_moderation_ban", True, group_id=group_id):
-                try:
-                    await self._mute_member(event, ban_duration)
-                    self._schedule_unban(group_id, user_id, ban_duration)
-                except Exception as ban_err:
-                    logger.warning(f"[GroupMgr] 禁言失败: {ban_err}")
-
-            if self._cfg("auto_moderate_notice", True, group_id=group_id):
-                try:
-                    notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 的消息已被撤回（违规内容）", group_id=group_id)
-                    yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
-                except Exception as notice_err:
-                    logger.warning(f"[GroupMgr] 发送通知失败: {notice_err}")
-
-            self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
-            event.stop_event()
-        except Exception as e:
-            logger.warning(f"[GroupMgr] 自动审核出错: {e}")
-            yield event.plain_result(f"[群管] 审核出错: {str(e)[:100]}")
+        return hit_types

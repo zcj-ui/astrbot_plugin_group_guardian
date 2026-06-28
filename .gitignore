@@ -17,3 +17,5 @@ Thumbs.db
 .gitmodules
 ac_cache/
 docs/
+.pytest_cache/
+node_modules/
