@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import json
 import re
 import time
@@ -485,7 +486,8 @@ class ModerationMixin:
         try:
             # 使用信号量（_llm_semaphore）控制并发，避免同一时间大量 LLM 请求打爆 API。
             async with self._llm_semaphore:
-                llm_response = await self._call_llm_safe(system_prompt, prompt)
+                llm_response = await asyncio.wait_for(
+                    self._call_llm_safe(system_prompt, prompt), timeout=60.0)
 
             # ---------- JSON 响应解析 ----------
             # LLM 回复中可能包含额外的解释文字，需用正则提取 JSON 部分。
@@ -505,9 +507,10 @@ class ModerationMixin:
             # 匹配到了类似 JSON 的文本但解析失败（如括号不配对、非法字符等）。
             logger.warning(f"[GroupMgr] LLM返回JSON解析失败: {e}")
             return {"violation": False, "reason": "JSON解析失败"}
+        except asyncio.TimeoutError:
+            logger.warning("[GroupMgr] LLM审核调用超时(60s)")
+            return {"violation": False, "reason": "LLM调用超时"}
         except Exception as e:
-            # LLM 调用本身出错（Provider 不可用、网络错误、超时等）。
-            # 默认不违规（宁可放过不可错杀）。
             logger.warning(f"[GroupMgr] LLM审核调用失败: {e}")
             return {"violation": False, "reason": f"LLM调用失败: {str(e)[:100]}"}
 

@@ -131,6 +131,18 @@
         "default": true,
         "hint": "关闭后 /踢人 指令和 LLM 踢人工具均不可用"
     },
+    "kick_recall_enabled": {
+        "description": "踢人时自动撤回该成员最近消息",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后踢人时自动撤回该成员最近的消息，条数由下方配置控制"
+    },
+    "kick_recall_count": {
+        "description": "踢人撤回消息条数",
+        "type": "int",
+        "default": 10,
+        "hint": "踢人时自动撤回该成员最近的消息条数，范围 1-50"
+    },
     "whole_ban_enabled": {
         "description": "全体禁言功能开关",
         "type": "bool",

@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.4.2 - 2026-06-29
+
+### Bug 修复
+
+- **[Critical] `_extract_at_targets` AttributeError**: 方法原定义在 `CommandsMixin`，但 `Main` 不继承该类（通过显式调用），导致 `self._extract_at_targets()` 抛出 `AttributeError`（Issue #18 #19）。已移至 `UtilitiesMixin`
+- **禁言时长单位**: 改回以分钟为用户输入单位（`/禁言 @某人 30` = 30 分钟），内部自动 `*60` 转秒传给 OneBot，与 QQ 平台的分钟粒度一致
+
+### 新功能
+
+- **踢人自动撤回消息**: 新增 `kick_recall_enabled` 和 `kick_recall_count` 配置，踢人时自动撤回该成员最近消息（Issue #15）
+- **LLM 调用超时保护**: 审核和 OCR 的 LLM 调用增加 60 秒 `asyncio.wait_for` 超时，防止 Provider 挂起阻塞整个审核管线（#14 Major #2）
+
+### 优化
+
+- **CSV 导出文件名安全处理**: 词库导出文件名过滤特殊字符，防止 HTTP 头注入（#14 Minor #6）
+- **配置文件**: 新增 `kick_recall_enabled`、`kick_recall_count` 配置项
+
 ## v2.4.0 - 2026-06-26
 
 ### Bug 修复
