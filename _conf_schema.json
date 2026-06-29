@@ -524,6 +524,18 @@
         "default": "",
         "hint": "自动拒绝时回传给申请人的理由"
     },
+    "join_qq_level_check_enabled": {
+        "description": "入群-QQ等级自动审核开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后根据申请人QQ等级自动通过或拒绝，等级>=阈值则通过，否则拒绝"
+    },
+    "join_qq_level_min": {
+        "description": "入群-最低QQ等级要求",
+        "type": "int",
+        "default": 0,
+        "hint": "申请人QQ等级需大于等于此值才能自动通过，范围0-256，设为0表示不限制"
+    },
     "appeal_enabled": {
         "description": "刷屏申诉模式开关（F2）",
         "type": "bool",
