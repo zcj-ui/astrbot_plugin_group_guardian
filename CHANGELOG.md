@@ -1,5 +1,35 @@
 # Changelog
 
+## v2.4.2 - 2026-06-29
+
+### Bug 修复
+
+- **[Critical] `_extract_at_targets` AttributeError**: 方法原定义在 `CommandsMixin`，但 `Main` 不继承该类（通过显式调用），导致 `self._extract_at_targets()` 抛出 `AttributeError`（Issue #18 #19）。已移至 `UtilitiesMixin`
+- **禁言时长单位**: 改回以分钟为用户输入单位（`/禁言 @某人 30` = 30 分钟），内部自动 `*60` 转秒传给 OneBot，与 QQ 平台的分钟粒度一致
+
+### 新功能
+
+- **踢人自动撤回消息**: 新增 `kick_recall_enabled` 和 `kick_recall_count` 配置，踢人时自动撤回该成员最近消息（Issue #15）
+- **LLM 调用超时保护**: 审核和 OCR 的 LLM 调用增加 60 秒 `asyncio.wait_for` 超时，防止 Provider 挂起阻塞整个审核管线（#14 Major #2）
+
+### 重构
+
+- **审核管线拆分**: `_handle_message` 从 ~320 行拆分为 8 个独立方法（#14 Major #1, PR #17 思路吸收）：
+  - `_pre_check_message`: 同步前置检查（白名单/黑名单/功能开关）
+  - `_handle_user_blacklist`: 用户黑名单处理
+  - `_handle_qq_favorite`: QQ 收藏检测与撤回
+  - `_parse_message_chain`: 消息链解析（文本/图片/转发/JSON/App）
+  - `_apply_ocr`: OCR 图片识别
+  - `_initial_screening`: 正则/词库初筛
+  - `_execute_rule_penalty`: 规则违规处罚
+  - `_execute_llm_penalty`: LLM 违规处罚
+- **`_handle_message` 主函数降至 ~70 行编排逻辑**
+
+### 优化
+
+- **CSV 导出文件名安全处理**: 词库导出文件名过滤特殊字符，防止 HTTP 头注入（#14 Minor #6）
+- **配置文件**: 新增 `kick_recall_enabled`、`kick_recall_count` 配置项
+
 ## v2.4.0 - 2026-06-26
 
 ### Bug 修复
@@ -19,6 +49,12 @@
 - **禁言时长单位改为秒**: `/禁言`、`/批量禁言` 命令及 `ban_group_member` / `batch_ban_members` LLM Tool 的时长参数从分钟改为秒，与 OneBot 协议和 QQ 平台原生单位一致（Issue #6, PR #7）
 - **日志预览扩展**: `msg_preview` 从 100 字符扩展到 200 字符，WebUI 审核日志列表展示更完整
 - **代码重构**: `_is_admin` / `_is_plugin_admin` 提取公共方法 `_get_all_admin_ids()` / `_is_group_admin_blocked()`，消除重复代码
+
+### 新功能
+
+- **指令支持 @某人**: `/禁言`、`/解禁`、`/踢人`、`/设置名片` 现在支持 @某人 而非仅限手动输入 QQ 号（Issue #8, PR #9）
+- **入群审核群内通知**: 自动审核通过/拒绝后在群内发送通知，新增 `join_audit_notify` 配置开关（Issue #12）
+- **入群审核不再吞没事件**: `_on_group_request` 仅在实际处理了申请时才 `stop_event()`，未启用审核时不阻断其他插件
 
 ### WebUI 优化
 

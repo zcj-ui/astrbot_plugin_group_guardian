@@ -235,19 +235,19 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
 
     @filter.command("禁言")
     async def cmd_ban(self, event: AstrMessageEvent):
-        '''禁言指定群成员。用法: /禁言 <QQ号> <秒数>'''
+        '''禁言指定群成员。用法: /禁言 <QQ号或@某人> <分钟>'''
         async for item in CommandsMixin.cmd_ban(self, event):
             yield item
 
     @filter.command("解禁")
     async def cmd_unban(self, event: AstrMessageEvent):
-        '''解除指定群成员禁言。用法: /解禁 <QQ号>'''
+        '''解除指定群成员禁言。用法: /解禁 <QQ号或@某人>'''
         async for item in CommandsMixin.cmd_unban(self, event):
             yield item
 
     @filter.command("踢人")
     async def cmd_kick(self, event: AstrMessageEvent):
-        '''将成员移出群聊。用法: /踢人 <QQ号>'''
+        '''将成员移出群聊。用法: /踢人 <QQ号或@某人>'''
         async for item in CommandsMixin.cmd_kick(self, event):
             yield item
 
@@ -259,7 +259,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
 
     @filter.command("设置名片")
     async def cmd_set_card(self, event: AstrMessageEvent):
-        '''修改成员群名片。用法: /设置名片 <QQ号> <新名称>'''
+        '''修改成员群名片。用法: /设置名片 <QQ号或@某人> <新名称>'''
         async for item in CommandsMixin.cmd_set_card(self, event):
             yield item
 
@@ -364,14 +364,14 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     # 注意：AstrBot 的 handler 必须使用 yield 发送消息，所以这里用 async for/yield 转发，
     # 不能直接用 return await。如果业务函数最终 yield None，AstrBot 框架会跳过空回复。
     @filter.llm_tool(name="ban_group_member")
-    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_seconds: int = 600):
+    async def ban_group_member_tool(self, event: AstrMessageEvent, user_id: str, duration_minutes: int = 10):
         '''禁言群成员。当用户要求禁言某人时使用此工具。
 
         Args:
             user_id(string): 要禁言的用户QQ号
-            duration_seconds(number): 禁言时长（秒），默认600秒
+            duration_minutes(number): 禁言时长（分钟），默认10分钟
         '''
-        async for item in LlmToolsMixin.ban_group_member_tool(self, event, user_id, duration_seconds):
+        async for item in LlmToolsMixin.ban_group_member_tool(self, event, user_id, duration_minutes):
             yield item
 
     @filter.llm_tool(name="unban_group_member")
@@ -568,10 +568,11 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
         if not self._is_group_request_event(event):
             return
         try:
-            await MembershipMixin._handle_group_request(self, event)
+            handled = await MembershipMixin._handle_group_request(self, event)
+            if handled:
+                event.stop_event()
         except Exception as e:
             logger.warning(f"[GroupMgr] 入群审核出错: {e}")
-        event.stop_event()
 
     # F2 私聊申诉裁决：私聊消息且发送者有 waiting 申诉时进入。
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)
@@ -589,7 +590,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     # F4 批量管理指令
     @filter.command("批量禁言")
     async def cmd_batch_ban(self, event: AstrMessageEvent):
-        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长秒数]'''
+        '''批量禁言多人。用法: /批量禁言 <QQ1> <QQ2> ... [时长分钟]'''
         async for item in CommandsMixin.cmd_batch_ban(self, event):
             yield item
 
@@ -621,14 +622,14 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
 
     # F4 批量管理 LLM 工具
     @filter.llm_tool(name="batch_ban_members")
-    async def batch_ban_members_tool(self, event: AstrMessageEvent, user_ids: str, duration_seconds: int = 600):
+    async def batch_ban_members_tool(self, event: AstrMessageEvent, user_ids: str, duration_minutes: int = 10):
         '''批量禁言多个群成员。当用户要求同时禁言多人时使用此工具。
 
         Args:
             user_ids(array): 要禁言的用户QQ号列表
-            duration_seconds(number): 禁言时长（秒），默认600秒
+            duration_minutes(number): 禁言时长（分钟），默认10分钟
         '''
-        async for item in LlmToolsMixin.batch_ban_members_tool(self, event, user_ids, duration_seconds):
+        async for item in LlmToolsMixin.batch_ban_members_tool(self, event, user_ids, duration_minutes):
             yield item
 
     @filter.llm_tool(name="batch_kick_members")

@@ -619,7 +619,8 @@ class WebMixin:
             writer.writerow(["id", "category", "keyword"])
             for item in items:
                 writer.writerow([item.get("id"), category, item.get("keyword")])
-            filename = f"lexicon_{category}.csv"
+            safe_cat = re.sub(r'[^\w\-]', '_', category)
+            filename = f"lexicon_{safe_cat}.csv"
             # 返回 (body, status, headers) 元组让 Quart 直接触发下载，避免依赖未导入的 send_file
             return output.getvalue(), 200, {
                 "Content-Type": "text/csv; charset=utf-8",

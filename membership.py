@@ -53,47 +53,44 @@ class MembershipMixin:
             "enabled": True,
         }
 
-    async def _handle_group_request(self, event: AstrMessageEvent):
-        """加群申请审核主流程。"""
+    async def _handle_group_request(self, event: AstrMessageEvent) -> bool:
+        """加群申请审核主流程。返回 True 表示已处理（应 stop_event），False 表示未介入。"""
         if not self.config.get("disclaimer_agreed", False):
-            return
+            return False
         raw = self._get_raw_event(event)
         if not isinstance(raw, dict):
-            return
+            return False
         group_id = str(raw.get("group_id", ""))
         user_id = str(raw.get("user_id", ""))
         flag = raw.get("flag", "")
         comment = str(raw.get("comment", "") or "")
         sub_type = raw.get("sub_type", "add")
         if not group_id or not flag:
-            return
-        # 入群审核开关按群生效（群可单独开关）
+            return False
         if not self._cfg("join_audit_enabled", False, group_id=group_id):
-            return
-        # 群范围检查（复用黑白名单）
+            return False
         allowed, _reason = self._check_group_access(event)
         if not allowed:
-            return
-        # 用户黑名单：直接拒绝
+            return False
         if user_id and user_id in self._user_black_set:
             await self._process_group_request(event, flag, sub_type, False, "您在黑名单中，无法加入")
             self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群拒绝", "用户黑名单", [])
-            return
+            await self._notify_join_audit(group_id, user_id, comment, False, "用户黑名单")
+            return True
 
         rule = self._resolve_join_rule(group_id)
         if not rule.get("enabled", True):
-            return
+            return False
         comment_lower = comment.lower()
 
-        # ① 拒绝词
         for kw in rule.get("reject_keywords", []):
             if kw and str(kw).lower() in comment_lower:
                 reason = rule.get("reject_reason", "") or "申请信息命中拒绝规则"
                 await self._process_group_request(event, flag, sub_type, False, reason)
                 self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群拒绝", f"命中拒绝词: {kw}", [])
-                return
+                await self._notify_join_audit(group_id, user_id, comment, False, f"命中拒绝词: {kw}")
+                return True
 
-        # ② 违禁词库（可选）
         if self._cfg("join_reject_use_lexicon", True, group_id=group_id) and comment:
             lex_hit = self._check_lexicon(comment)
             switch_map = self._lexicon_switch_map(group_id=group_id)
@@ -103,29 +100,47 @@ class MembershipMixin:
                 reason = rule.get("reject_reason", "") or "申请信息含违规内容"
                 await self._process_group_request(event, flag, sub_type, False, reason)
                 self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群拒绝", "命中违禁词库/广告", [])
-                return
+                await self._notify_join_audit(group_id, user_id, comment, False, "命中违禁词库/广告")
+                return True
 
-        # ③ 通过词
         for kw in rule.get("accept_keywords", []):
             if kw and str(kw).lower() in comment_lower:
                 await self._process_group_request(event, flag, sub_type, True, "")
                 self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群通过", f"命中通过词: {kw}", [])
-                return
+                await self._notify_join_audit(group_id, user_id, comment, True, f"命中通过词: {kw}")
+                return True
 
-        # ④ 默认动作
         default_action = rule.get("default_action", "manual")
         if default_action == "accept":
             await self._process_group_request(event, flag, sub_type, True, "")
             self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群通过", "默认通过", [])
+            await self._notify_join_audit(group_id, user_id, comment, True, "默认通过")
+            return True
         elif default_action == "reject":
             reason = rule.get("reject_reason", "") or "不符合入群条件"
             await self._process_group_request(event, flag, sub_type, False, reason)
             self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群拒绝", "默认拒绝", [])
-        # manual：不处理，留给人工审核
+            await self._notify_join_audit(group_id, user_id, comment, False, "默认拒绝")
+            return True
+        return False
+
+    async def _notify_join_audit(self, group_id: str, user_id: str, comment: str, approved: bool, reason: str) -> None:
+        if not self._cfg("join_audit_notify", True, group_id=group_id):
+            return
+        action = "通过" if approved else "拒绝"
+        text = f"[入群审核] {user_id} 申请加群已{action}\n验证信息: {comment[:80] if comment else '无'}\n原因: {reason}"
+        try:
+            from astrbot.api.event import MessageChain
+            gid_int = self._safe_int(group_id, 0)
+            if gid_int:
+                client = await self._get_client()
+                if client:
+                    await client.call_action("send_group_msg", group_id=gid_int, message=text)
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 入群审核通知发送失败: {e}")
 
     async def _process_group_request(self, event: AstrMessageEvent, flag: str, sub_type: str,
                                      approve: bool, reason: str = "") -> bool:
-        """调用 OneBot set_group_add_request 处理加群申请。"""
         client = await self._get_client(event)
         if not client:
             return False
