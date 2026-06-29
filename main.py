@@ -93,6 +93,9 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
         # 后台调度器（F3 定时解禁 + F2 申诉超时清理）
         self._init_scheduler()
         self._start_scheduler()
+        # 待审入群请求存储：{群号:消息ID: {user_id, flag, sub_type, comment, nickname, timestamp}}
+        # 用于管理员引用回复待审通知消息时快速查找对应的加群申请信息
+        self._pending_join_requests = {}
 
     async def terminate(self):
         if self._rebuild_task and not self._rebuild_task.done():
@@ -558,6 +561,15 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     @filter.event_message_type(filter.EventMessageType.ALL)
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def _handle_message(self, event: AiocqhttpMessageEvent):
+        # 先检查是否是管理员引用回复待审入群通知消息
+        try:
+            handled = await MembershipMixin._handle_join_reply(self, event)
+            if handled:
+                event.stop_event()
+                return
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 入群审核回复处理出错: {e}")
+        # 正常的消息审核流程
         async for item in ModerationMixin._handle_message(self, event):
             yield item
 

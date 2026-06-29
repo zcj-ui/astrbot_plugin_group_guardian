@@ -45,6 +45,32 @@ class UtilitiesMixin:
         'forward':     lambda d: '[合并转发消息]',
     }
 
+    def _get_reply_message_id(self, event) -> str:
+        """从消息事件中提取被回复消息的 message_id。
+
+        遍历消息链，找到 reply 类型段后返回其 id 字段。
+        用于检测管理员是否引用了待审通知消息进行回复。
+
+        Args:
+            event: 消息事件对象
+
+        Returns:
+            str: 被回复消息的 ID，无回复时返回空字符串
+        """
+        try:
+            chain = event.get_messages() or []
+        except Exception:
+            chain = []
+        for seg in chain:
+            if isinstance(seg, dict):
+                if seg.get("type") == "reply":
+                    return str((seg.get("data", {}) or {}).get("id", ""))
+            else:
+                seg_cls = type(seg).__name__
+                if seg_cls == "Reply" or (hasattr(seg, "type") and getattr(seg, "type", "") == "reply"):
+                    return str(getattr(seg, "id", "") or "")
+        return ""
+
     def _sync_astrbot_admins(self) -> None:
         # 从 AstrBot 主配置读取 admin_id，补充到插件管理员名单（DB managed_lists + 内存），统一管理员来源。
         try:

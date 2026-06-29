@@ -9,6 +9,8 @@
 规则来源：优先读 SQLite(join_audit_rules) 中该群规则，其次 'default' 全局规则，
 最后回退到 _conf_schema.json 的全局配置项。所有动作写入审核日志。
 """
+import time
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
@@ -122,6 +124,11 @@ class MembershipMixin:
             self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群拒绝", "默认拒绝", [])
             await self._notify_join_audit(group_id, user_id, comment, False, "默认拒绝")
             return True
+        elif default_action == "manual":
+            # 转人工：发送待审通知到群，等待管理员引用回复审核
+            await self._send_pending_join_notification(group_id, user_id, comment, flag, sub_type)
+            self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "转人工审核", "等待管理员处理", [])
+            return True
         return False
 
     async def _notify_join_audit(self, group_id: str, user_id: str, comment: str, approved: bool, reason: str) -> None:
@@ -138,6 +145,168 @@ class MembershipMixin:
                     await client.call_action("send_group_msg", group_id=gid_int, message=text)
         except Exception as e:
             logger.debug(f"[GroupMgr] 入群审核通知发送失败: {e}")
+
+    async def _send_pending_join_notification(self, group_id: str, user_id: str, comment: str, flag: str, sub_type: str) -> None:
+        """发送待审通知到群，并存储待审请求信息供管理员引用回复审核。
+
+        Args:
+            group_id: 群号
+            user_id: 申请人QQ号
+            comment: 验证信息
+            flag: OneBot 加群请求的 flag 标识
+            sub_type: 请求类型（add/invite）
+        """
+        gid_int = self._safe_int(group_id, 0)
+        if not gid_int:
+            return
+        try:
+            # 获取申请人信息（昵称和QQ等级）
+            nickname, qq_level = await self._get_user_info(user_id)
+            # 构建待审通知消息
+            level_text = f"QQ等级: {qq_level}" if qq_level else "QQ等级: 未知"
+            text = (
+                f"[入群审核] 收到新的加群申请\n"
+                f"申请人: {nickname}({user_id})\n"
+                f"{level_text}\n"
+                f"验证信息: {comment[:100] if comment else '无'}\n"
+                f"请管理员引用此消息回复「通过」或「拒绝 [原因]」进行审核"
+            )
+            client = await self._get_client()
+            if not client:
+                return
+            # 发送通知到群
+            result = await client.call_action("send_group_msg", group_id=gid_int, message=text)
+            result = self._extract_data_result(result)
+            # 提取发送成功的消息 ID
+            msg_id = ""
+            if isinstance(result, dict):
+                msg_id = str(result.get("message_id", "") or result.get("id", ""))
+            if not msg_id:
+                logger.debug(f"[GroupMgr] 发送待审通知失败: 无法获取 message_id")
+                return
+            # 存储待审请求信息，供管理员引用回复时使用
+            pending_key = f"{group_id}:{msg_id}"
+            self._pending_join_requests[pending_key] = {
+                "user_id": user_id,
+                "flag": flag,
+                "sub_type": sub_type,
+                "comment": comment,
+                "nickname": nickname,
+                "timestamp": int(time.time()),
+            }
+            # 限制待审请求数量，防止内存泄漏（保留最近 100 条）
+            if len(self._pending_join_requests) > 100:
+                # 按时间戳排序，删除最旧的
+                sorted_items = sorted(self._pending_join_requests.items(), key=lambda x: x[1].get("timestamp", 0))
+                for old_key, _ in sorted_items[:20]:
+                    del self._pending_join_requests[old_key]
+            logger.debug(f"[GroupMgr] 已存储待审请求: {pending_key}")
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 发送待审通知失败: {e}")
+
+    async def _get_user_info(self, user_id: str) -> tuple:
+        """获取用户昵称和QQ等级（通过 OneBot API 获取陌生人信息）。
+
+        Args:
+            user_id: 用户QQ号
+
+        Returns:
+            tuple: (昵称, QQ等级)，失败时返回 (QQ号, 0)
+        """
+        uid_int = self._safe_int(user_id, 0)
+        if not uid_int:
+            return user_id, 0
+        try:
+            client = await self._get_client()
+            if not client:
+                return user_id, 0
+            result = await client.call_action("get_stranger_info", user_id=uid_int)
+            result = self._extract_data_result(result)
+            if isinstance(result, dict):
+                nickname = result.get("nickname", "") or result.get("name", "") or user_id
+                qq_level = self._safe_int(result.get("level", 0), 0)
+                return nickname, qq_level
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 获取用户信息失败: {e}")
+        return user_id, 0
+
+    async def _handle_join_reply(self, event: AstrMessageEvent) -> bool:
+        """处理管理员引用回复待审通知消息的审核操作。
+
+        当管理员引用一条待审通知消息并回复「通过」或「拒绝 [原因]」时，
+        自动处理加群申请。
+
+        Args:
+            event: 消息事件对象
+
+        Returns:
+            bool: 是否已处理（True 表示已处理，应 stop_event）
+        """
+        # 检查是否为群消息
+        group_id = self._get_group_id(event)
+        if not group_id:
+            return False
+        # 检查操作者是否为管理员
+        if not await self._is_admin(event):
+            return False
+        # 获取被回复消息的 ID
+        reply_msg_id = self._get_reply_message_id(event)
+        if not reply_msg_id:
+            return False
+        # 检查是否为待审通知消息
+        pending_key = f"{group_id}:{reply_msg_id}"
+        pending_info = self._pending_join_requests.get(pending_key)
+        if not pending_info:
+            return False
+        # 获取回复内容
+        reply_text = event.message_str.strip()
+        if not reply_text:
+            return False
+        # 解析审核动作
+        approve = None
+        reject_reason = ""
+        if reply_text.startswith("通过") or reply_text == "同意" or reply_text == "批准":
+            approve = True
+        elif reply_text.startswith("拒绝"):
+            approve = False
+            # 提取拒绝原因（「拒绝」后面的内容）
+            reject_reason = reply_text[2:].strip()
+            if not reject_reason:
+                reject_reason = "管理员拒绝"
+        else:
+            # 不是审核指令，不处理
+            return False
+        # 从存储中获取待审请求信息
+        user_id = pending_info.get("user_id", "")
+        flag = pending_info.get("flag", "")
+        sub_type = pending_info.get("sub_type", "add")
+        # 移除已处理的待审请求
+        del self._pending_join_requests[pending_key]
+        # 执行审核操作
+        try:
+            await self._process_group_request(event, flag, sub_type, approve, reject_reason)
+            # 记录审核日志
+            action_text = "入群通过" if approve else "入群拒绝"
+            reason_text = "管理员手动通过" if approve else f"管理员手动拒绝: {reject_reason}"
+            self._log_moderation(group_id, user_id, pending_info.get("nickname", ""),
+                                 f"[加群申请] {pending_info.get('comment', '')}",
+                                 action_text, reason_text, [])
+            # 发送审核结果通知
+            operator_id = self._try_get_sender_id(event)
+            if approve:
+                notice = f"[入群审核] {user_id} 的申请已被 {operator_id} 通过"
+            else:
+                notice = f"[入群审核] {user_id} 的申请已被 {operator_id} 拒绝\n原因: {reject_reason}"
+            # 发送通知到群
+            gid_int = self._safe_int(group_id, 0)
+            if gid_int:
+                client = await self._get_client()
+                if client:
+                    await client.call_action("send_group_msg", group_id=gid_int, message=notice)
+            return True
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 处理管理员审核失败: {e}")
+            return False
 
     async def _process_group_request(self, event: AstrMessageEvent, flag: str, sub_type: str,
                                      approve: bool, reason: str = "") -> bool:
