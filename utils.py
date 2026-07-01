@@ -71,6 +71,37 @@ class UtilitiesMixin:
                     return str(getattr(seg, "id", "") or "")
         return ""
 
+    def _extract_plain_text(self, event) -> str:
+        """提取消息事件中的纯文本内容（仅拼接 text 段，忽略 @/回复/图片等段）。
+
+        用于入群审核回复判定：当管理员「@机器人 通过」时，event.message_str 可能
+        含 @ 前缀导致 startswith("通过") 失败，这里只取 text 段保证关键字命中。
+
+        Args:
+            event: 消息事件对象
+
+        Returns:
+            str: 去除首尾空白后的纯文本
+        """
+        try:
+            chain = event.get_messages() or []
+        except Exception:
+            chain = []
+        parts = []
+        for seg in chain:
+            if isinstance(seg, dict):
+                if seg.get("type") == "text":
+                    parts.append((seg.get("data", {}) or {}).get("text", ""))
+            else:
+                seg_type = getattr(seg, "type", "") or type(seg).__name__
+                if seg_type == "text" or seg_type == "Text":
+                    data = getattr(seg, "data", None)
+                    if isinstance(data, dict):
+                        parts.append(data.get("text", ""))
+                    else:
+                        parts.append(str(getattr(seg, "text", "") or ""))
+        return "".join(parts).strip()
+
     def _sync_astrbot_admins(self) -> None:
         # 从 AstrBot 主配置读取 admin_id，补充到插件管理员名单（DB managed_lists + 内存），统一管理员来源。
         try:

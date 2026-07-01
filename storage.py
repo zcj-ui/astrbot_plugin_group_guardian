@@ -226,6 +226,21 @@ class SQLiteStorage:
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_group_configs_group ON group_configs(group_id)")
+        # 待审入群请求：持久化管理员待审通知的 message_id → 加群申请 flag 映射，
+        # 避免机器人重启后内存字典清空导致"引用回复通过/拒绝"功能失效。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pending_join_requests ("
+            "pending_key TEXT PRIMARY KEY, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "flag TEXT NOT NULL, "
+            "sub_type TEXT NOT NULL DEFAULT 'add', "
+            "comment TEXT, "
+            "nickname TEXT, "
+            "timestamp INTEGER NOT NULL"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_join_group ON pending_join_requests(group_id)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -1268,6 +1283,51 @@ class SQLiteStorage:
             )
             conn.commit()
         return bool(cur.rowcount)
+
+    # ============================================================
+    # 待审入群请求 pending_join_requests：持久化 message_id→flag 映射，
+    # 让"引用回复通过/拒绝"在机器人重启后依然可用
+    # ============================================================
+    def save_pending_join_request(self, pending_key: str, group_id: str, user_id: str,
+                                  flag: str, sub_type: str = "add", comment: str = "",
+                                  nickname: str = "", timestamp: int = 0) -> None:
+        """保存一条待审入群请求，供管理员引用回复时查找 flag。"""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO pending_join_requests("
+                "pending_key, group_id, user_id, flag, sub_type, comment, nickname, timestamp"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(pending_key), str(group_id), str(user_id), str(flag),
+                 str(sub_type), str(comment), str(nickname), int(timestamp or time.time()))
+            )
+            conn.commit()
+
+    def load_pending_join_requests(self) -> dict:
+        """加载全部待审入群请求，返回 {pending_key: {...}} 字典供启动时回填内存。"""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT pending_key, group_id, user_id, flag, sub_type, comment, nickname, timestamp "
+                "FROM pending_join_requests"
+            ).fetchall()
+        return {
+            r["pending_key"]: {
+                "user_id": r["user_id"],
+                "flag": r["flag"],
+                "sub_type": r["sub_type"],
+                "comment": r["comment"] or "",
+                "nickname": r["nickname"] or "",
+                "timestamp": int(r["timestamp"] or 0),
+            }
+            for r in rows
+        }
+
+    def delete_pending_join_request(self, pending_key: str) -> None:
+        """删除已处理或失效的待审入群请求。"""
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM pending_join_requests WHERE pending_key=?", (str(pending_key),)
+            )
+            conn.commit()
 
     # ============================================================
     # v2.4.0 新增：群级 bot 权限黑名单 group_admin_block

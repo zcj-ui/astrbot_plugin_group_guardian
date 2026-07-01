@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.4.5 - 2026-07-01
+
+### Bug 修复
+
+- **[Critical] 入群审核"引用回复通过/拒绝"功能失效**: 待审入群请求信息仅存在内存字典 `_pending_join_requests` 中，机器人重启后清空，导致管理员引用旧待审通知消息回复"通过"/"拒绝"时找不到对应加群申请 flag，消息落入 LLM 回复"没这功能"。改为持久化到 SQLite 新表 `pending_join_requests`，启动时从 DB 回填内存字典，重启后引用回复审核依然可用
+- **@机器人 + 审核指令关键字不识别**: 管理员回复"@机器人 通过"时，`event.message_str` 含 @ 前缀导致 `startswith("通过")` 命中失败。新增 `_extract_plain_text(event)` 仅提取 text 段，忽略 @/回复/图片等段，保证审核关键字命中
+- **入群审核回复处理增加诊断日志**: `_handle_join_reply` 在各早返回点（非管理员/未找到待审请求/非审核指令）补充 debug 日志，便于后续排查
+
+### 优化
+
+- **WebUI 表头滚动消失**: 命令权限配置表、指令列表表滚动时表头随内容滚走。新增 `.rules-table-wrap .log-table thead th` 的 `position:sticky` 样式，表头固定可见
+- **权限变更日志信息过简**: 原日志仅记录"WebUI管理员 命令 设置管理"看不出具体变更。改为记录"旧值→新值"格式（如"权限级别: 群管理员(3) → 群主(2); 启用状态: 是 → 否"），同时修复前端字段名不匹配 bug（`created_at`→`timestamp`、`action`→`change_type`、`detail`→`details`），后端补传 `old_level`/`new_level`/`old_enabled`/`new_enabled` 结构化字段
+
 ## v2.4.4 - 2026-07-01
 
 ### 重构

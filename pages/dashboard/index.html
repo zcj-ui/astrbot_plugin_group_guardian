@@ -179,6 +179,8 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
 .log-table th{background:var(--info-light);padding:8px 10px;text-align:left;font-weight:500;color:var(--text-secondary);border-bottom:1px solid var(--border);white-space:nowrap}
 .log-table td{padding:7px 10px;border-bottom:1px solid var(--border);vertical-align:top}
 .log-table tr:hover td{background:var(--info-light)}
+/* 滚动容器内的表头固定：sticky 定位使 thead 在垂直滚动时保持可见 */
+.rules-table-wrap .log-table thead th{position:sticky;top:0;z-index:10;background:var(--info-light)}
 .reason-cell{max-width:150px;font-size:11px;color:var(--text-muted)}
 .badge{display:inline-block;padding:2px 7px;border-radius:10px;font-size:10px;font-weight:500;white-space:nowrap}
 .badge-danger{background:var(--danger-light);color:var(--danger)}
@@ -3548,12 +3550,55 @@ async function loadCmdListLogs() {
   container.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('command_permissions/logs', { limit: 50 });
   if (isApiError(res) || !res || !res.length) { container.innerHTML = '<p class="empty">暂无日志</p>'; return; }
+  // 权限级别数值 → 可读名称（与后端 _perm_level_label 保持一致）
+  var levelName = function(lv) {
+    if (lv === null || lv === undefined || lv === '') return '未配置';
+    return CMD_PERM_LEVELS[lv] || ('级别' + lv);
+  };
+  // 启用状态 → 可读文本
+  var enabledText = function(en) {
+    if (en === null || en === undefined || en === '') return '未配置';
+    return en ? '启用' : '禁用';
+  };
+  // change_type → 中文动作描述
+  var changeText = {update:'修改配置', delete:'删除配置', group_override:'群覆盖配置', group_override_delete:'删除群覆盖', import:'批量导入'};
+  // Unix 时间戳 → 可读时间
+  var fmtTime = function(ts) {
+    if (!ts) return '';
+    var d = new Date(ts * 1000);
+    var pad = function(n){return n<10?'0'+n:n;};
+    return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+' '+pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+  };
   container.innerHTML = res.map(function(log) {
-    return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' +
-      '<span class="rules-subtle">' + esc(log.created_at || '') + '</span> ' +
-      '<span>' + esc(log.operator || '系统') + ' ' + esc(log.action || '') + ' 命令 <strong>' + esc(log.command || '') + '</strong></span>' +
-      (log.detail ? '<br><span class="rules-subtle">' + esc(log.detail) + '</span>' : '') +
-      '</div>';
+    var action = changeText[log.change_type] || log.change_type || '';
+    // 第一行：时间 + 操作人 + 动作 + （群号）+ 命令
+    var head = '<span class="rules-subtle">' + esc(fmtTime(log.timestamp)) + '</span> ' +
+      '<strong>' + esc(log.operator || '系统') + '</strong> ' + esc(action) +
+      (log.group_id ? '（群 ' + esc(log.group_id) + '）' : '') +
+      ' 命令 <strong>' + esc(log.command || '') + '</strong>';
+    // 第二行：结构化变更明细（旧值→新值），无结构化数据时回退到 details 文本
+    var changes = [];
+    var hasOldLevel = log.old_level !== null && log.old_level !== undefined;
+    var hasNewLevel = log.new_level !== null && log.new_level !== undefined;
+    if (hasOldLevel || hasNewLevel) {
+      if (log.old_level !== log.new_level) {
+        changes.push('权限级别: ' + levelName(log.old_level) + ' → ' + levelName(log.new_level));
+      }
+    }
+    var hasOldEn = log.old_enabled !== null && log.old_enabled !== undefined;
+    var hasNewEn = log.new_enabled !== null && log.new_enabled !== undefined;
+    if (hasOldEn || hasNewEn) {
+      if (log.old_enabled !== log.new_enabled) {
+        changes.push('启用状态: ' + enabledText(log.old_enabled) + ' → ' + enabledText(log.new_enabled));
+      }
+    }
+    var detailHtml = '';
+    if (changes.length) {
+      detailHtml = '<br><span class="rules-subtle">' + changes.map(esc).join('；') + '</span>';
+    } else if (log.details) {
+      detailHtml = '<br><span class="rules-subtle">' + esc(log.details) + '</span>';
+    }
+    return '<div style="padding:8px 0;border-bottom:1px solid var(--border);font-size:13px">' + head + detailHtml + '</div>';
   }).join('');
 }
 

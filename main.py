@@ -110,7 +110,14 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
         self._start_scheduler()
         # 待审入群请求存储：{群号:消息ID: {user_id, flag, sub_type, comment, nickname, timestamp}}
         # 用于管理员引用回复待审通知消息时快速查找对应的加群申请信息
-        self._pending_join_requests = {}
+        # v2.4.5 起：从 DB 回填，避免机器人重启后内存清空导致引用回复审核失效
+        try:
+            self._pending_join_requests = self._storage.load_pending_join_requests()
+            if self._pending_join_requests:
+                logger.info(f"[GroupMgr] 已从 DB 恢复 {len(self._pending_join_requests)} 条待审入群请求")
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 加载待审入群请求失败: {e}")
+            self._pending_join_requests = {}
 
     async def terminate(self):
         if self._rebuild_task and not self._rebuild_task.done():

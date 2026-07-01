@@ -211,20 +211,32 @@ class MembershipMixin:
                 return
             # 存储待审请求信息，供管理员引用回复时使用
             pending_key = f"{group_id}:{msg_id}"
+            now_ts = int(time.time())
             self._pending_join_requests[pending_key] = {
                 "user_id": user_id,
                 "flag": flag,
                 "sub_type": sub_type,
                 "comment": comment,
                 "nickname": nickname,
-                "timestamp": int(time.time()),
+                "timestamp": now_ts,
             }
+            # 同步写入 DB，保证机器人重启后引用回复审核依然可用
+            try:
+                self._storage.save_pending_join_request(
+                    pending_key, group_id, user_id, flag, sub_type, comment, nickname, now_ts
+                )
+            except Exception as ex:
+                logger.debug(f"[GroupMgr] 待审请求写 DB 失败: {ex}")
             # 限制待审请求数量，防止内存泄漏（保留最近 100 条）
             if len(self._pending_join_requests) > 100:
                 # 按时间戳排序，删除最旧的
                 sorted_items = sorted(self._pending_join_requests.items(), key=lambda x: x[1].get("timestamp", 0))
                 for old_key, _ in sorted_items[:20]:
                     del self._pending_join_requests[old_key]
+                    try:
+                        self._storage.delete_pending_join_request(old_key)
+                    except Exception:
+                        pass
             logger.debug(f"[GroupMgr] 已存储待审请求: {pending_key}")
         except Exception as e:
             logger.debug(f"[GroupMgr] 发送待审通知失败: {e}")
@@ -273,6 +285,7 @@ class MembershipMixin:
             return False
         # 检查操作者是否为管理员
         if not await self._is_admin(event):
+            logger.debug(f"[GroupMgr] 入群审核回复: 操作者非管理员，跳过")
             return False
         # 获取被回复消息的 ID
         reply_msg_id = self._get_reply_message_id(event)
@@ -282,9 +295,13 @@ class MembershipMixin:
         pending_key = f"{group_id}:{reply_msg_id}"
         pending_info = self._pending_join_requests.get(pending_key)
         if not pending_info:
+            logger.debug(f"[GroupMgr] 入群审核回复: 未找到待审请求 {pending_key}（可能已处理或重启前未持久化）")
             return False
-        # 获取回复内容
-        reply_text = event.message_str.strip()
+        # 获取回复内容：只取 text 段，避免 @机器人 前缀导致关键字命中失败
+        reply_text = self._extract_plain_text(event)
+        if not reply_text:
+            # 回退到 message_str，兼容部分适配器
+            reply_text = (event.message_str or "").strip()
         if not reply_text:
             return False
         # 解析审核动作
@@ -300,13 +317,18 @@ class MembershipMixin:
                 reject_reason = "管理员拒绝"
         else:
             # 不是审核指令，不处理
+            logger.debug(f"[GroupMgr] 入群审核回复: 回复内容「{reply_text[:30]}」不是审核指令，跳过")
             return False
         # 从存储中获取待审请求信息
         user_id = pending_info.get("user_id", "")
         flag = pending_info.get("flag", "")
         sub_type = pending_info.get("sub_type", "add")
-        # 移除已处理的待审请求
+        # 移除已处理的待审请求（内存 + DB 同步删除）
         del self._pending_join_requests[pending_key]
+        try:
+            self._storage.delete_pending_join_request(pending_key)
+        except Exception as ex:
+            logger.debug(f"[GroupMgr] 删除待审请求 DB 记录失败: {ex}")
         # 执行审核操作
         try:
             await self._process_group_request(event, flag, sub_type, approve, reject_reason)
