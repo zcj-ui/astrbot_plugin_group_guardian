@@ -3225,7 +3225,7 @@ function renderGroupCfgItems(items) {
 
 // 命令权限管理
 var CMD_PERMS_CACHE = [];
-var CMD_PERM_LEVELS = {-1: '未配置（需设置）', 0: '插件管理员', 1: '群超管', 2: '群主', 3: '群管理员', 4: '所有成员'};
+var CMD_PERM_LEVELS = {'-1': '未配置（需设置）', 0: '插件管理员', 1: '群超管', 2: '群主', 3: '群管理员', 4: '所有成员'};
 var CMD_PERM_CATEGORIES = ['审核管理', '群管理', '成员管理', '信息查询', '批量操作', '插件配置', '消息撤回', '其他'];
 
 async function loadCommandPermissions() {
@@ -3399,7 +3399,7 @@ async function loadGroupCommandPermissions() {
 
 // 指令列表 Tab
 var CMD_LIST_CACHE = [];
-var CMD_LIST_LEVELS = {-1: '未配置（需设置）', 0: '插件管理员', 1: '群超管', 2: '群主', 3: '群管理员', 4: '所有成员'};
+var CMD_LIST_LEVELS = {'-1': '未配置（需设置）', 0: '插件管理员', 1: '群超管', 2: '群主', 3: '群管理员', 4: '所有成员'};
 var CMD_LIST_CATEGORIES = ['审核管理', '群管理', '成员管理', '信息查询', '批量操作', '插件配置', '消息撤回', '其他'];
 
 async function loadCmdList() {
