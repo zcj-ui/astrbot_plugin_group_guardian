@@ -241,6 +241,23 @@ class SQLiteStorage:
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_join_group ON pending_join_requests(group_id)")
+        # 进群确认：记录进群后待确认公告的用户，确认群公告后自动解禁
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS join_confirmations ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "nickname TEXT, "
+            "banned_at INTEGER NOT NULL, "
+            "notice_msg_id TEXT, "
+            "initial_read_num INTEGER DEFAULT 0, "
+            "status TEXT NOT NULL DEFAULT 'pending', "
+            "confirmed_at INTEGER, "
+            "UNIQUE(group_id, user_id)"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_join_confirm_group ON join_confirmations(group_id)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_join_confirm_status ON join_confirmations(status)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -1766,3 +1783,93 @@ class SQLiteStorage:
             "skipped": skipped_count,
             "errors": error_count,
         }
+
+    # ============================================================
+    # 进群确认 join_confirmations：记录进群后待确认公告的用户
+    # ============================================================
+    def save_join_confirmation(self, group_id: str, user_id: str, nickname: str = "",
+                                notice_msg_id: str = "", initial_read_num: int = 0) -> bool:
+        """保存一条进群确认记录（用户进群后被禁言，等待确认群公告）"""
+        now = int(time.time())
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO join_confirmations("
+                "group_id, user_id, nickname, banned_at, notice_msg_id, initial_read_num, status"
+                ") VALUES(?, ?, ?, ?, ?, ?, 'pending')",
+                (str(group_id), str(user_id), str(nickname), now, str(notice_msg_id), initial_read_num)
+            )
+            conn.commit()
+        return True
+
+    def get_pending_confirmation(self, group_id: str, user_id: str) -> Optional[dict]:
+        """获取某群某用户的待确认记录"""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, group_id, user_id, nickname, banned_at, notice_msg_id, initial_read_num, status, confirmed_at "
+                "FROM join_confirmations WHERE group_id=? AND user_id=? AND status='pending'",
+                (str(group_id), str(user_id))
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "group_id": row["group_id"],
+            "user_id": row["user_id"],
+            "nickname": row["nickname"] or "",
+            "banned_at": row["banned_at"],
+            "notice_msg_id": row["notice_msg_id"] or "",
+            "initial_read_num": row["initial_read_num"] or 0,
+            "status": row["status"],
+            "confirmed_at": row["confirmed_at"],
+        }
+
+    def confirm_join_user(self, group_id: str, user_id: str) -> bool:
+        """标记用户已确认群公告"""
+        now = int(time.time())
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE join_confirmations SET status='confirmed', confirmed_at=? "
+                "WHERE group_id=? AND user_id=? AND status='pending'",
+                (now, str(group_id), str(user_id))
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def list_pending_confirmations(self, group_id: str = "") -> List[dict]:
+        """列出所有待确认的进群用户"""
+        with self._connect() as conn:
+            if group_id:
+                rows = conn.execute(
+                    "SELECT id, group_id, user_id, nickname, banned_at, notice_msg_id, initial_read_num, status, confirmed_at "
+                    "FROM join_confirmations WHERE group_id=? AND status='pending' ORDER BY banned_at DESC",
+                    (str(group_id),)
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id, group_id, user_id, nickname, banned_at, notice_msg_id, initial_read_num, status, confirmed_at "
+                    "FROM join_confirmations WHERE status='pending' ORDER BY banned_at DESC"
+                ).fetchall()
+        return [
+            {
+                "id": r["id"],
+                "group_id": r["group_id"],
+                "user_id": r["user_id"],
+                "nickname": r["nickname"] or "",
+                "banned_at": r["banned_at"],
+                "notice_msg_id": r["notice_msg_id"] or "",
+                "initial_read_num": r["initial_read_num"] or 0,
+                "status": r["status"],
+                "confirmed_at": r["confirmed_at"],
+            }
+            for r in rows
+        ]
+
+    def delete_join_confirmation(self, group_id: str, user_id: str) -> bool:
+        """删除进群确认记录"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM join_confirmations WHERE group_id=? AND user_id=?",
+                (str(group_id), str(user_id))
+            )
+            conn.commit()
+        return bool(cur.rowcount)

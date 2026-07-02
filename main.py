@@ -733,6 +733,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
                 return
         except Exception as e:
             logger.warning(f"[GroupMgr] 入群审核回复处理出错: {e}")
+        
         # 正常的消息审核流程
         async for item in ModerationMixin._handle_message(self, event):
             yield item
@@ -749,6 +750,19 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
                 event.stop_event()
         except Exception as e:
             logger.warning(f"[GroupMgr] 入群审核出错: {e}")
+
+    # 进群确认公告：监听成员进群事件
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def _on_group_increase(self, event: AiocqhttpMessageEvent):
+        if not self._is_group_increase_event(event):
+            return
+        try:
+            handled = await MembershipMixin._handle_group_increase(self, event)
+            if handled:
+                event.stop_event()
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 进群确认出错: {e}")
 
     # F2 私聊申诉裁决：私聊消息且发送者有 waiting 申诉时进入。
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)

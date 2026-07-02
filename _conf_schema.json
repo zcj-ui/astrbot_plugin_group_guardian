@@ -589,5 +589,29 @@
         "type": "bool",
         "default": true,
         "hint": "保持历史行为：白名单内（或未设白名单且非黑名单）群的群主/管理员默认可用群管命令（仅本群，非插件全局管理员）。若只想用F5按群精细授权，可关闭此项"
+    },
+    "join_ban_confirm_enabled": {
+        "description": "进群确认公告功能开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后新成员进群会被自动禁言30天，并发送提醒消息要求确认置顶群公告，确认后自动解禁"
+    },
+    "join_ban_confirm_duration": {
+        "description": "进群确认禁言时长（秒）",
+        "type": "int",
+        "default": 2592000,
+        "hint": "进群后自动禁言的时长，默认2592000秒（30天）。用户确认群公告后自动解禁"
+    },
+    "join_ban_confirm_message": {
+        "description": "进群确认提醒消息模板",
+        "type": "text",
+        "default": "欢迎 {name} 加入本群！\n\n请阅读置顶群公告并点击「确认收到」按钮，禁言将自动解除。\n\n注意：未确认前将无法发送消息。",
+        "hint": "支持变量：{name} 用户昵称、{uid} QQ号、{group} 群号。用户点击群公告的「确认收到」按钮后自动解禁"
+    },
+    "join_ban_confirm_check_interval": {
+        "description": "进群确认检查间隔（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "定时检查群公告阅读数变化的间隔，默认60秒。阅读数增加则自动解禁用户"
     }
 }
