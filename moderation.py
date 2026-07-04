@@ -11,6 +11,63 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
 CONTEXT_MESSAGE_MAX_CHARS = 200
 CONTEXT_TOTAL_MAX_CHARS = 3000
 
+# ===== 二维码解码（可选依赖，探测一次并缓存）=====
+_QR_DECODER = None      # 'cv2' | 'pyzbar' | None
+_QR_PROBED = False
+
+
+def _probe_qr_decoder():
+    """探测可用的二维码解码库，结果缓存。优先 opencv（无系统依赖），其次 pyzbar。"""
+    global _QR_DECODER, _QR_PROBED
+    if _QR_PROBED:
+        return _QR_DECODER
+    _QR_PROBED = True
+    try:
+        import cv2  # noqa: F401
+        import numpy  # noqa: F401
+        _QR_DECODER = 'cv2'
+        return _QR_DECODER
+    except Exception:
+        pass
+    try:
+        from pyzbar import pyzbar  # noqa: F401
+        from PIL import Image  # noqa: F401
+        _QR_DECODER = 'pyzbar'
+        return _QR_DECODER
+    except Exception:
+        pass
+    _QR_DECODER = None
+    return None
+
+
+def _decode_qr_from_bytes(data: bytes, decoder: str) -> list:
+    """从图片字节解码二维码，返回文本列表。在线程池中调用（阻塞操作）。"""
+    try:
+        if decoder == 'cv2':
+            import cv2
+            import numpy as np
+            arr = np.frombuffer(data, np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                return []
+            qd = cv2.QRCodeDetector()
+            try:
+                ok, decoded, _pts, _ = qd.detectAndDecodeMulti(img)
+                if ok and decoded:
+                    return [d for d in decoded if d]
+            except Exception:
+                pass
+            d, _pts2, _ = qd.detectAndDecode(img)
+            return [d] if d else []
+        else:  # pyzbar
+            import io as _io
+            from pyzbar import pyzbar
+            from PIL import Image
+            img = Image.open(_io.BytesIO(data))
+            return [o.data.decode('utf-8', 'ignore') for o in pyzbar.decode(img) if o.data]
+    except Exception:
+        return []
+
 
 class _LLMErrorBag:
     """收集 LLM 调用过程中的错误信息，自动去重。"""
@@ -1175,6 +1232,11 @@ class ModerationMixin:
         return ''.join(raw_text_parts).strip(), image_urls, has_forward
 
     async def _apply_ocr(self, text: str, image_urls: list, event: AiocqhttpMessageEvent, group_id: str) -> str:
+        # 二维码解码（独立于 OCR，精确提取二维码里的 URL/文本注入审核管线）
+        if image_urls and self._cfg("qrcode_decode_enabled", False, group_id=group_id):
+            qr_text = await self._decode_qrcodes(image_urls)
+            if qr_text:
+                text = (text + '\n[二维码内容]\n' + qr_text) if text else '[二维码内容]\n' + qr_text
         if image_urls and self._cfg("ocr_enabled", False, group_id=group_id):
             ocr_urls = image_urls
             if not self._cfg("scan_sticker_enabled", True, group_id=group_id):
@@ -1186,6 +1248,58 @@ class ModerationMixin:
         if not text:
             return ""
         return text[:5000]
+
+    async def _decode_qrcodes(self, image_urls: list) -> str:
+        """下载图片并解码其中的二维码，返回解码文本（多张/多码换行拼接）。
+
+        解码器为可选依赖（cv2 或 pyzbar），未安装时静默降级并一次性提示。
+        每张图片限 5MB、10s 超时，最多处理前 3 张；解码在线程池执行避免阻塞事件循环。
+        """
+        decoder = _probe_qr_decoder()
+        if not decoder:
+            if not getattr(self, "_qr_warned", False):
+                self._qr_warned = True
+                logger.warning("[GroupMgr] 已开启二维码解码但解码库(opencv-python-headless)不可用，功能不生效。"
+                               "正常情况下随插件依赖已自动安装；若手动删除过可重装: pip install opencv-python-headless numpy")
+            return ""
+        results = []
+        for url in (image_urls or [])[:3]:
+            data = await self._download_bytes(url)
+            if not data:
+                continue
+            try:
+                loop = asyncio.get_event_loop()
+                texts = await loop.run_in_executor(None, _decode_qr_from_bytes, data, decoder)
+            except Exception as e:
+                logger.debug(f"[GroupMgr] 二维码解码失败: {e}")
+                texts = []
+            for t in texts:
+                if t and t.strip():
+                    results.append(t.strip())
+        if results:
+            logger.info(f"[GroupMgr] 二维码解码命中 {len(results)} 条")
+        return '\n'.join(results)
+
+    @staticmethod
+    async def _download_bytes(url: str, max_bytes: int = 5 * 1024 * 1024, timeout: float = 10.0):
+        if not url or not url.lower().startswith(("http://", "https://")):
+            return None
+        try:
+            import aiohttp
+        except Exception:
+            return None
+        try:
+            async with aiohttp.ClientSession() as sess:
+                async with sess.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.content.read(max_bytes + 1)
+                    if len(data) > max_bytes:
+                        return None
+                    return data
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 下载图片失败({url[:60]}): {e}")
+            return None
 
     def _initial_screening(self, text: str, group_id: str) -> dict:
         hit_types = {k: False for k in ("swear", "ad", "political", "porn", "violent_terror",

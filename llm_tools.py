@@ -77,12 +77,17 @@ class LlmToolsMixin:
             if not ok:
                 yield event.plain_result(err)
                 return
+            # 踢出前先撤回其近期消息（如开启）
+            recalled = await self._maybe_recall_on_kick(client, gid, user_id)
             # reject_add_request=False 表示踢出后允许再次加群；如果为 True 则拉黑
             ok, err = await self._call_group_api(client, 'set_group_kick', "踢人", group_id=gid, user_id=uid, reject_add_request=False)
             if not ok:
                 yield event.plain_result(f"踢人失败: {err}")
                 return
-            yield event.plain_result(f"已将 {user_id} 踢出群聊")
+            msg = f"已将 {user_id} 踢出群聊"
+            if recalled > 0:
+                msg += f"，已撤回 {recalled} 条消息"
+            yield event.plain_result(msg)
         except Exception as e:
             yield event.plain_result(f"踢人失败: {e}")
 
@@ -554,6 +559,7 @@ class LlmToolsMixin:
                     fail += 1
                     await asyncio.sleep(0.1)
                     continue
+                await self._maybe_recall_on_kick(client, gid, uid)
                 done, _e = await self._call_group_api(client, 'set_group_kick', "批量踢人",
                                                       group_id=gid, user_id=uid_int)
                 if done:

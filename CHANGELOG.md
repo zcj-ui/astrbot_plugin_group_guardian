@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.5.2 - 2026-07-04
+
+### 新功能
+
+- **二维码解码审核（真正解码，Issue #26）**：上版仅改了 OCR 提示词——但视觉模型无法真正解码二维码里的 URL。本版新增 `_decode_qrcodes`，用 opencv 精确解码图片/表情包中二维码的实际 URL/文本并注入审核管线，配合广告规则拦截扫码进群/加好友引流。新增 `qrcode_decode_enabled` 配置（默认关，可按群覆盖）。**opencv-python-headless 已加入默认依赖**（无系统依赖、纯 pip 跨平台），开箱即用无需手动安装。经 cv2 真实二维码往返解码验证通过
+- **踢人自动撤回补全全部入口（Issue #15）**：上版只在 `/踢人` 一个入口实现，本版提取共享方法 `_recall_user_recent_msgs`/`_maybe_recall_on_kick`，覆盖 `/踢人`、`/批量踢人`、`kick_group_member` / `batch_kick_members` 两个 LLM 工具全部 4 个入口
+
+### 安全加固（ZhaisirAI 扫描 #25/#32）
+
+- **CSV 公式注入防护**：日志/词库 CSV 导出对以 `= + - @` 开头的单元格前置单引号，防止 Excel/WPS 打开时执行 `=HYPERLINK` 等公式（Major）
+- **移除日志接口 CORS 通配符**：`_web_log_raw_text` 不再设 `Access-Control-Allow-Origin:*`，防止恶意页面跨域读取含用户消息原文的日志（Minor）
+- **OneBot API 统一超时**：`_call_group_api` / `_recall_msg` 增加 20s `asyncio.wait_for`，防止协议端无响应导致协程永久挂起（Minor）
+
+### 关键修复（提前规避 MRO 坑）
+
+- `_maybe_recall_on_kick` 定义在 OneBotMixin 而非 CommandsMixin/LlmToolsMixin——因两处踢人入口都要 `self.` 调用它，而 Main 不继承那两个 Mixin（否则又是 #18/#19/#31 同款 AttributeError 崩溃）
+
 ## v2.5.1 - 2026-07-04
 
 ### 新功能

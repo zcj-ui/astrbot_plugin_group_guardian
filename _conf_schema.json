@@ -505,6 +505,12 @@
         "default": true,
         "hint": "开启后会通过OCR识别商城表情图片内容进行审核（需同时开启OCR）"
     },
+    "qrcode_decode_enabled": {
+        "description": "二维码解码审核开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后精确解码图片/表情包中的二维码，把二维码里的URL/文本注入审核管线（拦截扫码进群/加好友引流）。解码库(opencv)已随插件默认安装，直接开启即可，无需额外配置视觉模型。注意：开启后每条图片消息都会下载并解码，繁忙群聊有一定网络/CPU开销"
+    },
     "word_count_enabled": {
         "description": "字数统计功能开关",
         "type": "bool",

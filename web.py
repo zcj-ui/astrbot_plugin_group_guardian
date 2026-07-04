@@ -74,6 +74,15 @@ class WebMixin:
                 return False
         return default
 
+    @staticmethod
+    def _csv_safe(value) -> str:
+        """CSV 公式注入防护：单元格以 = + - @ 或制表/回车开头时前置单引号，
+        防止 Excel/WPS 打开导出文件时把消息内容当公式执行（如 =HYPERLINK(...)）。"""
+        s = "" if value is None else str(value)
+        if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
+            return "'" + s
+        return s
+
     # 嵌套量词：一个带量词的分组整体又被量词修饰，如 (a+)+ (a*)* (a+)* (\d+)+
     _REDOS_PATTERN = re.compile(r"\([^()]*[+*][^()]*\)\s*[+*]")
 
@@ -638,7 +647,7 @@ class WebMixin:
             writer = csv.writer(output)
             writer.writerow(["id", "category", "keyword"])
             for item in items:
-                writer.writerow([item.get("id"), category, item.get("keyword")])
+                writer.writerow([self._csv_safe(item.get("id")), self._csv_safe(category), self._csv_safe(item.get("keyword"))])
             safe_cat = re.sub(r'[^\w\-]', '_', category)
             filename = f"lexicon_{safe_cat}.csv"
             # 返回 (body, status, headers) 元组让 Quart 直接触发下载，避免依赖未导入的 send_file
@@ -860,8 +869,10 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_log_raw_text(self):
-        # 以纯文本形式返回日志完整正文（text/plain），支持 CORS，用于复制或外部工具调用。
-        _cors = {"Access-Control-Allow-Origin": "*", "Content-Type": "text/plain; charset=utf-8"}
+        # 以纯文本形式返回日志完整正文（text/plain）。
+        # 不再设置 Access-Control-Allow-Origin:*（含用户消息原文，避免恶意页面跨域读取），
+        # 同源的 Dashboard 前端 fetch 不受影响。
+        _cors = {"Content-Type": "text/plain; charset=utf-8"}
         try:
             log_id = quart_request.args.get("id", "").strip()
             if not log_id:
@@ -973,11 +984,11 @@ class WebMixin:
             writer = csv.writer(output)
             writer.writerow(["ID", "时间", "群号", "用户ID", "用户名", "消息内容", "操作", "原因"])
             for l in logs:
-                writer.writerow([
+                writer.writerow([self._csv_safe(x) for x in (
                     l.get("id", ""), l.get("time", ""), l.get("group_id", ""),
                     l.get("user_id", ""), l.get("user_name", ""),
                     l.get("msg_text", ""), l.get("action", ""), l.get("reason", ""),
-                ])
+                )])
             return output.getvalue(), 200, {"Content-Type": "text/csv; charset=utf-8", "Content-Disposition": "attachment; filename=moderation_logs.csv"}
         return jsonify({"status": "success", "data": logs})
 
@@ -1606,6 +1617,12 @@ class WebMixin:
         "scan_forward_msg": "审核规则", "recall_qq_favorite_enabled": "审核规则",
         "ocr_enabled": "OCR", "ocr_prompt_template": "OCR",
         "ocr_custom_system_prompt": "OCR", "ocr_custom_user_prompt": "OCR", "scan_sticker_enabled": "OCR",
+        "qrcode_decode_enabled": "OCR",
+        "member_action_require_group_role": "基础开关",
+        "kick_recall_enabled": "审核规则", "kick_recall_count": "审核规则",
+        "combine_detect_enabled": "重复检测", "combine_detect_count": "重复检测",
+        "combine_detect_window_seconds": "重复检测",
+        "custom_swear_keywords": "审核规则", "custom_ad_keywords": "审核规则",
         "anti_flood_enabled": "防刷屏", "anti_flood_rate_per_second": "防刷屏",
         "anti_flood_rate_per_minute": "防刷屏", "anti_flood_rate_per_hour": "防刷屏",
         "anti_flood_mute_duration": "防刷屏", "anti_flood_recall_enabled": "防刷屏",

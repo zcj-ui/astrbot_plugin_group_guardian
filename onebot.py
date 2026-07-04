@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import inspect
 import time
 from typing import Tuple
@@ -6,6 +7,9 @@ from typing import Tuple
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
+
+# OneBot API 调用统一超时（秒），防止协议端无响应导致协程永久挂起
+ONEBOT_CALL_TIMEOUT = 20.0
 
 
 class OneBotMixin:
@@ -386,12 +390,15 @@ class OneBotMixin:
 
     async def _call_group_api(self, client, action: str, result_name: str = "", **kwargs) -> Tuple[bool, str]:
         # 调用 OneBot API 并用 _check_api_result 统一判断结果（status=failed 或 retcode!=0 视为失败）。
+        # 统一加 20s 超时，防止协议端无响应导致协程永久挂起。
         try:
-            result = await client.call_action(action, **kwargs)
+            result = await asyncio.wait_for(client.call_action(action, **kwargs), timeout=ONEBOT_CALL_TIMEOUT)
             ok, err = self._check_api_result(result, result_name or action)
             if not ok:
                 return False, err
             return True, ""
+        except asyncio.TimeoutError:
+            return False, f"{result_name or action} 超时（协议端 {ONEBOT_CALL_TIMEOUT:.0f}s 无响应）"
         except Exception as e:
             return False, str(e)
 
@@ -403,10 +410,58 @@ class OneBotMixin:
         if not client:
             return
         try:
-            await client.call_action('delete_msg', message_id=mid)
+            await asyncio.wait_for(client.call_action('delete_msg', message_id=mid), timeout=ONEBOT_CALL_TIMEOUT)
         except Exception as e:
             logger.warning(f"[GroupMgr] 撤回消息失败: {e}")
             self._client = None
+
+    async def _maybe_recall_on_kick(self, client, gid, user_id) -> int:
+        """按 kick_recall_enabled 配置在踢人前撤回该成员近期消息，返回撤回条数。
+
+        定义在 OneBotMixin（Main 继承）而非 CommandsMixin/LlmToolsMixin，
+        因为 commands 和 llm_tools 两处踢人入口都要用 self 调用它，
+        而 Main 不继承那两个 Mixin（会 AttributeError，同 #18/#19/#31 坑）。
+        """
+        group_id = str(gid)
+        if not self._cfg("kick_recall_enabled", False, group_id=group_id):
+            return 0
+        recall_count = min(max(self._cfg_int("kick_recall_count", 10, group_id=group_id), 1), 50)
+        return await self._recall_user_recent_msgs(client, gid, user_id, recall_count)
+
+    async def _recall_user_recent_msgs(self, client, group_id, user_id, count: int) -> int:
+        """撤回某用户在群内最近 count 条消息（供踢人自动撤回等复用）。返回实际撤回条数。
+
+        注意：OneBot delete_msg 只能撤回约 2 分钟内的消息，超时的会静默失败。
+        """
+        gid = self._safe_int(group_id, 0)
+        if not gid or not user_id or count <= 0:
+            return 0
+        recalled = 0
+        try:
+            result = await asyncio.wait_for(
+                client.call_action('get_group_msg_history', group_id=gid, count=100),
+                timeout=ONEBOT_CALL_TIMEOUT)
+            result = self._extract_data_result(result)
+            msgs = result.get('messages', []) if isinstance(result, dict) else []
+            # 从最新往回撤，直到够 count 条
+            for msg in reversed(msgs):
+                if recalled >= count:
+                    break
+                sender = msg.get('sender') or {}
+                if str(sender.get('user_id', '')) != str(user_id):
+                    continue
+                mid = msg.get('message_id')
+                if not mid:
+                    continue
+                try:
+                    await asyncio.wait_for(client.call_action('delete_msg', message_id=mid), timeout=ONEBOT_CALL_TIMEOUT)
+                    recalled += 1
+                    await asyncio.sleep(0.3)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 撤回用户近期消息失败({group_id}/{user_id}): {e}")
+        return recalled
 
     async def _kick_member(self, event: AiocqhttpMessageEvent):
         group_id = self._get_group_id(event)
