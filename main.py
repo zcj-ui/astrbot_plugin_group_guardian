@@ -384,6 +384,12 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
         async for item in CommandsMixin.cmd_del_rule_keyword(self, event):
             yield item
 
+    @filter.command("查看违禁词")
+    async def cmd_list_rule_keyword(self, event: AstrMessageEvent):
+        '''查看指令添加的自定义违禁词。用法: /查看违禁词 [脏话|广告]'''
+        async for item in CommandsMixin.cmd_list_rule_keyword(self, event):
+            yield item
+
     # LLM Tool 注册区：工具参数签名和 Args 文档会被 AstrBot 解析，请和 llm_tools.py 的业务函数保持一致。
     # 注意：AstrBot 的 handler 必须使用 yield 发送消息，所以这里用 async for/yield 转发，
     # 不能直接用 return await。如果业务函数最终 yield None，AstrBot 框架会跳过空回复。

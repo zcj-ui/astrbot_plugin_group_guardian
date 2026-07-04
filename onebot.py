@@ -285,6 +285,14 @@ class OneBotMixin:
         if need_admin and not await self._is_admin(event):
             return False, "仅管理员可以使用此功能"
         gid = self._get_group_id(event)
+        # Issue #31：可选严格模式，群管操作指令要求操作者本群角色为群主/群管理员，
+        # 即使是插件全局管理员，在其非群管的群里也不能通过聊天指令禁言/踢人（防止跨群乱操作）。
+        # 仅约束写操作（need_admin=True），查询指令不受影响；WebUI 远程执行走独立路径不受此限。
+        if need_admin and gid and self._cfg("member_action_require_group_role", False, group_id=gid):
+            operator = self._try_get_sender_id(event)
+            role = await self._get_member_role(event, gid, operator) if operator else ""
+            if role not in ("owner", "admin"):
+                return False, "本群已开启严格模式：仅群主或群管理员可通过指令执行群管操作"
         ok, msg = self._cfg_check(cfg_key, feature_name, group_id=gid)
         if not ok:
             return False, msg

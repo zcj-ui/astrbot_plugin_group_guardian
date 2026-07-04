@@ -161,6 +161,12 @@
         "default": true,
         "hint": "关闭后 /踢人 指令和 LLM 踢人工具均不可用"
     },
+    "member_action_require_group_role": {
+        "description": "严格模式：群管指令仅群主/群管理员可用",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后 /禁言 /踢人 /设置名片 等群管指令要求操作者本群角色为群主或群管理员，即使是插件全局管理员在其非群管的群里也不能通过指令操作（防止跨群乱踢人）。查询指令与 WebUI 远程执行不受此限制"
+    },
     "kick_recall_enabled": {
         "description": "踢人时自动撤回该成员最近消息",
         "type": "bool",

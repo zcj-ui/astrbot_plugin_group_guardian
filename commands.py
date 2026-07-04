@@ -955,9 +955,10 @@ class CommandsMixin:
             yield event.plain_result("关键词不能为空且不超过 100 字符")
             return
         try:
-            # 指令语义是"关键词"（字面量），re.escape 后入库，既防 ReDoS 又避免元字符改变语义
+            # 指令语义是"关键词"（字面量），re.escape 后入库，既防 ReDoS 又避免元字符改变语义；
+            # 原始关键词存入 description，供 /查看违禁词 可读展示（pattern 转义后不利于阅读）
             pattern = re.escape(keyword)
-            saved_id = self._storage.save_moderation_rule(category, pattern, "指令添加", True)
+            saved_id = self._storage.save_moderation_rule(category, pattern, f"指令:{keyword}", True)
             self._rebuild_rule_matcher(category)
             self._rule_count_cache = None
             yield event.plain_result(f"已添加{args[1].strip()}违禁词「{keyword}」(ID:{saved_id})，即时生效")
@@ -1004,3 +1005,32 @@ class CommandsMixin:
             yield event.plain_result(f"已删除违禁词「{target}」，即时生效")
         except Exception as e:
             yield event.plain_result(f"删除失败: {e}")
+
+    async def cmd_list_rule_keyword(self, event: AstrMessageEvent):
+        '''查看指令添加的自定义违禁词。用法: /查看违禁词 [脏话|广告]'''
+        if not await self._is_plugin_admin(event):
+            yield event.plain_result("仅插件管理员可以查看违禁词")
+            return
+        args = event.message_str.split()
+        cats = ["swear", "ad"]
+        if len(args) >= 2:
+            c = _RULE_CATEGORY_MAP.get(args[1].strip().lower())
+            if not c:
+                yield event.plain_result("分类无效，仅支持: 脏话 / 广告")
+                return
+            cats = [c]
+        cat_cn = {"swear": "脏话", "ad": "广告"}
+        lines = []
+        for cat in cats:
+            try:
+                # 只列指令添加的（description 以「指令:」开头），避免混入内置规则
+                rules = self._storage.list_moderation_rules(cat, None, "指令:", 200, 0)
+            except Exception as e:
+                yield event.plain_result(f"查询失败: {e}")
+                return
+            words = [r.get("description", "")[3:] for r in rules if str(r.get("description", "")).startswith("指令:")]
+            if words:
+                lines.append(f"【{cat_cn[cat]}】({len(words)}个): " + "、".join(words))
+            else:
+                lines.append(f"【{cat_cn[cat]}】暂无指令添加的违禁词")
+        yield event.plain_result("自定义违禁词（仅显示指令添加的）:\n" + "\n".join(lines))
