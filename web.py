@@ -74,6 +74,13 @@ class WebMixin:
                 return False
         return default
 
+    # 嵌套量词：一个带量词的分组整体又被量词修饰，如 (a+)+ (a*)* (a+)* (\d+)+
+    _REDOS_PATTERN = re.compile(r"\([^()]*[+*][^()]*\)\s*[+*]")
+
+    @classmethod
+    def _is_redos_prone(cls, pattern: str) -> bool:
+        return bool(cls._REDOS_PATTERN.search(pattern or ""))
+
     @staticmethod
     def _config_int_ranges():
         return {
@@ -95,6 +102,9 @@ class WebMixin:
             "appeal_context_count": (1, 500),
             "auto_unban_scan_interval": (10, 3600),
             "auto_unban_permanent_hours": (1, 8760),
+            "combine_detect_count": (2, 20),
+            "combine_detect_window_seconds": (5, 600),
+            "kick_recall_count": (1, 50),
         }
 
     def _normalize_int_config_value(self, key: str, value) -> int:
@@ -673,6 +683,9 @@ class WebMixin:
                 re.compile(pattern, re.IGNORECASE)
             except re.error as e:
                 return jsonify({"status": "error", "message": f"正则无效: {e}"})
+            # 拒绝嵌套量词等易导致灾难性回溯(ReDoS)的结构，防止匹配时阻塞事件循环
+            if self._is_redos_prone(pattern):
+                return jsonify({"status": "error", "message": "正则包含嵌套量词等高风险结构（可能导致卡死），已拒绝。如需纯文本匹配请直接填写字面量"})
             saved_id = self._storage.save_moderation_rule(category, pattern, description, enabled, rule_id)
             if rule_id > 0 and saved_id <= 0:
                 return jsonify({"status": "error", "message": "未找到规则"})

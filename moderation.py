@@ -106,7 +106,10 @@ class ModerationMixin:
         # 处罚冷却：用户刚被刷屏处罚后进入冷却期，期间其积压/后续消息只静默忽略，
         # 不再重复禁言/撤回/记日志/开申诉。这能挡住"处罚已生效但事件队列里还排着该用户
         # 多条消息"导致的重复处罚刷屏（被禁言者其实已发不出新消息）。
-        if self._anti_flood_in_cooldown(group_id, user_id):
+        # 与内容审核处罚互相感知：审核刚禁言的用户，防刷屏不再叠加禁言（仍记录消息用于组合检测/统计）
+        if self._anti_flood_in_cooldown(group_id, user_id) or self._moderation_in_penalty_cooldown(group_id, user_id):
+            raw_message = getattr(getattr(event, 'message_obj', None), 'message', None)
+            self._record_message(group_id, user_id, msg_id, self._format_message_content(raw_message))
             event.stop_event()
             return True, None
         raw_message = getattr(getattr(event, 'message_obj', None), 'message', None)
@@ -990,24 +993,54 @@ class ModerationMixin:
         async for item in self._execute_llm_penalty(event, group_id, user_id, user_name, text, reason, hit_summary, image_urls, extra_recall_ids):
             yield item
 
+    def _combined_in_cooldown(self, group_id: str, user_id: str) -> bool:
+        """组合检测处理冷却：命中后 60 秒内同一用户不重复触发，避免并发重复 LLM 调用与重复撤回。"""
+        store = getattr(self, "_combined_handled", None)
+        if not store:
+            return False
+        until = store.get((group_id, user_id), 0.0)
+        if until <= 0:
+            return False
+        if time.time() >= until:
+            store.pop((group_id, user_id), None)
+            return False
+        return True
+
+    def _mark_combined_handled(self, group_id: str, user_id: str, seconds: int = 60) -> None:
+        store = getattr(self, "_combined_handled", None)
+        if store is None:
+            store = {}
+            self._combined_handled = store
+        now = time.time()
+        store[(group_id, user_id)] = now + seconds
+        # 顺带回收过期项，防止长期残留
+        for k in [k for k, v in store.items() if now >= v]:
+            store.pop(k, None)
+
     def _collect_combined_text(self, event: AiocqhttpMessageEvent, group_id: str, user_id: str, current_text: str) -> Tuple[str, list]:
         """聚合该用户近期消息为组合文本，用于分段规避检测。
 
         复用防刷屏的消息追踪队列（含消息 ID，可撤回）。防刷屏关闭时队列无数据，
         此时把当前消息补录进队列，让组合检测独立生效。
-        返回 (组合文本, 涉及的消息ID列表)；不足 2 条或功能关闭时返回 ("", [])。
+        返回 (组合文本, 需额外撤回的消息ID列表)；不足 2 条 / 功能关闭 / 冷却中返回 ("", [])。
+        额外撤回 ID 不含当前消息（当前消息由处罚流程单独撤回）。
         """
         if not self._cfg("combine_detect_enabled", True, group_id=group_id):
             return "", []
         if not user_id:
             return "", []
+        # 并发去重：命中后 60 秒内不重复处理，避免同一用户多条消息各自触发组合检测
+        if self._combined_in_cooldown(group_id, user_id):
+            return "", []
         count = max(2, min(self._cfg_int("combine_detect_count", 5, group_id=group_id), 20))
         window = max(5, min(self._cfg_int("combine_detect_window_seconds", 60, group_id=group_id), 600))
+        cur_mid = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
         # 防刷屏关闭时队列不会被 _anti_flood_guard 写入，这里补录当前消息
         if not self._cfg("anti_flood_enabled", True, group_id=group_id):
-            msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-            if msg_id:
-                self._record_message(group_id, user_id, msg_id, current_text)
+            if cur_mid:
+                self._record_message(group_id, user_id, cur_mid, current_text)
+            # 防刷屏关闭时 _anti_flood_cleanup 不会被 guard 调用，这里主动清理防内存泄漏（自带 300s 节流）
+            self._anti_flood_cleanup()
         queue = self._anti_flood_data.get(group_id, {}).get(user_id)
         if not queue:
             return "", []
@@ -1020,12 +1053,14 @@ class ModerationMixin:
                 break
             if norm_text:
                 parts.append(norm_text)
-                if mid:
+                # 当前消息由处罚流程单独撤回，不放进额外撤回列表（避免重复撤回置空 client 缓存）
+                if mid and mid != cur_mid:
                     ids.append(mid)
         if len(parts) < 2:
             return "", []
         parts.reverse()
         ids.reverse()
+        self._mark_combined_handled(group_id, user_id)
         # 双拼接：带空格版保留词边界，无缝版捕捉逐字拆分
         seamless = ''.join(parts)
         spaced = ' '.join(parts)
@@ -1184,7 +1219,9 @@ class ModerationMixin:
             msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
             await self._recall_msg(event, msg_id)
             await self._recall_extra_messages(event, extra_recall_ids)
-            if self._moderation_in_penalty_cooldown(group_id, user_id):
+            # 审核处罚与防刷屏处罚互相感知：任一冷却期内只撤回不重复禁言，
+            # 防止后到的短时禁言覆盖先到的长时禁言、或解禁计划被 REPLACE 缩短
+            if self._moderation_in_penalty_cooldown(group_id, user_id) or self._anti_flood_in_cooldown(group_id, user_id):
                 self._log_moderation(group_id, user_id, user_name, text, "撤回", reason, image_urls)
                 event.stop_event()
                 return
@@ -1212,7 +1249,8 @@ class ModerationMixin:
                 except Exception as recall_err:
                     logger.warning(f"[GroupMgr] 撤回消息失败: {recall_err}")
             await self._recall_extra_messages(event, extra_recall_ids)
-            if self._moderation_in_penalty_cooldown(group_id, user_id):
+            # 与防刷屏处罚互相感知，避免重复/覆盖禁言（详见 _execute_rule_penalty 注释）
+            if self._moderation_in_penalty_cooldown(group_id, user_id) or self._anti_flood_in_cooldown(group_id, user_id):
                 self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
                 event.stop_event()
                 return

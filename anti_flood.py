@@ -21,7 +21,8 @@ class AntiFloodMixin:
         * 三档独立速率：每秒 / 每分钟 / 每小时，单档设为 0 即关闭
         * 可选夜间独立阈值：按本机时区判断小时，夜间开启后覆盖日间三档上限
         * 所有消息类型均计入（文本/图片/转发/QQ 收藏/JSON/App）
-        * 管理员完全豁免（在 moderation.py 管线中提前 return）
+        * 管理员完全豁免（moderation.py 的 _anti_flood_guard 内部检查 _is_admin 后提前 return，
+          请勿删除该检查，_handle_message 的管理员豁免在此之后不足以保护防刷屏）
     """
 
     def _init_anti_flood(self) -> None:

@@ -73,6 +73,10 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
         # WebUI 慢接口缓存：群列表/成员列表依赖 OneBot API，短 TTL 避免页面切换时反复阻塞。
         self._web_group_cache = {"ts": 0.0, "data": []}
         self._web_member_cache = {}
+        # WebUI 规则数量缓存（30s TTL），规则变更时置 None 失效
+        self._rule_count_cache = None
+        # 组合消息检测处理冷却表：{(group_id, user_id): 到期时间戳}
+        self._combined_handled = {}
         # LLM 并发信号量：同一时刻最多 5 个 LLM 请求，防止所有 provider 被填满
         self._llm_semaphore = asyncio.Semaphore(5)
         # 防刷屏追踪数据结构
@@ -162,6 +166,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
                     logger.error("[GroupMgr] 后台重建连续失败 5 次，放弃本轮，请检查数据库后手动触发")
                     break
                 await asyncio.sleep(2 ** failures)
+                continue  # 退避后强制重试整个 try 块（否则会落到下方 break 直接退出）
             if not self._rebuild_pending:
                 break
 

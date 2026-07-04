@@ -390,6 +390,23 @@ class SQLiteStorage:
             conn.commit()
         return int(cur.rowcount or 0)
 
+    def get_moderation_rule(self, rule_id: int) -> Optional[dict]:
+        # 按 id 查询单条规则，返回 dict（含 category），用于删除前校验分类归属。
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id, category, pattern, enabled, description FROM moderation_rules WHERE id=?",
+                (int(rule_id),),
+            ).fetchone()
+        if not row:
+            return None
+        return {
+            "id": row["id"],
+            "category": row["category"],
+            "pattern": row["pattern"],
+            "enabled": bool(row["enabled"]),
+            "description": row["description"] or "",
+        }
+
     def toggle_moderation_rule(self, rule_id: int, enabled: bool) -> bool:
         with self._connect() as conn:
             cur = conn.execute(

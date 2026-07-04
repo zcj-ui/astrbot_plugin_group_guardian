@@ -1,10 +1,17 @@
 # -*- coding: utf-8 -*-
 import asyncio
+import re
 import time
 from typing import Tuple
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
+
+# 违禁词分类映射。定义为模块级常量，而非 CommandsMixin 类属性：
+# Main 的 MRO 不含 CommandsMixin（命令通过 CommandsMixin.xxx(self,...) 显式转发调用），
+# 若作为类属性，方法体内 self._RULE_CATEGORY_MAP 会 AttributeError（历史坑 #18/#19 同源）。
+_RULE_CATEGORY_MAP = {"脏话": "swear", "骂人": "swear", "swear": "swear",
+                      "广告": "ad", "ad": "ad"}
 
 
 class CommandsMixin:
@@ -930,9 +937,6 @@ class CommandsMixin:
             self._admin_role_cache.clear()
             yield event.plain_result(f"已移除 {target} 在本群的 bot 管理权限（该用户将无法再使用本插件的群管功能）")
 
-    _RULE_CATEGORY_MAP = {"脏话": "swear", "骂人": "swear", "swear": "swear",
-                          "广告": "ad", "ad": "ad"}
-
     async def cmd_add_rule_keyword(self, event: AstrMessageEvent):
         '''添加自定义违禁词。用法: /添加违禁词 <脏话|广告> <关键词>'''
         if not await self._is_plugin_admin(event):
@@ -942,7 +946,7 @@ class CommandsMixin:
         if len(args) < 3:
             yield event.plain_result("用法: /添加违禁词 <脏话|广告> <关键词>\n示例: /添加违禁词 广告 加微信免费领")
             return
-        category = self._RULE_CATEGORY_MAP.get(args[1].strip().lower())
+        category = _RULE_CATEGORY_MAP.get(args[1].strip().lower())
         keyword = args[2].strip()
         if not category:
             yield event.plain_result("分类无效，仅支持: 脏话 / 广告")
@@ -951,7 +955,9 @@ class CommandsMixin:
             yield event.plain_result("关键词不能为空且不超过 100 字符")
             return
         try:
-            saved_id = self._storage.save_moderation_rule(category, keyword, "指令添加", True)
+            # 指令语义是"关键词"（字面量），re.escape 后入库，既防 ReDoS 又避免元字符改变语义
+            pattern = re.escape(keyword)
+            saved_id = self._storage.save_moderation_rule(category, pattern, "指令添加", True)
             self._rebuild_rule_matcher(category)
             self._rule_count_cache = None
             yield event.plain_result(f"已添加{args[1].strip()}违禁词「{keyword}」(ID:{saved_id})，即时生效")
@@ -970,20 +976,24 @@ class CommandsMixin:
         if len(args) < 3:
             yield event.plain_result("用法: /删除违禁词 <脏话|广告> <关键词或规则ID>")
             return
-        category = self._RULE_CATEGORY_MAP.get(args[1].strip().lower())
+        category = _RULE_CATEGORY_MAP.get(args[1].strip().lower())
         target = args[2].strip()
         if not category or not target:
             yield event.plain_result("分类无效或目标为空，分类仅支持: 脏话 / 广告")
             return
         try:
             deleted = False
+            # 按 ID 删除前必须校验规则确属该分类，否则纯数字关键词/跨分类会误删
             if target.isdigit():
-                deleted = self._storage.delete_moderation_rule(int(target))
+                rule = self._storage.get_moderation_rule(int(target))
+                if rule and rule.get("category") == category:
+                    deleted = self._storage.delete_moderation_rule(rule["id"])
             if not deleted:
-                # 按关键词精确匹配查找规则再删
+                # 按关键词精确匹配查找规则再删；关键词入库时经 re.escape，故按转义后比较
+                escaped = re.escape(target)
                 rules = self._storage.list_moderation_rules(category, None, target, 50, 0)
                 for r in rules:
-                    if r.get("pattern") == target:
+                    if r.get("pattern") in (target, escaped):
                         deleted = self._storage.delete_moderation_rule(r["id"])
                         break
             if not deleted:

@@ -5,17 +5,19 @@ import re
 from typing import Callable, List, Optional, Tuple
 
 try:
+    from astrbot.api import logger
+except Exception:  # 脱离 AstrBot 运行时（如单测）的兜底 logger
+    import logging
+    logger = logging.getLogger("group_guardian.automaton")
+
+try:
     import ahocorasick
 except ImportError:
     ahocorasick = None
-    try:
-        from astrbot.api import logger as _logger
-        _logger.warning(
-            "[GroupMgr] pyahocorasick 未安装，词库 AC 自动机匹配已降级为不可用，"
-            "仅正则回退规则生效。请安装依赖: pip install pyahocorasick"
-        )
-    except Exception:
-        pass
+    logger.warning(
+        "[GroupMgr] pyahocorasick 未安装，词库 AC 自动机不可用，已自动降级为逐词正则匹配"
+        "（性能较低）。建议安装依赖以获得高性能: pip install pyahocorasick"
+    )
 
 # 正则元字符集，用于判断 pattern 是否为纯文本
 _REGEX_META = re.compile(r"[.^$*+?{}\[\]|\\]")
@@ -176,6 +178,23 @@ class HybridMatcher:
         self._regex_fallback: List[re.Pattern] = []
         self._built = False
 
+    def _add_ac_keywords(self, keywords: List[str]) -> None:
+        """把纯文本关键词加入 AC；AC 不可用时降级为 re.escape 字面量正则，避免静默丢弃。"""
+        if not keywords:
+            return
+        if ahocorasick is not None:
+            self._ac.add_keywords(keywords)
+        else:
+            for kw in keywords:
+                if kw:
+                    self._regex_fallback.append(re.compile(re.escape(kw), re.IGNORECASE))
+
+    def add_literal_keywords(self, keywords: List[str]) -> None:
+        """添加纯文本字面量关键词（不做正则解析），供用户自定义违禁词等场景使用。"""
+        cleaned = [str(k).strip() for k in (keywords or []) if str(k).strip()]
+        self._add_ac_keywords(cleaned)
+        self._built = False
+
     def add_regex_patterns(self, patterns: List[str]) -> None:
         """批量添加正则 pattern，逐个尝试拆成纯文本，拆不了的留作正则回退。"""
         ac_keywords: List[str] = []
@@ -188,14 +207,12 @@ class HybridMatcher:
                 ac_keywords.extend(literals)
             else:
                 fallback_raw.append(p)
-        if ac_keywords:
-            self._ac.add_keywords(ac_keywords)
-        if fallback_raw:
-            for raw in fallback_raw:
-                try:
-                    self._regex_fallback.append(re.compile(raw, re.IGNORECASE))
-                except re.error:
-                    pass
+        self._add_ac_keywords(ac_keywords)
+        for raw in fallback_raw:
+            try:
+                self._regex_fallback.append(re.compile(raw, re.IGNORECASE))
+            except re.error as e:
+                logger.warning(f"[GroupMgr] 规则正则编译失败已跳过: {raw!r}: {e}")
         self._built = False
 
     def build(self) -> None:
