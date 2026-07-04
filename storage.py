@@ -72,6 +72,10 @@ class SQLiteStorage:
 
     @staticmethod
     def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
+        # 表名/列名只允许字母数字下划线，防止将来动态传入时被注入
+        import re as _re
+        if not _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table) or not _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column):
+            raise ValueError(f"非法表名或列名: {table}.{column}")
         cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")

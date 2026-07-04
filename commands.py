@@ -929,3 +929,68 @@ class CommandsMixin:
             self._storage.add_group_admin_block(group_id, target)
             self._admin_role_cache.clear()
             yield event.plain_result(f"已移除 {target} 在本群的 bot 管理权限（该用户将无法再使用本插件的群管功能）")
+
+    _RULE_CATEGORY_MAP = {"脏话": "swear", "骂人": "swear", "swear": "swear",
+                          "广告": "ad", "ad": "ad"}
+
+    async def cmd_add_rule_keyword(self, event: AstrMessageEvent):
+        '''添加自定义违禁词。用法: /添加违禁词 <脏话|广告> <关键词>'''
+        if not await self._is_plugin_admin(event):
+            yield event.plain_result("仅插件管理员可以管理违禁词")
+            return
+        args = event.message_str.split(maxsplit=2)
+        if len(args) < 3:
+            yield event.plain_result("用法: /添加违禁词 <脏话|广告> <关键词>\n示例: /添加违禁词 广告 加微信免费领")
+            return
+        category = self._RULE_CATEGORY_MAP.get(args[1].strip().lower())
+        keyword = args[2].strip()
+        if not category:
+            yield event.plain_result("分类无效，仅支持: 脏话 / 广告")
+            return
+        if not keyword or len(keyword) > 100:
+            yield event.plain_result("关键词不能为空且不超过 100 字符")
+            return
+        try:
+            saved_id = self._storage.save_moderation_rule(category, keyword, "指令添加", True)
+            self._rebuild_rule_matcher(category)
+            self._rule_count_cache = None
+            yield event.plain_result(f"已添加{args[1].strip()}违禁词「{keyword}」(ID:{saved_id})，即时生效")
+        except Exception as e:
+            if "已存在" in str(e) or "UNIQUE" in str(e).upper():
+                yield event.plain_result(f"违禁词「{keyword}」已存在")
+            else:
+                yield event.plain_result(f"添加失败: {e}")
+
+    async def cmd_del_rule_keyword(self, event: AstrMessageEvent):
+        '''删除自定义违禁词。用法: /删除违禁词 <脏话|广告> <关键词或规则ID>'''
+        if not await self._is_plugin_admin(event):
+            yield event.plain_result("仅插件管理员可以管理违禁词")
+            return
+        args = event.message_str.split(maxsplit=2)
+        if len(args) < 3:
+            yield event.plain_result("用法: /删除违禁词 <脏话|广告> <关键词或规则ID>")
+            return
+        category = self._RULE_CATEGORY_MAP.get(args[1].strip().lower())
+        target = args[2].strip()
+        if not category or not target:
+            yield event.plain_result("分类无效或目标为空，分类仅支持: 脏话 / 广告")
+            return
+        try:
+            deleted = False
+            if target.isdigit():
+                deleted = self._storage.delete_moderation_rule(int(target))
+            if not deleted:
+                # 按关键词精确匹配查找规则再删
+                rules = self._storage.list_moderation_rules(category, None, target, 50, 0)
+                for r in rules:
+                    if r.get("pattern") == target:
+                        deleted = self._storage.delete_moderation_rule(r["id"])
+                        break
+            if not deleted:
+                yield event.plain_result(f"未找到违禁词「{target}」，可先用 WebUI 规则页确认")
+                return
+            self._rebuild_rule_matcher(category)
+            self._rule_count_cache = None
+            yield event.plain_result(f"已删除违禁词「{target}」，即时生效")
+        except Exception as e:
+            yield event.plain_result(f"删除失败: {e}")

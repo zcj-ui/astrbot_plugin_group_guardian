@@ -468,8 +468,10 @@ class LlmToolsMixin:
             #      规范化后的路径是否仍在 safe_dir 之下。
             #   4. 只有 path_allowed == True 才继续执行。
             # ─────────────────────────────────────────────────────────────────
-            safe_dir = os.path.abspath(os.path.join(str(self._get_data_dir()), "uploads"))
-            normalized_path = os.path.abspath(file_path or "")
+            # realpath 解析符号链接后再比较，防止通过软链/挂载点绕过目录限制
+            safe_dir = os.path.realpath(os.path.join(str(self._get_data_dir()), "uploads"))
+            os.makedirs(safe_dir, exist_ok=True)
+            normalized_path = os.path.realpath(file_path or "")
             try:
                 path_allowed = os.path.commonpath([safe_dir, normalized_path]) == safe_dir
             except ValueError:

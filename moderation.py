@@ -176,14 +176,14 @@ class ModerationMixin:
         "default": {
             # 通用识别模板：要求 LLM 详细描述图片中所有内容和文字。
             # 如果发现广告/推广/违规内容需特别说明，但不会专门分类。
-            "system": "你是一个图片内容识别助手。请仔细观察图片，用文字详细描述图片中的所有内容。如果图片中有文字，请完整转录所有文字内容。如果图片是广告、推广、违规内容，请特别说明。只输出图片内容描述，不要输出其他内容。",
-            "prompt": "请识别并描述这张图片的内容，特别注意图片中的文字。"
+            "system": "你是一个图片内容识别助手。请仔细观察图片，用文字详细描述图片中的所有内容。如果图片中有文字，请完整转录所有文字内容。如果图片中包含二维码，请务必明确指出「图片包含二维码」并描述二维码周围的文字（如扫码进群、扫码加好友等引导语）。如果图片是广告、推广、违规内容，请特别说明。只输出图片内容描述，不要输出其他内容。",
+            "prompt": "请识别并描述这张图片的内容，特别注意图片中的文字和是否包含二维码。"
         },
         "strict": {
             # 严格审核模板：要求 LLM 按五大违规类别逐一检查（广告/色情/政治/暴恐/赌博）。
             # 需要在描述的最后给出"是否包含违规内容"的明确结论，适用于高安全要求的群聊。
-            "system": "你是一个严格的内容审核图片识别助手。你的任务是识别图片中是否存在违规内容。请仔细检查：1.图片中是否有广告推广信息（联系方式、二维码、引流链接）2.是否有色情或低俗内容 3.是否有政治敏感内容 4.是否有暴恐或违法信息 5.是否有赌博或诈骗信息。如果图片中有文字，请完整转录。最后给出明确结论：该图片是否包含违规内容。",
-            "prompt": "请严格审核这张图片，识别并描述所有可能违规的内容，完整转录图片中的文字。"
+            "system": "你是一个严格的内容审核图片识别助手。你的任务是识别图片中是否存在违规内容。请仔细检查：1.图片中是否有广告推广信息（联系方式、二维码、引流链接）——发现二维码时必须明确输出「图片包含二维码」并说明用途 2.是否有色情或低俗内容 3.是否有政治敏感内容 4.是否有暴恐或违法信息 5.是否有赌博或诈骗信息。如果图片中有文字，请完整转录。最后给出明确结论：该图片是否包含违规内容。",
+            "prompt": "请严格审核这张图片，识别并描述所有可能违规的内容（尤其注意二维码），完整转录图片中的文字。"
         },
         "text_only": {
             # 纯文字转录模板：仅要求 OCR 提取文字，不进行分析或审核判断。
@@ -956,12 +956,24 @@ class ModerationMixin:
             return
 
         hit_types = self._initial_screening(text, group_id)
+        extra_recall_ids = []
         if not any(hit_types.values()):
-            return
+            # 组合消息检测：单条未命中时，聚合该用户近期多条消息合并检测，
+            # 防止把违禁词拆成多条消息逐字发送来规避审核（如 外/挂/进/群）。
+            combined_text, combined_ids = self._collect_combined_text(event, group_id, user_id, text)
+            if not combined_text:
+                return
+            combined_hits = self._initial_screening(combined_text, group_id)
+            if not any(combined_hits.values()):
+                return
+            hit_types = combined_hits
+            text = f"[组合消息检测] {combined_text}"
+            extra_recall_ids = combined_ids
+            logger.info(f"[GroupMgr] 组合消息命中: {user_name}({user_id}) in {group_id} 合并{len(combined_ids)}条")
 
         llm_enabled = self._cfg("llm_moderation_enabled", True, group_id=group_id)
         if not llm_enabled:
-            async for item in self._execute_rule_penalty(event, group_id, user_id, user_name, text, hit_types, image_urls):
+            async for item in self._execute_rule_penalty(event, group_id, user_id, user_name, text, hit_types, image_urls, extra_recall_ids):
                 yield item
             return
 
@@ -975,8 +987,49 @@ class ModerationMixin:
             self._log_moderation(group_id, user_id, user_name, text, "LLM放行", reason, image_urls)
             return
 
-        async for item in self._execute_llm_penalty(event, group_id, user_id, user_name, text, reason, hit_summary, image_urls):
+        async for item in self._execute_llm_penalty(event, group_id, user_id, user_name, text, reason, hit_summary, image_urls, extra_recall_ids):
             yield item
+
+    def _collect_combined_text(self, event: AiocqhttpMessageEvent, group_id: str, user_id: str, current_text: str) -> Tuple[str, list]:
+        """聚合该用户近期消息为组合文本，用于分段规避检测。
+
+        复用防刷屏的消息追踪队列（含消息 ID，可撤回）。防刷屏关闭时队列无数据，
+        此时把当前消息补录进队列，让组合检测独立生效。
+        返回 (组合文本, 涉及的消息ID列表)；不足 2 条或功能关闭时返回 ("", [])。
+        """
+        if not self._cfg("combine_detect_enabled", True, group_id=group_id):
+            return "", []
+        if not user_id:
+            return "", []
+        count = max(2, min(self._cfg_int("combine_detect_count", 5, group_id=group_id), 20))
+        window = max(5, min(self._cfg_int("combine_detect_window_seconds", 60, group_id=group_id), 600))
+        # 防刷屏关闭时队列不会被 _anti_flood_guard 写入，这里补录当前消息
+        if not self._cfg("anti_flood_enabled", True, group_id=group_id):
+            msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
+            if msg_id:
+                self._record_message(group_id, user_id, msg_id, current_text)
+        queue = self._anti_flood_data.get(group_id, {}).get(user_id)
+        if not queue:
+            return "", []
+        now = time.time()
+        parts = []
+        ids = []
+        for entry in reversed(queue):
+            t, mid, norm_text, _len = self._unpack_entry(entry)
+            if now - t > window or len(parts) >= count:
+                break
+            if norm_text:
+                parts.append(norm_text)
+                if mid:
+                    ids.append(mid)
+        if len(parts) < 2:
+            return "", []
+        parts.reverse()
+        ids.reverse()
+        # 双拼接：带空格版保留词边界，无缝版捕捉逐字拆分
+        seamless = ''.join(parts)
+        spaced = ' '.join(parts)
+        return f"{seamless}\n{spaced}", ids
 
     # ===== 拆分出的子方法 =====
 
@@ -1113,13 +1166,24 @@ class ModerationMixin:
                 hit_types[cat] = True
         return hit_types
 
+    async def _recall_extra_messages(self, event: AiocqhttpMessageEvent, extra_recall_ids: list) -> None:
+        """撤回组合检测涉及的多条消息（当前消息之外的部分）。"""
+        for mid in (extra_recall_ids or []):
+            try:
+                await self._recall_msg(event, mid)
+                await asyncio.sleep(0.3)
+            except Exception:
+                pass
+
     async def _execute_rule_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
                                     user_id: str, user_name: str, text: str,
-                                    hit_types: dict, image_urls: list):
+                                    hit_types: dict, image_urls: list,
+                                    extra_recall_ids: list = None):
         reason = "触发规则: " + ", ".join(k for k, v in hit_types.items() if v)
         try:
             msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
             await self._recall_msg(event, msg_id)
+            await self._recall_extra_messages(event, extra_recall_ids)
             if self._moderation_in_penalty_cooldown(group_id, user_id):
                 self._log_moderation(group_id, user_id, user_name, text, "撤回", reason, image_urls)
                 event.stop_event()
@@ -1137,7 +1201,8 @@ class ModerationMixin:
 
     async def _execute_llm_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
                                    user_id: str, user_name: str, text: str,
-                                   reason: str, hit_summary: str, image_urls: list):
+                                   reason: str, hit_summary: str, image_urls: list,
+                                   extra_recall_ids: list = None):
         logger.info(f"[GroupMgr] LLM审核拦截: {user_name}({user_id}) in {group_id} | {hit_summary} | {reason}")
         try:
             msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
@@ -1146,6 +1211,7 @@ class ModerationMixin:
                     await self._recall_msg(event, msg_id)
                 except Exception as recall_err:
                     logger.warning(f"[GroupMgr] 撤回消息失败: {recall_err}")
+            await self._recall_extra_messages(event, extra_recall_ids)
             if self._moderation_in_penalty_cooldown(group_id, user_id):
                 self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
                 event.stop_event()

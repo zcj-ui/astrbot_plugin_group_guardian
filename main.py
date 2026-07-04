@@ -53,15 +53,9 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
         # 同步 AstrBot 全局管理员到插件 admin_list（写入 DB managed_lists + 内存）
         self._sync_astrbot_admins()
         self.auto_moderate_enabled = self.config.get("auto_moderate_enabled", True)
-        # 脏话/广告规则：AC 自动机优先，无法拆解的正则保留回退
-        _swear_list = self._storage.load_moderation_rules("swear")
-        _ad_list = self._storage.load_moderation_rules("ad")
-        self._swear_matcher = HybridMatcher()
-        self._swear_matcher.add_regex_patterns(_swear_list)
-        self._swear_matcher.build()
-        self._ad_matcher = HybridMatcher()
-        self._ad_matcher.add_regex_patterns(_ad_list)
-        self._ad_matcher.build()
+        # 脏话/广告规则：AC 自动机优先，无法拆解的正则保留回退；合并配置中的自定义关键词
+        self._rebuild_rule_matcher("swear")
+        self._rebuild_rule_matcher("ad")
         # 外置词库：每个分类编译为纯文本 AC 自动机，O(n) 单次扫描
         self._lexicon = self._load_lexicon()
         self._compiled_lexicon = self._compile_lexicon()
@@ -114,8 +108,14 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
 
     def _rebuild_rule_matcher(self, category: str) -> None:
         patterns = self._storage.load_moderation_rules(category)
+        # 合并配置中的用户自定义关键词（纯文本，直接进 AC 自动机）
+        custom_key = "custom_swear_keywords" if category == "swear" else "custom_ad_keywords"
+        custom_raw = self.config.get(custom_key, []) or []
+        if not isinstance(custom_raw, list):
+            custom_raw = [custom_raw]
+        custom = [str(x).strip() for x in custom_raw if str(x).strip()]
         matcher = HybridMatcher()
-        matcher.add_regex_patterns(patterns)
+        matcher.add_regex_patterns(patterns + custom)
         matcher.build()
         if category == "swear":
             self._swear_matcher = matcher
@@ -139,6 +139,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
             self._compiled_lexicon.pop(category, None)
 
     async def _background_full_rebuild(self, reason: str = "") -> None:
+        failures = 0
         while True:
             self._rebuild_pending = False
             self._set_rebuild_status("running", "full", reason or "后台重建全部规则")
@@ -149,12 +150,18 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
                     self._rebuild_rule_matcher("swear")
                     self._rebuild_rule_matcher("ad")
                 self._set_rebuild_status("success", "full", "后台重建完成")
+                failures = 0
             except asyncio.CancelledError:
                 self._set_rebuild_status("idle", "", "后台重建已取消")
                 raise
             except Exception as e:
-                logger.warning(f"[GroupMgr] 后台重建失败: {e}")
+                failures += 1
+                logger.warning(f"[GroupMgr] 后台重建失败({failures}/5): {e}")
                 self._set_rebuild_status("error", "full", str(e))
+                if failures >= 5:
+                    logger.error("[GroupMgr] 后台重建连续失败 5 次，放弃本轮，请检查数据库后手动触发")
+                    break
+                await asyncio.sleep(2 ** failures)
             if not self._rebuild_pending:
                 break
 
@@ -358,6 +365,18 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     async def recall_all(self, event: AstrMessageEvent):
         '''批量撤回最近消息。用法: /批量撤回 [条数] 或 /批量撤回 @用户 [条数]'''
         async for item in CommandsMixin.recall_all(self, event):
+            yield item
+
+    @filter.command("添加违禁词")
+    async def cmd_add_rule_keyword(self, event: AstrMessageEvent):
+        '''添加自定义违禁词。用法: /添加违禁词 <脏话|广告> <关键词>'''
+        async for item in CommandsMixin.cmd_add_rule_keyword(self, event):
+            yield item
+
+    @filter.command("删除违禁词")
+    async def cmd_del_rule_keyword(self, event: AstrMessageEvent):
+        '''删除自定义违禁词。用法: /删除违禁词 <脏话|广告> <关键词或规则ID>'''
+        async for item in CommandsMixin.cmd_del_rule_keyword(self, event):
             yield item
 
     # LLM Tool 注册区：工具参数签名和 Args 文档会被 AstrBot 解析，请和 llm_tools.py 的业务函数保持一致。

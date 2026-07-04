@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.5.0 - 2026-07-04
+
+### 新功能
+
+- **组合消息检测（防分段规避）**: 用户把违禁词拆成多条消息逐字发送（如 外/挂/进/群 四条）时，聚合该用户近期消息合并检测，命中后撤回全部涉及消息（Issue #27）。新增 `combine_detect_enabled` / `combine_detect_count` / `combine_detect_window_seconds` 配置
+- **自定义违禁词**: 新增 `/添加违禁词 <脏话|广告> <关键词>` 和 `/删除违禁词` 指令（仅插件管理员），存入 SQLite 规则库即时生效；配置面板新增 `custom_swear_keywords` / `custom_ad_keywords` 列表（Issue #24, 吸收 PR #29 思路并改用规则库实现）
+- **OCR 二维码强化**: default/strict 提示词模板要求视觉模型明确报告「图片包含二维码」及引导语，配合广告规则拦截扫码引流（Issue #26）
+
+### 安全加固（ZhaisirAI 扫描 #32）
+
+- **上传路径检查加固**: `upload_group_file_tool` 改用 `os.path.realpath` 解析符号链接后比较，并确保 uploads 目录存在（Critical #2）
+- **表名注入防护**: `_ensure_column` 增加表名/列名白名单校验（Major #6）
+- **WebUI 认证说明**: 明确注释 `register_web_api` 路由由 AstrBot Dashboard JWT 统一鉴权，插件层不重复实现（Critical #1 为框架层职责）
+
+### 可靠性
+
+- **后台重建重试上限**: `_background_full_rebuild` 连续失败 5 次后指数退避并退出，防止无限循环耗尽 CPU（Minor #4）
+- **AC 自动机降级警告**: pyahocorasick 缺失时输出 warning 而非静默失效（Suggestion #1）
+
+### 文档
+
+- 黑白名单配置项描述完全重写，明确各名单的实际行为（Issue #28）
+
 ## v2.4.2 - 2026-06-29
 
 ### Bug 修复

@@ -24,32 +24,32 @@
         "hint": "关闭后 LLM 不会收到群管工具的使用说明和权限规则"
     },
     "group_white_list": {
-        "description": "群白名单（列表中的群才能使用 LLM 群管工具）",
+        "description": "群白名单：只有列表中的群启用审核和群管功能；留空表示所有群启用",
         "type": "list",
         "default": [],
         "invisible": true,
-        "hint": "已迁移到 SQLite，请在 WebUI「设置-名单管理」或「群管理」中维护"
+        "hint": "设置后仅白名单群生效（审核/防刷屏/群管指令/多群配置均受限于白名单）。已迁移到 SQLite，请在 WebUI「设置-名单管理」或「群管理」中维护"
     },
     "group_black_list": {
-        "description": "群黑名单（列表中的群不能使用 LLM 群管工具）",
+        "description": "群黑名单：列表中的群完全禁用本插件全部功能",
         "type": "list",
         "default": [],
         "invisible": true,
-        "hint": "已迁移到 SQLite，请在 WebUI 中维护"
+        "hint": "黑名单群不做审核、不响应群管指令。与白名单同时设置时黑名单优先。已迁移到 SQLite，请在 WebUI 中维护"
     },
     "user_black_list": {
-        "description": "用户黑名单（自动拒绝加群请求）",
+        "description": "用户黑名单：黑名单用户群内发言即被踢出+禁言，加群申请自动拒绝",
         "type": "list",
         "default": [],
         "invisible": true,
-        "hint": "已迁移到 SQLite，请在 WebUI 中维护"
+        "hint": "适合拉黑广告号/捣乱号。已迁移到 SQLite，请在 WebUI 中维护"
     },
     "user_white_list": {
-        "description": "审核白名单用户（免审核/免防刷屏）",
+        "description": "用户白名单：白名单用户完全豁免内容审核与防刷屏检测",
         "type": "list",
         "default": [],
         "invisible": true,
-        "hint": "已迁移到 SQLite，请在 WebUI 中维护"
+        "hint": "适合豁免其他机器人账号或可信成员。已迁移到 SQLite，请在 WebUI 中维护"
     },
     "admin_list": {
         "description": "管理员 QQ 号列表",
@@ -81,6 +81,36 @@
         "type": "bool",
         "default": true,
         "hint": "关闭后不使用正则匹配广告/推广/引流内容"
+    },
+    "custom_swear_keywords": {
+        "description": "自定义脏话关键词（追加到脏话检测规则）",
+        "type": "list",
+        "default": [],
+        "hint": "纯文本关键词，保存后即时并入 AC 自动机。也可用 /添加违禁词 脏话 <词> 指令添加（指令添加的存入规则库）"
+    },
+    "custom_ad_keywords": {
+        "description": "自定义广告关键词（追加到广告检测规则）",
+        "type": "list",
+        "default": [],
+        "hint": "纯文本关键词，保存后即时并入 AC 自动机。也可用 /添加违禁词 广告 <词> 指令添加"
+    },
+    "combine_detect_enabled": {
+        "description": "组合消息检测开关（防分段发送规避）",
+        "type": "bool",
+        "default": true,
+        "hint": "把违禁词拆成多条消息逐字发送（如 外/挂/进/群 四条消息）时，聚合该用户近期消息合并检测，命中则撤回全部涉及消息"
+    },
+    "combine_detect_count": {
+        "description": "组合检测聚合条数",
+        "type": "int",
+        "default": 5,
+        "hint": "聚合该用户最近多少条消息做合并检测，范围 2-20"
+    },
+    "combine_detect_window_seconds": {
+        "description": "组合检测时间窗口（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "只聚合该窗口内的消息，范围 5-600 秒"
     },
     "llm_moderation_enabled": {
         "description": "LLM 二次审核开关",

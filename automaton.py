@@ -8,6 +8,14 @@ try:
     import ahocorasick
 except ImportError:
     ahocorasick = None
+    try:
+        from astrbot.api import logger as _logger
+        _logger.warning(
+            "[GroupMgr] pyahocorasick 未安装，词库 AC 自动机匹配已降级为不可用，"
+            "仅正则回退规则生效。请安装依赖: pip install pyahocorasick"
+        )
+    except Exception:
+        pass
 
 # 正则元字符集，用于判断 pattern 是否为纯文本
 _REGEX_META = re.compile(r"[.^$*+?{}\[\]|\\]")

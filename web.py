@@ -199,6 +199,9 @@ class WebMixin:
 
     def _register_web_apis(self):
         # 遍历路由表，每项含 path / handler / methods / desc，统一注册到 self.context.register_web_api。
+        # 认证说明：register_web_api 注册的路由挂载在 AstrBot Dashboard 的 /api/plug/ 下，
+        # 由 AstrBot 框架统一执行 Dashboard JWT 登录校验，未登录请求无法到达这些 handler。
+        # 因此插件层不重复实现认证；请勿将 AstrBot Dashboard 端口直接暴露公网或关闭其登录验证。
         try:
             routes = [
                 ("/stats", self._web_stats, ["GET"], "获取群管统计信息"),
@@ -435,6 +438,13 @@ class WebMixin:
                 if "lexicon_other_enabled" in changed_lexicon:
                     for extra_category in ("supplement", "livelihood", "tencent_ban"):
                         self._apply_incremental_lexicon_rebuild(extra_category)
+            # 自定义违禁词变更时重建对应匹配器
+            if "custom_swear_keywords" in updated:
+                self._rebuild_rule_matcher("swear")
+                self._rule_count_cache = None
+            if "custom_ad_keywords" in updated:
+                self._rebuild_rule_matcher("ad")
+                self._rule_count_cache = None
             # 防刷屏总开关关闭时清空追踪缓冲区
             if "anti_flood_enabled" in updated and old_enabled and not self._cfg("anti_flood_enabled", True):
                 self._anti_flood_data.clear()
