@@ -1,54 +1,74 @@
 # QQ群智能守护者 (GroupGuardian) – 项目概述
 
+**累计反思：15 次**
+
 ## 1. 项目简介
 
-GroupGuardian 是一款面向 AstrBot 框架的综合性群聊管理插件，融合 28 项群管指令、AI 智能审核、违禁词热更新以及增强型 WebUI 管理面板，旨在让 QQ 机器人成为具备主动防御与便捷运维能力的群聊守护者。
+GroupGuardian 是一款面向 AstrBot 框架的综合性群聊管理插件，融合 28 项群管指令、AI 智能审核、违禁词热更新及 WebUI 管理面板。
 
 ## 2. 技术栈
 
-- **运行环境**：Python 3.10+，基于 AstrBot 插件系统
-- **消息协议**：OneBot（兼容 go-cqhttp 等标准实现）
-- **数据存储**：SQLite（通过 `storage.py` 封装，含 `lexicon.db`）
-- **Web 管理面板**：后端以 Python 提供 API 路由（`web.py`），前端采用静态 HTML + JavaScript 构建（`pages/dashboard` 目录），支持实时图表与交互操作
-- **AI 审核能力**：通过 `llm_tools.py` 对接大型语言模型，实现语义级内容过滤
-- **辅助技术**：正则表达式、定时调度（`scheduler.py`）、状态自动机（`automaton.py`）
+- 运行环境：Python 3.10+，AstrBot 插件系统
+- 消息协议：OneBot（go-cqhttp、NapCat、LLOneBot 等）
+- 数据存储：SQLite（`group_guardian.db` + `lexicon.db`）
+- Web 面板：Python API 路由 + 静态 HTML/JS
+- AI 审核：LLM 语义级内容过滤 + OCR 视觉模型
+- 辅助技术：Aho-Corasick 自动机、正则回退、定时调度
 
 ## 3. 项目结构
 
-| 模块 / 文件 | 职责说明 |
-|------------|----------|
-| `main.py` | 插件入口，注册消息与事件处理器 |
-| `commands.py` | 管理指令全集（禁言、踢人、公告、精华等 28 项） |
-| `moderation.py` | 违禁词匹配与 AI 审核核心逻辑 |
-| `anti_flood.py` | 刷屏检测与限速机制 |
-| `automaton.py` | 用户状态自动机（用于审核流程控制） |
-| `appeal.py` | 用户申诉处理及定时解禁 |
-| `membership.py` | 群成员权限管理（管理员、头衔、禁言状态） |
-| `storage.py` | 数据持久化抽象层（SQLite 操作） |
-| `web.py` | WebUI 后端路由与 API 实现 |
-| `pages/dashboard/` | 前端仪表盘静态文件（HTML、JS、CSS） |
-| `onebot.py` | OneBot 协议适配（消息发送、群操作调用） |
+| 模块 | 职责 |
+|------|------|
+| `main.py` | 插件入口，注册事件处理器 |
+| `commands.py` | 管理指令全集（28项） |
+| `moderation.py` | 违禁词匹配与 AI 审核核心 |
+| `anti_flood.py` | 刷屏检测与限速 |
+| `automaton.py` | 用户状态自动机 |
+| `appeal.py` | 申诉处理及定时解禁 |
+| `membership.py` | 权限管理（管理员/头衔/禁言） |
+| `storage.py` | SQLite 数据持久化 |
+| `web.py` | WebUI 后端 API |
+| `pages/dashboard/` | 前端仪表盘 |
+| `onebot.py` | OneBot 协议适配 |
 | `remote.py` | 跨群远程群管执行 |
-| `llm_tools.py` | LLM 调用封装（用于 AI 审核） |
-| `constants.py` | 全局常量与配置项默认值 |
-| `utils.py` | 通用工具函数 |
-| `scheduler.py` | 定时任务管理与周期操作 |
-| `_conf_schema.json` | 插件配置项的 JSON Schema 定义 |
-| `metadata.yaml` | 插件元数据（版本、依赖、描述） |
-| `version.json` | 独立版本号文件，用于动态更新显示 |
-| `requirements.txt` | Python 依赖列表 |
-| `CHANGELOG.md` / `SECURITY.md` / `LICENSE` | 版本历史、安全策略、开源许可（MIT） |
+| `llm_tools.py` | LLM 调用封装 |
+| `scheduler.py` | 定时任务管理 |
 
 ## 4. 开发约定
 
-- **模块职责单一**：每个核心功能（刷屏、审核、申诉、成员管理）均拆分独立模块，降低耦合
-- **配置与元数据分离**：插件选项通过 `_conf_schema.json` 声明，`metadata.yaml` 负责发布信息，`version.json` 单独管理版本号，便于自动更新检测
-- **协议适配层抽象**：`onebot.py` 封装 OneBot 调用，其他模块通过该接口发送消息及执行群操作，方便未来切换协议实现
-- **定时任务统一管理**：所有周期性操作（如解禁、数据清理）集中于 `scheduler.py`，避免分散各处
-- **WebUI 前后端分离**：后端 `web.py` 仅提供 RESTful API，前端页面独立部署在 `pages/dashboard/` 目录，便于开发调试及换肤
-- **安全审计要点**：管理指令在 `commands.py` 中进行权限校验；SQL 操作均通过参数化查询（`storage.py`）防止注入；LLM 调用在 `llm_tools.py` 中增加超时和错误回退
-- **贡献与规范**：包含 `.github` 下的 Issue / PR 模板及 CI 工作流，鼓励社区参与；维护 `CHANGELOG.md` 和 `SECURITY.md`，遵循开源最佳实践
-- **Issue 分析三原则**：①分类与动作对齐——纯文档/配置引导类 Issue 优先归为 `documentation` 或 `question`，而非 `enhancement`；②重复检测需提供对比摘要与置信度（<0.7 不输出），避免无依据的重复推断；③优先级结合业务影响——绕过已有关键拦截机制的场景应倾向 `high`，并评估现有替代防护措施
-- **标题优化规范**：对于信息量低的标题（如单字"建议""bug""问题"），主动提供语义明确的改写建议，提升列表可读性和检索效率
-- **系统依赖处理**：增强功能若依赖外部系统库（如 zbar、tesseract），必须在分析中注明降级策略（`ImportError` 兜底+警告日志）和多平台安装提示
-- **可行性方案分层**：技术方案应区分"最小可行实现"（仅词库初筛+撤回）和"高级实现"（LLM 二次判断+禁言），并提供替代方案对比表格，帮助开发者渐进选择
+- **模块单一职责**：核心功能独立模块，降低耦合
+- **配置与元数据分离**：`_conf_schema.json` / `metadata.yaml` / `version.json` 各司其职
+- **协议适配层抽象**：`onebot.py` 封装调用，便于切换协议
+- **定时任务统一管理**：集中于 `scheduler.py`
+- **WebUI 前后端分离**：后端 RESTful API，前端独立部署
+- **安全审计**：指令权限校验、SQL 参数化查询、LLM 超时回退
+
+### Issue 分析原则（反思迭代总结）
+
+1. **分类与动作对齐**：需求已满足→`question`/`documentation`；新增功能→`enhancement`；逻辑缺陷→`bug`。权限不一致问题可同时标注 `bug` + `enhancement`。
+
+2. **优先级结合业务影响**：绕过审核/提权路径应倾向 `high`，不因代码量低估安全风险；截图详实+根因明确+影响面广的场景同理。
+
+3. **重复检测需证据链**：必须提供对比摘要与置信度（<0.7 不输出），无法确认时宁可不输出重复判断。
+
+4. **标题优化强制**：≤5 汉字且无具体对象时必须改写；情绪化标题剥离情绪，聚焦技术实质。
+
+5. **可行性方案分层**：区分"最小可行"与"高级实现"，注明工作量估算与风险。
+
+6. **标签置信度校准**：证据充分时用 ≥0.8 高置信度；`good first issue` 避免推荐给多文件修改/权限理解门槛高的问题。
+
+7. **系统依赖降级**：外部库不可用时 `ImportError` 兜底+警告日志，注明多平台安装提示。
+
+8. **兼容性记录**：不同 OneBot 实现（NapCat 拼入引用原文、LLOneBot 行为差异等）需在注释中记录。
+
+9. **文档同步触发**：用户因历史变更记录产生困惑时，检查入口文档是否充分体现变更；CHANGELOG 关键改动加醒目提示。
+
+10. **消息链解析注意**：审核类插件须区分"用户实际发送文字"与"协议拼接的引用原文"，避免误审系统附加内容。
+
+11. **远程执行身份细化**：分析 WebUI 跨群操作时，须说明如何获取操作者群角色（如绑定 QQ 号的身份映射）。
+
+12. **测试场景补充**：引用回复混合消息、多层嵌套引用加入测试用例，覆盖"纯回复/回复+文字/纯文字"三种情况。
+
+13. **语气滤镜**：面对情绪化标题，先提取纯需求再分析，保持客观职业素养。
+
+14. **复用历史决策证据**：主动检索 CHANGELOG 回滚记录等仓库历史，提升分析可信度。
