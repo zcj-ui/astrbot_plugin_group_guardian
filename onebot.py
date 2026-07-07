@@ -400,7 +400,11 @@ class OneBotMixin:
         except asyncio.TimeoutError:
             return False, f"{result_name or action} 超时（协议端 {ONEBOT_CALL_TIMEOUT:.0f}s 无响应）"
         except Exception as e:
-            return False, str(e)
+            err = str(e)
+            # Issue #34：QQ 权限错误的原始 OIDB 报文对用户不友好，转成可读提示
+            if "ERR_NO_PERMISSION" in err or "120101007" in err:
+                return False, "机器人在该群权限不足（需为管理员/群主，且不能对同级或更高身份操作）"
+            return False, err
 
     async def _recall_msg(self, event: AiocqhttpMessageEvent, msg_id: str):
         mid = self._safe_int(msg_id)

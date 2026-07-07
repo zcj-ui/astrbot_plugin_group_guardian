@@ -79,7 +79,7 @@ class WebMixin:
         """CSV 公式注入防护：单元格以 = + - @ 或制表/回车开头时前置单引号，
         防止 Excel/WPS 打开导出文件时把消息内容当公式执行（如 =HYPERLINK(...)）。"""
         s = "" if value is None else str(value)
-        if s and s[0] in ('=', '+', '-', '@', '\t', '\r'):
+        if s and s[0] in ('=', '+', '-', '@', '\t', '\r', '\n'):
             return "'" + s
         return s
 
@@ -1619,6 +1619,8 @@ class WebMixin:
         "ocr_custom_system_prompt": "OCR", "ocr_custom_user_prompt": "OCR", "scan_sticker_enabled": "OCR",
         "qrcode_decode_enabled": "OCR",
         "member_action_require_group_role": "基础开关",
+        "set_admin_require_owner": "基础开关",
+        "llm_moderation_custom_prompt": "审核规则",
         "kick_recall_enabled": "审核规则", "kick_recall_count": "审核规则",
         "combine_detect_enabled": "重复检测", "combine_detect_count": "重复检测",
         "combine_detect_window_seconds": "重复检测",

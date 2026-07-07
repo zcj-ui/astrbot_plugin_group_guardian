@@ -9,11 +9,27 @@
 规则来源：优先读 SQLite(join_audit_rules) 中该群规则，其次 'default' 全局规则，
 最后回退到 _conf_schema.json 的全局配置项。所有动作写入审核日志。
 """
+import re as _re
+
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
 
 class MembershipMixin:
+    @staticmethod
+    def _extract_join_answer(comment: str) -> str:
+        """从加群申请 comment 中提取用户实际填写的答案（Issue #41）。
+
+        群设置了验证问题时，OneBot 上报的 comment 是「问题：xxx\\n答案：yyy」的拼接，
+        直接对全文做关键词匹配会把问题原文里的词（如"本群"的"群"）误判为用户输入。
+        无法识别格式时原样返回，向后兼容无验证问题的场景。
+        """
+        if not comment:
+            return comment
+        m = _re.search(r"答案[:：]\s*(.*)\s*$", comment, _re.DOTALL)
+        if m:
+            return m.group(1).strip()
+        return comment
     def _is_group_request_event(self, event: AstrMessageEvent) -> bool:
         """判断是否为加群申请事件。"""
         raw = self._get_raw_event(event)
@@ -81,21 +97,24 @@ class MembershipMixin:
         rule = self._resolve_join_rule(group_id)
         if not rule.get("enabled", True):
             return False
-        comment_lower = comment.lower()
+        # Issue #41：所有匹配只针对用户实际填写的答案，剥离验证问题原文，
+        # 避免问题里的词（如"你从哪里知道本群的"中的"群"）被误判为用户输入
+        answer = self._extract_join_answer(comment)
+        answer_lower = answer.lower()
 
         for kw in rule.get("reject_keywords", []):
-            if kw and str(kw).lower() in comment_lower:
+            if kw and str(kw).lower() in answer_lower:
                 reason = rule.get("reject_reason", "") or "申请信息命中拒绝规则"
                 await self._process_group_request(event, flag, sub_type, False, reason)
                 self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群拒绝", f"命中拒绝词: {kw}", [])
                 await self._notify_join_audit(group_id, user_id, comment, False, f"命中拒绝词: {kw}")
                 return True
 
-        if self._cfg("join_reject_use_lexicon", True, group_id=group_id) and comment:
-            lex_hit = self._check_lexicon(comment)
+        if self._cfg("join_reject_use_lexicon", True, group_id=group_id) and answer:
+            lex_hit = self._check_lexicon(answer)
             switch_map = self._lexicon_switch_map(group_id=group_id)
             lex_blocked = any(hit and switch_map.get(cat, True) for cat, hit in lex_hit.items())
-            ad_hit = self._is_ad_pattern(comment) if hasattr(self, "_is_ad_pattern") else False
+            ad_hit = self._is_ad_pattern(answer) if hasattr(self, "_is_ad_pattern") else False
             if lex_blocked or ad_hit:
                 reason = rule.get("reject_reason", "") or "申请信息含违规内容"
                 await self._process_group_request(event, flag, sub_type, False, reason)
@@ -104,7 +123,7 @@ class MembershipMixin:
                 return True
 
         for kw in rule.get("accept_keywords", []):
-            if kw and str(kw).lower() in comment_lower:
+            if kw and str(kw).lower() in answer_lower:
                 await self._process_group_request(event, flag, sub_type, True, "")
                 self._log_moderation(group_id, user_id, "", f"[加群申请] {comment}", "入群通过", f"命中通过词: {kw}", [])
                 await self._notify_join_audit(group_id, user_id, comment, True, f"命中通过词: {kw}")

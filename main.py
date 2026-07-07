@@ -348,6 +348,12 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
         async for item in CommandsMixin.cmd_set_admin(self, event):
             yield item
 
+    @filter.command("取消管理")
+    async def cmd_unset_admin(self, event: AstrMessageEvent):
+        '''取消群管理员。用法: /取消管理 @某人 或 <QQ号>（Issue #40）'''
+        async for item in CommandsMixin.cmd_set_admin(self, event):
+            yield item
+
     @filter.command("加群方式")
     async def cmd_join_verify(self, event: AstrMessageEvent):
         '''修改入群验证方式。用法: /加群方式 <需要验证/允许/禁止>'''
@@ -641,13 +647,19 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     @filter.command("移除群管权限")
     async def cmd_revoke_admin_perm(self, event: AstrMessageEvent):
         '''群主移除本群某群管的bot管理权限。用法: /移除群管权限 <QQ号>'''
-        async for item in CommandsMixin.cmd_revoke_admin_perm(self, event):
+        async for item in CommandsMixin.cmd_revoke_admin_perm(self, event, restore=False):
             yield item
 
     @filter.command("恢复群管权限")
     async def cmd_restore_admin_perm(self, event: AstrMessageEvent):
         '''群主恢复本群某群管的bot管理权限。用法: /恢复群管权限 <QQ号>'''
-        async for item in CommandsMixin.cmd_revoke_admin_perm(self, event):
+        async for item in CommandsMixin.cmd_revoke_admin_perm(self, event, restore=True):
+            yield item
+
+    @filter.command("回复撤回")
+    async def cmd_recall_reply(self, event: AstrMessageEvent):
+        '''引用一条消息并发送本指令，撤回被引用的消息（Issue #36）'''
+        async for item in CommandsMixin.cmd_recall_reply(self, event):
             yield item
 
     # F4 批量管理 LLM 工具

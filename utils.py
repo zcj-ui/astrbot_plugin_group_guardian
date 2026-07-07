@@ -35,6 +35,30 @@ class UtilitiesMixin:
                 targets.append(qq)
         return targets
 
+    def _extract_reply_msg_id(self, event) -> str:
+        """从消息链提取被引用（回复）消息的 ID，无引用返回空串。兼容 dict/对象两种段格式。"""
+        try:
+            chain = event.get_messages() or []
+        except Exception:
+            chain = []
+        for seg in chain:
+            if isinstance(seg, dict):
+                if seg.get("type") == "reply":
+                    return str((seg.get("data", {}) or {}).get("id", "") or "")
+            else:
+                cls = type(seg).__name__
+                if cls == "Reply" or (hasattr(seg, "type") and getattr(seg, "type", "") == "reply"):
+                    rid = getattr(seg, "id", "") or ""
+                    if not rid and hasattr(seg, "data") and isinstance(getattr(seg, "data", None), dict):
+                        rid = getattr(seg, "data", {}).get("id", "")
+                    return str(rid or "")
+        raw = getattr(event, "raw_event", None)
+        if isinstance(raw, dict):
+            for seg in (raw.get("message", []) or []):
+                if isinstance(seg, dict) and seg.get("type") == "reply":
+                    return str((seg.get("data", {}) or {}).get("id", "") or "")
+        return ""
+
     _SEG_FORMATTERS = {
         'text':        lambda d: d.get('text', ''),
         'image':       lambda d: d.get('summary', '[图片]') or '[图片]',

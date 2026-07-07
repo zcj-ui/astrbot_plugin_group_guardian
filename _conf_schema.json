@@ -161,6 +161,18 @@
         "default": true,
         "hint": "关闭后 /踢人 指令和 LLM 踢人工具均不可用"
     },
+    "set_admin_require_owner": {
+        "description": "严格模式：设置/取消管理员仅群主可用",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后 /设置管理 /取消管理 及对应 LLM 工具只认本群群主，插件全局管理员也不例外（Issue #35）"
+    },
+    "llm_moderation_custom_prompt": {
+        "description": "自定义 LLM 审核标准（留空用内置）",
+        "type": "text",
+        "default": "",
+        "hint": "填写后替换内置的审核标准段落（如嫌默认标准太激进可自行放宽）。JSON 输出格式约束由框架自动追加，无需自己写。可按群覆盖（Issue #39）"
+    },
     "member_action_require_group_role": {
         "description": "严格模式：群管指令仅群主/群管理员可用",
         "type": "bool",

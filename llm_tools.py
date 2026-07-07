@@ -188,11 +188,23 @@ class LlmToolsMixin:
             enable(boolean): true设为管理员，false取消管理员
         '''
         try:
+            group_id = self._get_group_id(event)
+            # Issue #35：与指令路径保持一致的权限收紧——
+            # 严格模式下仅本群群主可通过 LLM 工具设置/取消管理员；
+            # 非严格模式也要求操作者是插件管理员或本群群主（堵住群管理员经 _is_admin 提权的口子）
+            operator = self._try_get_sender_id(event)
+            op_role = await self._get_member_role(event, group_id, operator) if group_id and operator else ""
+            if self._cfg("set_admin_require_owner", False, group_id=group_id):
+                if op_role != "owner":
+                    yield event.plain_result("本群已开启严格模式：仅群主可以设置/取消群管理员")
+                    return
+            elif op_role != "owner" and not await self._is_plugin_admin(event):
+                yield event.plain_result("仅本群群主或插件管理员可以设置/取消群管理员")
+                return
             ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id)
             if not ok:
                 yield event.plain_result(err)
                 return
-            # set_group_admin：enable=True 设管理员，False 取消；仅群主可调用
             ok, err = await self._call_group_api(client, 'set_group_admin', "设置管理员", group_id=gid, user_id=uid, enable=enable)
             if not ok:
                 yield event.plain_result(f"设置管理员失败: {err}")

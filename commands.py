@@ -325,7 +325,7 @@ class CommandsMixin:
         try:
             user_id = at_targets[0] if at_targets else str(args[1]).strip()
             card = ' '.join(args[2:]) if len(args) > 2 else (' '.join(args[1:]) if at_targets else '')
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_card_enabled", "设置名片", user_id)
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_card_enabled", "设置名片", user_id, precheck_action="set_card")
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -539,7 +539,7 @@ class CommandsMixin:
         try:
             user_id = str(args[1]).strip()
             title = ' '.join(args[2:])
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置头衔", user_id)
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置头衔", user_id, precheck_action="set_title")
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -593,16 +593,21 @@ class CommandsMixin:
             yield event.plain_result(f"取消失败: {e}")
 
     async def cmd_set_admin(self, event: AstrMessageEvent):
-        '''设置或取消群管理员。用法: /设置管理 @某人 或 <QQ号> [设置/取消]'''
+        '''设置或取消群管理员。用法: /设置管理 @某人 或 /取消管理 @某人'''
         group_id = self._get_group_id(event)
         if not group_id:
             yield event.plain_result("请在群内使用此命令")
             return
         # 权限：仅"白名单群的群主"或"插件全局管理员"可设置/取消本群管理员。
-        # 设置管理员属于高敏感操作，普通群管不应能借此扩张管理层。
         operator = self._try_get_sender_id(event)
         is_plugin_admin = await self._is_plugin_admin(event)
-        if not is_plugin_admin:
+        # Issue #35：严格模式下设置/取消管理员只认本群群主，插件全局管理员也不例外
+        if self._cfg("set_admin_require_owner", False, group_id=group_id):
+            role = await self._get_member_role(event, group_id, operator)
+            if role != "owner":
+                yield event.plain_result("本群已开启严格模式：仅群主可以设置/取消群管理员")
+                return
+        elif not is_plugin_admin:
             # 必须是白名单群（未设白名单时不开放群主自助设管理，避免任意群群主滥用）
             if not (self._group_white_set and group_id in self._group_white_set):
                 yield event.plain_result("此功能仅对白名单群开放，请联系插件管理员将本群加入白名单")
@@ -614,8 +619,8 @@ class CommandsMixin:
         # 目标：优先取 @，否则取文本里的 QQ 号
         at_targets = self._extract_at_targets(event)
         args = event.message_str.split()
-        enable = True
-        # 解析"设置/取消"动作（可出现在任意位置）
+        # Issue #40：/取消管理 指令默认执行取消；/设置管理 默认设置。显式 token 可覆盖。
+        enable = "取消" not in (args[0] if args else "")
         for tok in args[1:]:
             t = tok.strip().lower()
             if t in ("取消", "移除", "off", "0", "false", "down", "unset"):
@@ -625,7 +630,6 @@ class CommandsMixin:
         if at_targets:
             user_id = at_targets[0]
         else:
-            # 从文本参数里找第一个纯数字 QQ 号
             user_id = ""
             for tok in args[1:]:
                 tok = tok.strip()
@@ -633,14 +637,14 @@ class CommandsMixin:
                     user_id = tok
                     break
             if not user_id:
-                yield event.plain_result("用法: /设置管理 @某人 [设置/取消]\n或: /设置管理 <QQ号> [设置/取消]\n示例: /设置管理 @张三 设置")
+                yield event.plain_result("用法: /设置管理 @某人 或 /取消管理 @某人\n也可用 QQ 号: /设置管理 <QQ号>")
                 return
         try:
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id)
+            action = "set_admin" if enable else "unset_admin"
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id, precheck_action=action)
             if not ok:
                 yield event.plain_result(err)
                 return
-            # set_group_admin: OneBot API，enable=True 设为管理员，False 取消管理员
             ok, err = await self._call_group_api(client, 'set_group_admin', "设置管理员", group_id=gid, user_id=uid, enable=enable)
             if not ok:
                 yield event.plain_result(f"{'设置' if enable else '取消'}失败: {err}")
@@ -648,6 +652,26 @@ class CommandsMixin:
             yield event.plain_result(f"已{'将 ' + user_id + ' 设为群管理员' if enable else '取消 ' + user_id + ' 的群管理员'}")
         except Exception as e:
             yield event.plain_result(f"操作失败: {e}")
+
+    async def cmd_recall_reply(self, event: AstrMessageEvent):
+        '''回复撤回：引用一条消息并发送本指令，撤回被引用的消息（Issue #36）'''
+        ok, err, client, gid = await self._prepare_group_action(event, "recall_enabled", "回复撤回")
+        if not ok:
+            yield event.plain_result(err)
+            return
+        reply_id = self._extract_reply_msg_id(event)
+        if not reply_id:
+            yield event.plain_result("请先引用（回复）一条需要撤回的消息，再发送 /回复撤回")
+            return
+        mid = self._safe_int(reply_id, 0)
+        if not mid:
+            yield event.plain_result("被引用消息 ID 无效")
+            return
+        ok, err = await self._call_group_api(client, 'delete_msg', "回复撤回", message_id=mid)
+        if not ok:
+            yield event.plain_result(f"撤回失败: {err}（注意：仅能撤回约2分钟内的消息）")
+            return
+        yield event.plain_result("已撤回被引用的消息")
 
     async def cmd_join_verify(self, event: AstrMessageEvent):
         '''修改入群验证方式。用法: /加群方式 <需要验证/允许/禁止>'''
@@ -885,8 +909,9 @@ class CommandsMixin:
         else:
             yield event.plain_result("参数错误，请使用: 开启 或 关闭")
 
-    async def cmd_revoke_admin_perm(self, event: AstrMessageEvent):
-        '''群主移除本群某群管的bot管理权限。用法: /移除群管权限 <QQ号> 或 /恢复群管权限 <QQ号>'''
+    async def cmd_revoke_admin_perm(self, event: AstrMessageEvent, restore: bool = None):
+        '''群主移除/恢复本群某群管的bot管理权限。restore 由注册入口显式传入（#42 C1），
+        None 时回退按命令词判断（兼容旧调用方式）。'''
         group_id = self._get_group_id(event)
         if not group_id:
             yield event.plain_result("请在群内使用此命令")
@@ -906,8 +931,8 @@ class CommandsMixin:
         if not target.isdigit():
             yield event.plain_result("请提供有效的 QQ 号")
             return
-        # 指令名区分移除/恢复
-        is_restore = "恢复" in event.message_str.split()[0]
+        # restore 优先用注册入口显式传入的值；None 时回退按命令词判断
+        is_restore = restore if restore is not None else ("恢复" in event.message_str.split()[0])
         if is_restore:
             self._storage.remove_group_admin_block(group_id, target)
             self._admin_role_cache.clear()
