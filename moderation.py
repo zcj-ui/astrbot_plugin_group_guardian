@@ -566,9 +566,14 @@ class ModerationMixin:
                     self._call_llm_safe(system_prompt, prompt), timeout=60.0)
 
             # ---------- JSON 响应解析 ----------
-            # LLM 回复中可能包含额外的解释文字，需用正则提取 JSON 部分。
-            # 优先匹配包含 "violation" 键的 JSON 对象，确保结构正确；
-            # 若找不到则回退到匹配任意 {...}，增加容错性。
+            # 优先整体解析（LLM 直接返回纯 JSON 的场景，嵌套花括号也不怕）；
+            # 失败再用正则提取（LLM 夹带解释文字的场景）。
+            try:
+                whole = json.loads(llm_response.strip())
+                if isinstance(whole, dict):
+                    return self._normalize_llm_moderation_result(whole)
+            except (json.JSONDecodeError, ValueError):
+                pass
             json_match = re.search(r'\{[^{}]*"violation"[^{}]*\}', llm_response, re.DOTALL)
             if not json_match:
                 json_match = re.search(r'\{.*\}', llm_response, re.DOTALL)
@@ -1306,8 +1311,41 @@ class ModerationMixin:
         return '\n'.join(results)
 
     @staticmethod
-    async def _download_bytes(url: str, max_bytes: int = 5 * 1024 * 1024, timeout: float = 10.0):
+    def _is_private_host(host: str) -> bool:
+        """SSRF 防护：判定主机是否指向内网/本机地址（含解析后 IP），是则拒绝下载。"""
+        import ipaddress
+        import socket
+        if not host:
+            return True
+        try:
+            ip = ipaddress.ip_address(host)
+            return ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        except ValueError:
+            pass  # 是域名，继续解析
+        try:
+            infos = socket.getaddrinfo(host, None)
+            for info in infos:
+                ip = ipaddress.ip_address(info[4][0])
+                if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                    return True
+            return False
+        except Exception:
+            return True  # 解析失败按不安全处理
+
+    @classmethod
+    async def _download_bytes(cls, url: str, max_bytes: int = 5 * 1024 * 1024, timeout: float = 10.0):
         if not url or not url.lower().startswith(("http://", "https://")):
+            return None
+        # SSRF 防护（扫描#38 M1）：图片 URL 来自群消息（攻击者可控），
+        # 禁止指向内网/本机的地址，防止诱导 Bot 探测内网服务。DNS 解析放线程池避免阻塞。
+        try:
+            from urllib.parse import urlparse
+            host = urlparse(url).hostname or ""
+            loop = asyncio.get_event_loop()
+            if await loop.run_in_executor(None, cls._is_private_host, host):
+                logger.debug(f"[GroupMgr] 拒绝下载内网/不可解析地址图片: {host}")
+                return None
+        except Exception:
             return None
         try:
             import aiohttp

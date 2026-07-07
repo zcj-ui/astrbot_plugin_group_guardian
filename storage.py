@@ -62,7 +62,8 @@ class SQLiteStorage:
     @contextmanager
     def _connect(self):
         # 使用 contextmanager 确保连接在退出 with 块时总是通过 finally 关闭，防止泄漏。
-        conn = sqlite3.connect(str(self.db_path))
+        # timeout=5：数据库被外部锁定时最多等 5 秒抛异常，避免永久阻塞事件循环（扫描#38 S5）
+        conn = sqlite3.connect(str(self.db_path), timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
         try:

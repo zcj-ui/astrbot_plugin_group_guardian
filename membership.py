@@ -26,7 +26,8 @@ class MembershipMixin:
         """
         if not comment:
             return comment
-        m = _re.search(r"答案[:：]\s*(.*)\s*$", comment, _re.DOTALL)
+        # 贪婪前缀让匹配定位到最后一个「答案：」，防止验证问题本身含"答案："导致提取到问题片段
+        m = _re.match(r"(?s).*答案[:：]\s*(.*?)\s*$", comment)
         if m:
             return m.group(1).strip()
         return comment

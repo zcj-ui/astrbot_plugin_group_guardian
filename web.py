@@ -471,6 +471,8 @@ class WebMixin:
                 self.config["enabled"] = self._parse_bool(self.config.get("enabled", True), True)
             if updated:
                 self._save_config_safe()
+                # 全局值变化会影响未覆盖群的实际生效值，清空群配置缓存保证一致（扫描#38 S6）
+                self._invalidate_group_cfg_cache()
             return jsonify({"status": "success", "updated": updated})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})

@@ -495,7 +495,7 @@ class LlmToolsMixin:
                 # 不同驱动器（如 C: vs D:）时 commonpath 会抛 ValueError，此时认定为不安全
                 path_allowed = False
             if not path_allowed:
-                yield event.plain_result(f"仅允许上传插件数据目录 uploads 下的文件: {safe_dir}")
+                yield event.plain_result("文件路径不合法：仅允许上传插件数据目录 uploads 子目录内的文件")
                 return
             # 文件存在性检查：确保文件确实存在于磁盘上
             if not os.path.isfile(normalized_path):

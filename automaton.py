@@ -28,6 +28,10 @@ def is_literal_pattern(pattern: str) -> bool:
     return not _REGEX_META.search(pattern)
 
 
+# 正则展开的候选数上限：多个 (a|b|c)/[abc] 相乘呈指数增长，超限整体回退为正则匹配（扫描#38 m2）
+_MAX_EXPAND_CANDIDATES = 1000
+
+
 def _extract_alternatives(pattern: str) -> List[str]:
     """从简单正则中提取纯文本候选。
 
@@ -54,6 +58,8 @@ def _extract_alternatives(pattern: str) -> List[str]:
             valid_options = [o for o in options if not _REGEX_META.search(o)]
             if not valid_options:
                 return []
+            if len(candidates) * len(valid_options) > _MAX_EXPAND_CANDIDATES:
+                return []  # 超限回退为正则匹配，防止笛卡尔积撑爆内存
             new_candidates = []
             for c in candidates:
                 for opt in valid_options:
@@ -78,6 +84,8 @@ def _extract_alternatives(pattern: str) -> List[str]:
                     j += 1
             if not chars:
                 return []
+            if len(candidates) * len(chars) > _MAX_EXPAND_CANDIDATES:
+                return []  # 超限回退为正则匹配
             new_candidates = []
             for c in candidates:
                 for ch_char in chars:
