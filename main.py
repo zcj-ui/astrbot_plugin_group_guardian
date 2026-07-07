@@ -344,14 +344,14 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
     # 设置管理：权限在方法内精细校验（白名单群群主 / 插件管理员），故不加框架级 ADMIN 限制
     @filter.command("设置管理")
     async def cmd_set_admin(self, event: AstrMessageEvent):
-        '''设置或取消群管理员。用法: /设置管理 @某人 或 <QQ号> [设置/取消]'''
-        async for item in CommandsMixin.cmd_set_admin(self, event):
+        '''设置群管理员。用法: /设置管理 @某人 或 <QQ号> [设置/取消]'''
+        async for item in CommandsMixin.cmd_set_admin(self, event, default_enable=True):
             yield item
 
     @filter.command("取消管理")
     async def cmd_unset_admin(self, event: AstrMessageEvent):
         '''取消群管理员。用法: /取消管理 @某人 或 <QQ号>（Issue #40）'''
-        async for item in CommandsMixin.cmd_set_admin(self, event):
+        async for item in CommandsMixin.cmd_set_admin(self, event, default_enable=False):
             yield item
 
     @filter.command("加群方式")

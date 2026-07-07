@@ -467,10 +467,6 @@ class UtilitiesMixin:
         """按单个分类增量编译 AC 自动机。"""
         return self._build_category_automaton(cat_name, cat_data)
 
-    def _lexicon_category_enabled(self, cat_name: str) -> bool:
-        """判断词库分类是否在当前配置中启用。"""
-        return self._lexicon_switch_map().get(cat_name, True)
-
     def _check_lexicon(self, text: str) -> Dict[str, bool]:
         # 用 AC 自动机逐类扫描文本，返回各分类是否命中的 dict。
         result = {}
@@ -496,20 +492,36 @@ class UtilitiesMixin:
         return text[:limit] + suffix
 
     def _format_message_content(self, raw_message) -> str:
-        # 将 OneBot 消息链（segment 列表）按 type 分派到 _SEG_FORMATTERS，拼接为纯文本供审核规则匹配。
+        # 将 OneBot 消息链按段类型转为纯文本供审核规则匹配。
+        # dict 段走 _SEG_FORMATTERS；组件对象段按类名映射——绝不能 str(seg) 转储：
+        # pydantic repr 会带出 Reply 的引用原文（#33 组合检测路径复活）和 At/Reply 的
+        # qq= 字段（误命中广告正则 q\s*q），并让拆字规避检测被 repr 噪声完全淹没。
         if raw_message is None:
             return '[空消息]'
         if not isinstance(raw_message, list):
             return str(raw_message)
         parts = []
         for seg in raw_message:
-            if not isinstance(seg, dict):
-                parts.append(str(seg))
+            if isinstance(seg, dict):
+                t = seg.get('type', '')
+                d = seg.get('data', {}) or {}
+                formatter = self._SEG_FORMATTERS.get(t)
+                parts.append(formatter(d) if formatter else f"[{t}]")
                 continue
-            t = seg.get('type', '')
-            d = seg.get('data', {}) or {}
-            formatter = self._SEG_FORMATTERS.get(t)
-            parts.append(formatter(d) if formatter else f"[{t}]")
+            cls = type(seg).__name__
+            seg_type = getattr(seg, 'type', '') if hasattr(seg, 'type') else ''
+            if cls == 'Plain' or seg_type == 'text':
+                parts.append(getattr(seg, 'text', '') or '')
+            elif cls == 'Reply' or seg_type == 'reply':
+                parts.append(f"[回复:{getattr(seg, 'id', '')}]")
+            elif cls == 'At' or seg_type == 'at':
+                parts.append(f"@{getattr(seg, 'qq', '')}")
+            elif cls == 'Image' or seg_type == 'image':
+                parts.append('[图片]')
+            elif cls == 'Forward' or seg_type == 'forward':
+                parts.append('[合并转发消息]')
+            else:
+                parts.append(f"[{cls or seg_type or '未知'}]")
         return ''.join(parts) if parts else '[空消息]'
 
     def _invalidate_stats_cache(self):

@@ -119,7 +119,7 @@ class LlmToolsMixin:
             card(string): 新的群名片
         '''
         try:
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_card_enabled", "修改群名片", user_id)
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_card_enabled", "修改群名片", user_id, precheck_action="set_card")
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -189,19 +189,13 @@ class LlmToolsMixin:
         '''
         try:
             group_id = self._get_group_id(event)
-            # Issue #35：与指令路径保持一致的权限收紧——
-            # 严格模式下仅本群群主可通过 LLM 工具设置/取消管理员；
-            # 非严格模式也要求操作者是插件管理员或本群群主（堵住群管理员经 _is_admin 提权的口子）
-            operator = self._try_get_sender_id(event)
-            op_role = await self._get_member_role(event, group_id, operator) if group_id and operator else ""
-            if self._cfg("set_admin_require_owner", False, group_id=group_id):
-                if op_role != "owner":
-                    yield event.plain_result("本群已开启严格模式：仅群主可以设置/取消群管理员")
-                    return
-            elif op_role != "owner" and not await self._is_plugin_admin(event):
-                yield event.plain_result("仅本群群主或插件管理员可以设置/取消群管理员")
+            # Issue #35：与指令路径共用同一操作者校验（含严格模式与白名单门），杜绝路径不一致提权
+            op_ok, op_err = await self._check_set_admin_operator(event, group_id)
+            if not op_ok:
+                yield event.plain_result(op_err)
                 return
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id)
+            action = "set_admin" if enable else "unset_admin"
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id, precheck_action=action)
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -240,12 +234,12 @@ class LlmToolsMixin:
             title(string): 专属头衔
         '''
         try:
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置专属头衔", user_id)
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置专属头衔", user_id, precheck_action="set_title")
             if not ok:
                 yield event.plain_result(err)
                 return
             # OneBot 中设置群头衔的动作为 set_group_special_title，而非 set_member_title
-            ok, err = await self._call_group_api(client, 'set_group_special_title', "设置头衔", group_id=gid, user_id=uid, special_title=title)
+            ok, err = await self._call_group_api(client, 'set_group_special_title', "设置头衔", group_id=gid, user_id=uid, special_title=title, duration=-1)
             if not ok:
                 yield event.plain_result(f"设置头衔失败: {err}")
                 return
@@ -270,13 +264,9 @@ class LlmToolsMixin:
             for m in shut_list[:15]:
                 uid = m.get("user_id", "")
                 nickname = m.get("nickname", "")
-                # shut_up_timestamp 是禁言结束时的 Unix 时间戳；通过当前时间计算剩余时长
-                shut_time = self._safe_int(m.get("shut_up_timestamp", 0))
-                if shut_time:
-                    remain = max(0, shut_time - int(time.time()))
-                    remain_str = f"{remain // 60}分{remain % 60}秒"
-                else:
-                    remain_str = "未知"
+                # 统一走 _shut_remain_seconds 解析（兼容 shut_up_timestamp / duration 两种字段）
+                remain = self._shut_remain_seconds(m)
+                remain_str = "未知" if remain < 0 else f"{remain // 60}分{remain % 60}秒"
                 member_texts.append(f"- {nickname}({uid}) 剩余: {remain_str}")
             yield event.plain_result(f"禁言列表（共{len(shut_list)}人）：\n" + "\n".join(member_texts))
         except Exception as e:

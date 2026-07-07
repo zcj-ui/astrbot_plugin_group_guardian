@@ -258,9 +258,10 @@ class ModerationMixin:
         # 从群聊消息历史中拉取当前消息之前的上下文消息（最多 count 条，默认 30 条）。
         # 30 条是一个经验值：太少无法形成有效语境（判断脏话/政治误报需要看前后对话），
         # 太多则容易超出 LLM 的 token 限制且携带无关信息干扰判断。
-        if not self._client:
+        # 走 _get_client 的三级回退而非裸读缓存，避免缓存暂空时静默丢失审核上下文（审查 P0-6）
+        client = await self._get_client(None)
+        if not client:
             return []
-        client = self._client
         gid = self._safe_int(group_id, 0)
         if not gid:
             return []
@@ -462,6 +463,11 @@ class ModerationMixin:
             "tencent_ban": "腾讯封禁",
         }
         suspect_desc = "+".join([type_desc.get(t, t) for t in suspect_types]) if suspect_types else "无"
+
+        # 分隔符消毒：待审内容里的连续尖括号会提前闭合 <<<>>> 标记区，
+        # 配合 fail-open（解析失败默认放行）可构成审核绕过，统一压缩为双字符
+        text = re.sub(r'[<>]{3,}', lambda m: m.group(0)[:2], text)
+        context_text = re.sub(r'[<>]{3,}', lambda m: m.group(0)[:2], context_text)
 
         # ---------- Prompt 模板 ----------
         # 完整的 LLM 审核提示词包含以下几部分：

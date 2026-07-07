@@ -501,11 +501,10 @@ class CommandsMixin:
                 yield event.plain_result("当前无人被禁言")
                 return
             lines = [f"🚫 禁言列表 ({len(banned)}人):"]
-            # 最多展示前 20 条，duration 单位是秒，除以 60 转为分钟显示
             for b in banned[:20]:
                 uid = b.get("user_id", "?")
-                dur = b.get("duration", 0)
-                lines.append(f"  QQ: {uid}, 剩余: {dur // 60}分钟")
+                remain = self._shut_remain_seconds(b)
+                lines.append(f"  QQ: {uid}, 剩余: {'未知' if remain < 0 else str(remain // 60) + '分钟'}")
             yield event.plain_result("\n".join(lines))
         except Exception as e:
             yield event.plain_result(f"获取失败: {e}")
@@ -592,35 +591,27 @@ class CommandsMixin:
         except Exception as e:
             yield event.plain_result(f"取消失败: {e}")
 
-    async def cmd_set_admin(self, event: AstrMessageEvent):
-        '''设置或取消群管理员。用法: /设置管理 @某人 或 /取消管理 @某人'''
+    async def cmd_set_admin(self, event: AstrMessageEvent, default_enable: bool = None):
+        '''设置或取消群管理员。default_enable 由注册入口显式传入（/设置管理→True，/取消管理→False），
+        None 时回退命令词启发式（兼容旧调用）。'''
         group_id = self._get_group_id(event)
         if not group_id:
             yield event.plain_result("请在群内使用此命令")
             return
-        # 权限：仅"白名单群的群主"或"插件全局管理员"可设置/取消本群管理员。
-        operator = self._try_get_sender_id(event)
-        is_plugin_admin = await self._is_plugin_admin(event)
-        # Issue #35：严格模式下设置/取消管理员只认本群群主，插件全局管理员也不例外
-        if self._cfg("set_admin_require_owner", False, group_id=group_id):
-            role = await self._get_member_role(event, group_id, operator)
-            if role != "owner":
-                yield event.plain_result("本群已开启严格模式：仅群主可以设置/取消群管理员")
-                return
-        elif not is_plugin_admin:
-            # 必须是白名单群（未设白名单时不开放群主自助设管理，避免任意群群主滥用）
-            if not (self._group_white_set and group_id in self._group_white_set):
-                yield event.plain_result("此功能仅对白名单群开放，请联系插件管理员将本群加入白名单")
-                return
-            role = await self._get_member_role(event, group_id, operator)
-            if role != "owner":
-                yield event.plain_result("仅本群群主或插件管理员可以设置/取消群管理员")
-                return
+        # 操作者权限校验（与 LLM 工具路径共用同一实现，见 onebot._check_set_admin_operator）
+        op_ok, op_err = await self._check_set_admin_operator(event, group_id)
+        if not op_ok:
+            yield event.plain_result(op_err)
+            return
         # 目标：优先取 @，否则取文本里的 QQ 号
         at_targets = self._extract_at_targets(event)
         args = event.message_str.split()
-        # Issue #40：/取消管理 指令默认执行取消；/设置管理 默认设置。显式 token 可覆盖。
-        enable = "取消" not in (args[0] if args else "")
+        # Issue #40：方向优先用注册入口显式传入的 default_enable（#42 同款加固，
+        # 防 message_str 被唤醒前缀剥离后启发式失效反向提权）；显式 token 仍可覆盖。
+        if default_enable is not None:
+            enable = default_enable
+        else:
+            enable = "取消" not in (args[0] if args else "")
         for tok in args[1:]:
             t = tok.strip().lower()
             if t in ("取消", "移除", "off", "0", "false", "down", "unset"):

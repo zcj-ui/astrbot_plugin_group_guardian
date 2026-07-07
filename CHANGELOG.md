@@ -1,5 +1,46 @@
 # Changelog
 
+## v2.6.1 - 2026-07-07
+
+### 发布前多智能体工作流审查修复（33 agents，25 条确认，去重 10 必修 + 4 可选）
+
+**本轮新引入回归的修复（发版阻断项）：**
+
+- **[P0-1·根因] `_format_message_content` 组件对象 str() 转储**：#33 的修复只护住了单条消息路径——防刷屏队列文本经 `str(seg)` 把 Reply 组件的引用原文完整转储进组合检测，误罚在组合路径复活；At/Reply 的 `qq=` 字段还会误命中广告正则 `q\s*q`，拆字规避检测被 repr 噪声淹没。现按类名映射（Plain→text、Reply→[回复:id]、At→@qq），删除 str(seg) 回退。已用模拟组件对象冒烟验证双路径
+- **[P0-2] `/取消管理` 方向判定显式传参**：main.py 注册入口传 `default_enable=True/False`，不再依赖命令词启发式（message_str 被唤醒前缀剥离时会反向变成设管理员）
+- **[P0-3] 设管理员操作者校验统一**：提取 `_check_set_admin_operator` 供指令与 LLM 工具共用，堵住 LLM 路径缺白名单门的提权旁路
+- **[P0-4] 预检增加"任免管理员需 bot 为群主"规则**：bot 是普通管理员时提前拦截必败调用，纠正误导性文案
+
+**存量债务修复：**
+
+- **[P0-5] LLM 工具与指令路径预检对齐**：`set_member_card_tool`/`set_group_admin_tool`/`set_member_title_tool` 补 `precheck_action`；头衔工具补 `duration=-1`（永久头衔，与指令/远程路径一致）
+- **[P0-6] 停止业务失败粗暴置 `self._client=None`**（5 处）；`_fetch_context_messages` 改走 `_get_client` 三级回退，不再裸读缓存静默丢失 LLM 审核上下文；顺带为直调 call_action 的 5 处补 20s 超时
+- **[P1-8] 审核 prompt 分隔符消毒**：待审内容中连续 3+ 尖括号压缩，防提前闭合 `<<<>>>` 标记区绕过审核
+- **[P2-9] 禁言列表剩余时间统一解析**：新增 `_shut_remain_seconds`（优先 shut_up_timestamp，其次 duration），两个入口不再各读各的字段
+- **[P2-10] 批量群配置补 options 白名单校验**，与单项路径一致
+- **死代码删除**：`_send_private_msg`/`_mute_member_by_id`/`_kick_member_by_id`/`_lexicon_category_enabled` 四个零调用方法（grep 复核后删除，约 55 行）
+
+## v2.6.0 - 2026-07-07
+
+### HIGH Bug 修复（附图片证据分析）
+
+- **#33 回复消息误撤回+误禁言**：B 引用回复 A 的消息时，AstrBot Reply 组件的 `text` 属性（引用原文）被 `_parse_message_chain` 贪婪的 `hasattr(seg,'text')` 分支吸入审核文本，B 因 A 的内容被 LLM 判违规。现 reply 段（dict/对象双格式）显式跳过，收紧文本分支排除 At/Face/Node/Nodes
+- **#41 入群审核误判**：验证问题原文（"你从哪里知道本**群**的？"）混入关键词匹配，用户答"666"却命中"群"。新增 `_extract_join_answer` 只匹配「答案：」后的用户输入（锚定最后一次出现）
+
+### 新功能
+
+- **#36 `/回复撤回`**：引用一条消息发送指令即撤回被引用消息
+- **#40 `/取消管理`**：独立指令（此前只能 /设置管理 @某人 取消）
+- **#35 `set_admin_require_owner`**：严格模式下任免管理员仅本群群主可用，插件全局管理员也不例外
+- **#39 `llm_moderation_custom_prompt`**：自定义 LLM 审核标准（嫌默认激进可自行放宽），JSON 格式约束由框架追加保证可解析，可按群覆盖
+
+### 扫描 #42/#38 修复
+
+- #42-C1 恢复群管权限命令显式 restore 参数；#42-M5 审核 prompt `<<<>>>` 防注入分隔；#42-m6 CSV 补换行符检查
+- #38-M1 **SSRF 防护**：二维码图片下载拒绝内网/本机/链路本地地址（DNS 解析放线程池）
+- #38-m1 上传错误不再泄露服务器路径；#38-m2 正则展开 1000 候选上限防内存爆炸；#38-m4 LLM 响应先整体 json.loads；#38-S5 sqlite 连接 5s 超时；#38-S6 全局配置更新清群缓存
+- #34 ERR_NO_PERMISSION 友好化 + 名片/头衔/管理员操作补前置预检
+
 ## v2.5.2 - 2026-07-04
 
 ### 新功能

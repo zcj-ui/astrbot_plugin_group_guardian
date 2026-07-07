@@ -1762,6 +1762,10 @@ class WebMixin:
                     value = str(self._normalize_int_config_value(key, value))
                 else:
                     value = "" if value is None else str(value)
+                    # 与单项设置路径一致：有 options 的字段校验值在白名单内，不合法跳过
+                    options = meta.get("options") or []
+                    if options and value not in [str(x) for x in options]:
+                        continue
                 self._storage.set_group_config(group_id, key, value)
                 updated.append(key)
             self._invalidate_group_cfg_cache(group_id)

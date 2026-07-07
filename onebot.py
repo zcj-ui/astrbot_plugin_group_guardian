@@ -266,11 +266,48 @@ class OneBotMixin:
         bot_role = await self._get_role_by_id(client, group_id, bot_uin) if bot_uin else ""
         if bot_role not in ("admin", "owner"):
             return False, "机器人在该群不是管理员/群主，无法执行群管操作"
+        # QQ 平台任免管理员仅群主可执行，bot 为普通管理员时调用必败，提前拦截并给准确文案
+        if action in ("set_admin", "unset_admin") and bot_role != "owner":
+            return False, "设置/取消管理员需要机器人为群主"
         target_role = await self._get_role_by_id(client, group_id, target_uid)
         if target_role == "owner":
             return False, "目标是群主，无法操作"
         if target_role == "admin" and bot_role != "owner":
             return False, "目标是管理员，机器人需为群主才能操作"
+        return True, ""
+
+    def _shut_remain_seconds(self, item: dict) -> int:
+        """统一解析 get_group_shut_list 条目的剩余禁言秒数（不同 OneBot 实现字段不同）。
+
+        优先 shut_up_timestamp（解禁时刻戳，NapCat 等），其次 duration（剩余秒数，go-cqhttp 等），
+        都取不到返回 -1（调用方显示"未知"）。
+        """
+        ts = self._safe_int(item.get("shut_up_timestamp", 0), 0)
+        if ts > 0:
+            remain = ts - int(time.time())
+            return remain if remain > 0 else 0
+        dur = self._safe_int(item.get("duration", -1), -1)
+        return dur if dur >= 0 else -1
+
+    async def _check_set_admin_operator(self, event: AstrMessageEvent, group_id: str) -> Tuple[bool, str]:
+        """设置/取消管理员的操作者权限校验（指令与 LLM 工具两路径共用，保证一致）。
+
+        严格模式(set_admin_require_owner)：仅本群群主，插件管理员也不例外；
+        非严格模式：插件管理员任意群可用；否则要求群在白名单内且操作者为群主。
+        """
+        operator = self._try_get_sender_id(event)
+        if self._cfg("set_admin_require_owner", False, group_id=group_id):
+            role = await self._get_member_role(event, group_id, operator) if operator else ""
+            if role != "owner":
+                return False, "本群已开启严格模式：仅群主可以设置/取消群管理员"
+            return True, ""
+        if await self._is_plugin_admin(event):
+            return True, ""
+        if not (self._group_white_set and group_id in self._group_white_set):
+            return False, "此功能仅对白名单群开放，请联系插件管理员将本群加入白名单"
+        role = await self._get_member_role(event, group_id, operator) if operator else ""
+        if role != "owner":
+            return False, "仅本群群主或插件管理员可以设置/取消群管理员"
         return True, ""
 
     def _check_group_access(self, event: AstrMessageEvent) -> Tuple[bool, str]:
@@ -416,8 +453,8 @@ class OneBotMixin:
         try:
             await asyncio.wait_for(client.call_action('delete_msg', message_id=mid), timeout=ONEBOT_CALL_TIMEOUT)
         except Exception as e:
+            # 撤回失败多为业务性原因（超2分钟/无权限），不清 client 缓存
             logger.warning(f"[GroupMgr] 撤回消息失败: {e}")
-            self._client = None
 
     async def _maybe_recall_on_kick(self, client, gid, user_id) -> int:
         """按 kick_recall_enabled 配置在踢人前撤回该成员近期消息，返回撤回条数。
@@ -480,10 +517,11 @@ class OneBotMixin:
         if not gid or not uid:
             return
         try:
-            await client.call_action('set_group_kick', group_id=gid, user_id=uid)
+            await asyncio.wait_for(client.call_action('set_group_kick', group_id=gid, user_id=uid), timeout=ONEBOT_CALL_TIMEOUT)
         except Exception as e:
+            # 业务性失败（无权限等）不清空 client 缓存——_get_client 自带三级回退，
+            # 粗暴置 None 会让后续 _fetch_context_messages 等静默丢失上下文（审查 P0-6）
             logger.warning(f"[GroupMgr] 踢人失败: {e}")
-            self._client = None
 
     async def _mute_member(self, event: AiocqhttpMessageEvent, duration: int = None):
         group_id = self._get_group_id(event)
@@ -499,25 +537,9 @@ class OneBotMixin:
             return
         ban_duration = duration if duration is not None else self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
         try:
-            await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=ban_duration)
+            await asyncio.wait_for(client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=ban_duration), timeout=ONEBOT_CALL_TIMEOUT)
         except Exception as e:
             logger.warning(f"[GroupMgr] 禁言失败: {e}")
-            self._client = None
-
-    async def _send_private_msg(self, user_id: str, text: str, event: AstrMessageEvent = None) -> bool:
-        # 给指定 QQ 发送私聊消息。非好友等情况可能失败，返回是否成功，调用方需容错。
-        uid = self._safe_int(user_id, 0)
-        if not uid or not text:
-            return False
-        client = await self._get_client(event)
-        if not client:
-            return False
-        try:
-            await client.call_action('send_private_msg', user_id=uid, message=str(text))
-            return True
-        except Exception as e:
-            logger.debug(f"[GroupMgr] 私聊发送失败({user_id}): {e}")
-            return False
 
     async def _unban_member(self, group_id, user_id, event: AstrMessageEvent = None) -> bool:
         # 解除某群成员禁言（set_group_ban duration=0）。用于定时解禁、申诉通过等场景。
@@ -529,43 +551,8 @@ class OneBotMixin:
         if not client:
             return False
         try:
-            await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=0)
+            await asyncio.wait_for(client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=0), timeout=ONEBOT_CALL_TIMEOUT)
             return True
         except Exception as e:
             logger.warning(f"[GroupMgr] 解禁失败({group_id}/{user_id}): {e}")
-            self._client = None
-            return False
-
-    async def _mute_member_by_id(self, group_id, user_id, duration: int, event: AstrMessageEvent = None) -> bool:
-        # 按 群号+QQ 直接禁言（不依赖 event 的发送者），供批量禁言复用。duration 单位秒。
-        gid = self._safe_int(group_id, 0)
-        uid = self._safe_int(user_id, 0)
-        if not gid or not uid:
-            return False
-        client = await self._get_client(event)
-        if not client:
-            return False
-        try:
-            await client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=int(duration))
-            return True
-        except Exception as e:
-            logger.warning(f"[GroupMgr] 禁言失败({group_id}/{user_id}): {e}")
-            self._client = None
-            return False
-
-    async def _kick_member_by_id(self, group_id, user_id, event: AstrMessageEvent = None) -> bool:
-        # 按 群号+QQ 直接踢人，供批量踢人复用。
-        gid = self._safe_int(group_id, 0)
-        uid = self._safe_int(user_id, 0)
-        if not gid or not uid:
-            return False
-        client = await self._get_client(event)
-        if not client:
-            return False
-        try:
-            await client.call_action('set_group_kick', group_id=gid, user_id=uid)
-            return True
-        except Exception as e:
-            logger.warning(f"[GroupMgr] 踢人失败({group_id}/{user_id}): {e}")
-            self._client = None
             return False
