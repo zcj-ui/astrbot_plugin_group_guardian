@@ -631,5 +631,53 @@
         "type": "bool",
         "default": true,
         "hint": "保持历史行为：白名单内（或未设白名单且非黑名单）群的群主/管理员默认可用群管命令（仅本群，非插件全局管理员）。若只想用F5按群精细授权，可关闭此项"
+    },
+    "card_monitor_enabled": {
+        "description": "名片监控总开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后才会处理群成员名片变更/管理员任免通知（需协议端上报 notice 事件，NapCat/LLOneBot 支持）。默认关闭，请在 WebUI「名片监控」页配置各子功能"
+    },
+    "card_log_enabled": {
+        "description": "名片变更/管理员任免记日志",
+        "type": "bool",
+        "default": true,
+        "hint": "记录所有名片变更（谁的名片、旧→新、时间）和管理员任免事件到「名片监控」页。注意：协议不上报操作者，无法区分本人改还是管理员改"
+    },
+    "card_monitor_notify": {
+        "description": "名片还原时群内通知",
+        "type": "bool",
+        "default": true,
+        "hint": "触发名片保护还原/违规名片还原时在群内发送通知消息"
+    },
+    "card_protect_enabled": {
+        "description": "名片保护/还原",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，保护名单内成员的名片被改动会自动改回预设名片。保护名单在 WebUI「名片监控」页维护"
+    },
+    "card_audit_link_only": {
+        "description": "名片仅拦链接/店铺（宽松）",
+        "type": "bool",
+        "default": false,
+        "hint": "只拦截含网址链接/二维码/店铺域名的名片，允许引流缩写、联系方式暗示（如 xxxrxxx）等自定义昵称。命中即还原为旧名片"
+    },
+    "card_audit_enabled": {
+        "description": "违规名片全量审核",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后名片经词库/正则初筛+LLM上下文判断（同消息审核），拦引流/辱骂/违禁词等并还原。与「仅拦链接」可同时开，此时全量判断也放行引流"
+    },
+    "card_audit_llm_always": {
+        "description": "名片强制全量送LLM判断",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后即使初筛未命中也把每个名片送LLM判断，用于识别 ldxp/catfk 这类无规律引流缩写黑话（成本高，仅在「违规名片全量审核」开启时生效）"
+    },
+    "admin_change_notify_enabled": {
+        "description": "管理员任免群内通知",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，有人被设为/被取消群管理员时在群内发送通知（协议不含操作者，只报被任免者）"
     }
 }

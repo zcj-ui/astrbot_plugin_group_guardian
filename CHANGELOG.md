@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.7.0 - 2026-07-07
+
+### 新板块：名片监控（独立 WebUI 页面，默认全部关闭）
+
+监听 OneBot notice 事件（`group_card` 名片变更 / `group_admin` 管理员任免，NapCat/LLOneBot 支持），
+新增独立「名片监控」侧边栏页面。**注意协议限制**：这两个事件都不含 operator_id，无法区分「本人改」还是「管理员改」，只能记录变更事实。
+
+四大功能，各自独立开关，均需在 WebUI 打开：
+
+- **A 名片变更日志**（`card_log_enabled`）：记录所有名片变更（谁的名片、旧→新、时间）和管理员任免事件，存入 `card_change_logs` 表，WebUI 分页/筛选/清空
+- **B 名片保护/还原**（`card_protect_enabled`）：保护名单内成员名片被改后自动改回预设值，名单在 WebUI 维护（`card_protected_members` 表）
+- **C 违规名片审核**，两档独立开关：
+  - `card_audit_link_only` 仅拦链接/店铺（宽松）：只拦网址/二维码/店铺域名，**允许引流缩写/联系方式暗示**（如 `xxxrxxx`）等自定义昵称
+  - `card_audit_enabled` 全量审核：词库/正则初筛 + LLM 上下文判断（同消息审核），拦引流/辱骂/违禁词
+  - `card_audit_llm_always` 强制全量送 LLM：初筛未命中也送 LLM，识别 `ldxp`/`catfk` 这类无规律引流缩写黑话
+  - **任何店铺/推广链接直接还原**（不走 LLM），还原目标默认旧名片，旧名片也脏则清空
+- **D 管理员任免通知**（`admin_change_notify_enabled`）：有人被设为/取消群管理员时群内通知
+
+复用现有基础设施：`_get_raw_event`、`_check_group_access`、`_check_lexicon`、`_call_llm_safe`、`_call_group_api('set_group_card')`。
+`CardMonitorMixin` 加入 Main 继承链，两个 notice 监听器复用 `_on_group_request` 同款 `@filter.event_message_type(ALL)` + 读 `raw_event` 模式。
+
 ## v2.6.1 - 2026-07-07
 
 ### 发布前多智能体工作流审查修复（33 agents，25 条确认，去重 10 必修 + 4 可选）

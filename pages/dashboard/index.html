@@ -440,6 +440,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.2 14.2L11 13V7h1.5v5.2l4.5 2.7-.8 1.3z"/></svg>
           <span>申诉/解禁</span>
         </a>
+        <a class="nav-item" data-tab="cardmon">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10zM6 11h6v2H6v-2zm0 4h4v2H6v-2z"/></svg>
+          <span>名片监控</span>
+        </a>
         <a class="nav-item" data-tab="settings">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
           <span>设置</span>
@@ -730,6 +734,36 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         </div>
       </div>
 
+      <div class="tab-panel" id="tab-cardmon">
+        <div class="page-header"><h1>名片监控</h1><button class="btn btn-ghost btn-sm" id="btnRefreshCardMon">刷新</button></div>
+        <div class="card">
+          <div class="card-header"><h2>功能开关</h2><span class="rules-subtle">默认全部关闭，需协议端上报 notice 事件（NapCat/LLOneBot 支持）。协议不含操作者，无法区分本人改还是管理员改</span></div>
+          <div class="settings-list" id="cardMonConfig" style="padding:8px 16px"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>名片保护名单</h2>
+            <div class="header-actions">
+              <input type="text" class="input-sm" id="cardProtGroup" placeholder="群号" style="width:120px" />
+              <input type="text" class="input-sm" id="cardProtUser" placeholder="QQ号" style="width:120px" />
+              <input type="text" class="input-sm" id="cardProtCard" placeholder="应有名片(留空=清空名片)" style="width:180px" />
+              <button class="btn btn-primary btn-sm" id="btnCardProtAdd">添加保护</button>
+            </div>
+          </div>
+          <div class="log-container" id="cardProtList"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>变更记录</h2>
+            <div class="header-actions">
+              <input type="text" class="input-sm" id="cardRecGroup" placeholder="按群号筛选" style="width:120px" />
+              <select class="input-sm" id="cardRecKind" style="width:130px"><option value="">全部类型</option><option value="card">名片变更</option><option value="admin">管理员任免</option></select>
+              <button class="btn btn-outline btn-sm" id="btnCardRecFilter">筛选</button>
+              <button class="btn btn-danger btn-sm" id="btnCardRecClear">清空</button>
+            </div>
+          </div>
+          <div class="log-container" id="cardRecList"><p class="empty">加载中...</p></div>
+        </div>
+      </div>
+
       <div class="tab-panel" id="tab-settings">
         <div class="page-header"><h1>设置</h1><button class="btn btn-primary btn-sm" id="btnSaveSettings">保存更改</button></div>
         <div class="card" style="margin-bottom:12px">
@@ -836,6 +870,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
     <a class="mobile-nav-item" data-tab="tasks">
       <svg viewBox="0 0 24 24"><path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V9h14v10zm-7-2 5-5-1.4-1.4-3.6 3.6-1.6-1.6L9 14l3 3z"/></svg>
       <span>任务</span>
+    </a>
+    <a class="mobile-nav-item" data-tab="cardmon">
+      <svg viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H4V8h16v10z"/></svg>
+      <span>名片</span>
     </a>
     <a class="mobile-nav-item" data-tab="settings">
       <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
@@ -1122,6 +1160,7 @@ function switchTab(tabName) {
   if (tabName === 'perms') { loadSuperAdmins(); loadGrants(); loadBlocks(); }
   if (tabName === 'groupcfg') loadGroupCfgGroups();
   if (tabName === 'tasks') { loadAppeals(); loadUnbans(); }
+  if (tabName === 'cardmon') loadCardMonitor();
   if (tabName === 'settings') loadSettings();
 }
 
@@ -1132,6 +1171,84 @@ function initTabs() {
   $$('.mobile-nav-item').forEach(function(item) {
     item.addEventListener('click', function() { switchTab(item.dataset.tab); });
   });
+}
+
+/* ===== 名片监控 ===== */
+async function loadCardMonitor() {
+  loadCardMonConfig();
+  loadCardProtected();
+  loadCardRecords();
+}
+
+async function loadCardMonConfig() {
+  var box = $('#cardMonConfig');
+  var res = await safeGet('card_monitor/config');
+  if (isApiError(res)) { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  var order = ['card_monitor_enabled','card_log_enabled','card_protect_enabled','card_audit_link_only','card_audit_enabled','card_audit_llm_always','admin_change_notify_enabled','card_monitor_notify'];
+  var html = order.map(function(k) {
+    var it = res[k]; if (!it) return '';
+    return '<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(it.description) +
+      ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(k) + ')</span></div>' +
+      (it.hint ? '<div class="setting-desc">' + esc(it.hint) + '</div>' : '') +
+      '</div><label class="toggle"><input type="checkbox" data-card-key="' + esc(k) + '"' + (it.value ? ' checked' : '') +
+      ' /><span class="slider"></span></label></div>';
+  }).join('');
+  box.innerHTML = html || '<p class="empty">无配置项</p>';
+  $$('[data-card-key]', box).forEach(function(inp) {
+    inp.addEventListener('change', async function() {
+      var ok = await postOrToast('card_monitor/config/set', { key: inp.dataset.cardKey, value: inp.checked }, '已保存', '保存失败');
+      if (!ok) inp.checked = !inp.checked;
+    });
+  });
+}
+
+async function loadCardProtected() {
+  var c = $('#cardProtList');
+  var res = await safeGet('card_monitor/protected');
+  if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  var list = res || [];
+  if (!list.length) { c.innerHTML = '<p class="empty">暂无受保护成员</p>'; return; }
+  var rows = list.map(function(r) {
+    return '<tr><td>' + esc(r.group_id) + '</td><td>' + esc(r.user_id) + '</td><td>' + esc(r.protected_card || '(空名片)') +
+      '</td><td><button class="btn btn-danger btn-sm" data-cp-del="' + esc(r.group_id) + '|' + esc(r.user_id) + '">移除</button></td></tr>';
+  }).join('');
+  c.innerHTML = '<table class="log-table"><thead><tr><th>群号</th><th>QQ</th><th>应有名片</th><th>操作</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  $$('[data-cp-del]', c).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var parts = btn.dataset.cpDel.split('|');
+      if (await postOrToast('card_monitor/protected/remove', { group_id: parts[0], user_id: parts[1] }, '已移除', '移除失败')) loadCardProtected();
+    });
+  });
+}
+
+async function loadCardRecords() {
+  var c = $('#cardRecList');
+  c.innerHTML = '<p class="empty">加载中...</p>';
+  var params = {};
+  var g = ($('#cardRecGroup').value || '').trim(); if (g) params.group_id = g;
+  var k = $('#cardRecKind').value; if (k) params.kind = k;
+  params.limit = 200;
+  var res = await safeGet('card_monitor/records', params);
+  if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  var list = res || [];
+  if (!list.length) { c.innerHTML = '<p class="empty">暂无记录</p>'; return; }
+  var rows = list.map(function(r) {
+    var kindBadge = r.kind === 'admin'
+      ? '<span class="badge badge-warning">管理员</span>'
+      : '<span class="badge badge-default">名片</span>';
+    var change;
+    if (r.kind === 'admin') {
+      change = (r.new_value === 'set' ? '被设为管理员' : (r.new_value === 'unset' ? '被取消管理员' : esc(r.new_value)));
+    } else {
+      change = '「' + esc(r.old_value || '(空)') + '」→「' + esc(r.new_value || '(空)') + '」';
+    }
+    var actBadge = r.action && r.action !== '记录'
+      ? '<span class="badge badge-success">' + esc(r.action) + '</span>'
+      : '<span class="rules-subtle">' + esc(r.action || '记录') + '</span>';
+    return '<tr><td>' + esc(r.time) + '</td><td>' + kindBadge + '</td><td>' + esc(r.group_id) +
+      '</td><td>' + esc(r.user_id) + '</td><td>' + change + '</td><td>' + actBadge + '</td></tr>';
+  }).join('');
+  c.innerHTML = '<table class="log-table"><thead><tr><th>时间</th><th>类型</th><th>群号</th><th>QQ</th><th>变更</th><th>处理</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 async function loadOverview() {
@@ -3165,6 +3282,25 @@ async function init() {
     if (n) loadBlocks();
   });
   bindClick('btnRefreshTasks', function() { loadAppeals(); loadUnbans(); });
+  bindClick('btnRefreshCardMon', loadCardMonitor);
+  bindClick('btnCardRecFilter', loadCardRecords);
+  bindClick('btnCardProtAdd', async function() {
+    var g = ($('#cardProtGroup').value || '').trim();
+    var u = ($('#cardProtUser').value || '').trim();
+    var card = $('#cardProtCard').value || '';
+    if (!g || !u) { toast('请填写群号和QQ号', 'error'); return; }
+    if (await postOrToast('card_monitor/protected/add', { group_id: g, user_id: u, protected_card: card }, '已添加保护', '添加失败')) {
+      $('#cardProtUser').value = ''; $('#cardProtCard').value = '';
+      loadCardProtected();
+    }
+  });
+  bindClick('btnCardRecClear', async function() {
+    var g = ($('#cardRecGroup').value || '').trim();
+    var msg = g ? ('确定清空群 ' + g + ' 的名片记录吗？') : '确定清空全部名片记录吗？';
+    if (await confirmModal(msg)) {
+      if (await postOrToast('card_monitor/records/clear', { group_id: g }, '已清空', '清空失败')) loadCardRecords();
+    }
+  });
   bindClick('btnRefreshGroupCfg', loadGroupCfgGroups);
   bindClick('gcManualLoad', function() {
     var g = ($('#gcManualGroup').value || '').trim();

@@ -15,6 +15,7 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import Aioc
 from .anti_flood import AntiFloodMixin
 from .appeal import AppealMixin
 from .automaton import HybridMatcher
+from .card_monitor import CardMonitorMixin
 from .commands import CommandsMixin
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .llm_tools import LlmToolsMixin
@@ -29,7 +30,7 @@ from .web import WebMixin
 
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
-class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
+class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
     """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -609,6 +610,32 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, Schedu
                 event.stop_event()
         except Exception as e:
             logger.warning(f"[GroupMgr] 入群审核出错: {e}")
+
+    # 名片监控：监听 group_card（名片变更）通知事件（与其它 ALL 监听互不干扰）。
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def _on_group_card_change(self, event: AiocqhttpMessageEvent):
+        if not self._is_group_card_notice(event):
+            return
+        try:
+            handled = await CardMonitorMixin._handle_group_card_change(self, event)
+            if handled:
+                event.stop_event()
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 名片变更处理出错: {e}")
+
+    # 名片监控：监听 group_admin（管理员任免）通知事件。
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def _on_group_admin_change(self, event: AiocqhttpMessageEvent):
+        if not self._is_group_admin_notice(event):
+            return
+        try:
+            handled = await CardMonitorMixin._handle_group_admin_change(self, event)
+            if handled:
+                event.stop_event()
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 管理员变动处理出错: {e}")
 
     # F2 私聊申诉裁决：私聊消息且发送者有 waiting 申诉时进入。
     @filter.event_message_type(filter.EventMessageType.PRIVATE_MESSAGE)

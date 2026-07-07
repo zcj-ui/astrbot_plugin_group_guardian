@@ -294,6 +294,13 @@ class WebMixin:
                 ("/configured_groups", self._web_configured_groups, ["GET"], "列出有独立配置的群"),
                 ("/group_config/batch_set", self._web_batch_set_group_config, ["POST"], "批量设置某群配置"),
                 ("/group_config/copy", self._web_copy_group_config, ["POST"], "从其他群复制配置"),
+                ("/card_monitor/records", self._web_card_records, ["GET"], "获取名片变更/管理员任免记录"),
+                ("/card_monitor/records/clear", self._web_card_records_clear, ["POST"], "清空名片记录"),
+                ("/card_monitor/config", self._web_card_config_get, ["GET"], "获取名片监控开关"),
+                ("/card_monitor/config/set", self._web_card_config_set, ["POST"], "设置名片监控开关"),
+                ("/card_monitor/protected", self._web_card_protected_list, ["GET"], "获取名片保护名单"),
+                ("/card_monitor/protected/add", self._web_card_protected_add, ["POST"], "添加名片保护成员"),
+                ("/card_monitor/protected/remove", self._web_card_protected_remove, ["POST"], "移除名片保护成员"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(
@@ -1795,5 +1802,96 @@ class WebMixin:
                     copied += 1
             self._invalidate_group_cfg_cache(target_id)
             return jsonify({"status": "success", "source": source_id, "target": target_id, "copied": copied})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    # ==================== 名片监控 WebUI API ====================
+    _CARD_MONITOR_KEYS = [
+        "card_monitor_enabled", "card_log_enabled", "card_monitor_notify",
+        "card_protect_enabled", "card_audit_link_only", "card_audit_enabled",
+        "card_audit_llm_always", "admin_change_notify_enabled",
+    ]
+
+    async def _web_card_records(self):
+        try:
+            limit = min(max(self._safe_int(quart_request.args.get("limit", 100), 100), 1), 500)
+            offset = max(0, self._safe_int(quart_request.args.get("offset", 0), 0))
+            group_id = str(quart_request.args.get("group_id", "")).strip()
+            user_id = str(quart_request.args.get("user_id", "")).strip()
+            kind = str(quart_request.args.get("kind", "")).strip()
+            logs = self._storage.list_card_change_logs(limit=limit, offset=offset,
+                                                       group_id=group_id, user_id=user_id, kind=kind)
+            total = self._storage.count_card_change_logs(group_id=group_id, user_id=user_id, kind=kind)
+            return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_card_records_clear(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            n = self._storage.clear_card_change_logs(group_id)
+            return jsonify({"status": "success", "cleared": n})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_card_config_get(self):
+        try:
+            cfg = {}
+            for k in self._CARD_MONITOR_KEYS:
+                meta = self._config_schema.get(k, {})
+                cfg[k] = {
+                    "value": self._parse_bool(self.config.get(k, meta.get("default", False)), bool(meta.get("default", False))),
+                    "description": meta.get("description", k),
+                    "hint": meta.get("hint", ""),
+                }
+            return jsonify({"status": "success", "data": cfg})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_card_config_set(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            key = str(data.get("key", "")).strip()
+            if key not in self._CARD_MONITOR_KEYS:
+                return jsonify({"status": "error", "message": "非法配置项"})
+            value = self._parse_bool(data.get("value"), False)
+            self.config[key] = value
+            self._save_config_safe()
+            self._invalidate_group_cfg_cache()
+            return jsonify({"status": "success", "key": key, "value": value})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_card_protected_list(self):
+        try:
+            group_id = str(quart_request.args.get("group_id", "")).strip()
+            return jsonify({"status": "success", "data": self._storage.list_card_protected(group_id)})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_card_protected_add(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            user_id = str(data.get("user_id", "")).strip()
+            protected_card = str(data.get("protected_card", ""))
+            if not group_id or not user_id:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 user_id"})
+            import time as _t
+            self._storage.add_card_protected(group_id, user_id, protected_card, int(_t.time()))
+            return jsonify({"status": "success", "group_id": group_id, "user_id": user_id})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_card_protected_remove(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            group_id = str(data.get("group_id", "")).strip()
+            user_id = str(data.get("user_id", "")).strip()
+            if not group_id or not user_id:
+                return jsonify({"status": "error", "message": "缺少 group_id 或 user_id"})
+            ok = self._storage.remove_card_protected(group_id, user_id)
+            return jsonify({"status": "success", "removed": ok})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
