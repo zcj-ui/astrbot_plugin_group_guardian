@@ -1200,6 +1200,9 @@ class ModerationMixin:
                 await self._recall_msg(event, msg_id)
                 self._log_moderation(group_id, user_id, user_name, "[QQ收藏消息]", "撤回", "QQ收藏内容自动撤回", image_urls)
                 event.stop_event()
+            # 同样受"撤回提示"开关管控：关闭后静默撤回，不发提示
+            if not self._cfg("auto_moderate_notice", True, group_id=group_id):
+                return True, None
             return True, "[群管] 检测到QQ收藏内容，已自动撤回"
         except Exception as e:
             logger.warning(f"[GroupMgr] QQ收藏撤回失败: {e}")
@@ -1412,8 +1415,12 @@ class ModerationMixin:
             self._mark_moderation_penalty(group_id, user_id, ban_duration)
             await self._mute_member(event, ban_duration)
             self._schedule_unban(group_id, user_id, ban_duration)
-            notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）", group_id=group_id)
-            yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
+            # 撤回提示开关：与 LLM 审核路径（_execute_llm_penalty）保持一致，
+            # 关闭 auto_moderate_notice 时静默处理，不在群内发提示。
+            # 此前规则路径漏判此开关，导致用户关了提示后正则/词库命中仍会刷屏。
+            if self._cfg("auto_moderate_notice", True, group_id=group_id):
+                notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）", group_id=group_id)
+                yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
             self._log_moderation(group_id, user_id, user_name, text, "撤回+禁言", reason, image_urls)
             event.stop_event()
         except Exception as e:

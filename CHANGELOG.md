@@ -1,5 +1,40 @@
 # Changelog
 
+## v2.7.1 - 2026-07-17
+
+### 修复：名片监控开关越开拦得越松（严重逻辑反转）
+
+- **`allow_promo = link_only` 反转**（card_monitor.py）：同时开启「仅拦链接」和「全量审核」时，
+  前者会把后者的 LLM 提示词改成「本群允许引流，只有链接才算违规」，导致「科技加我」这类引流名片被**明确放行**。
+  开的开关越多、检测越松，与直觉完全相反。现改为：**严格模式恒 `allow_promo=False`**，
+  两个开关同时开 = 严格模式生效（严格是宽松的超集），链接在两种模式下都直接还原。
+- **LLM 不可用时误杀全部名片**：`card_audit_llm_always` 开启但 LLM 关闭/调用失败时，
+  回退逻辑 `return True` 会把**每一次名片变更都判违规还原**（初筛没命中也还原）。
+  现回退为 `return bool(hit_types)`，只在初筛真命中时才判违规。
+- **新增引流初筛 `_PROMO_SUSPECT_RE`**：覆盖 加我/加V/vx/微信/代购/接单/招代理/兼职日结/免费领 等。
+  命中**不直接还原**，而是送 LLM 上下文判断（同消息审核的「正则初筛+LLM二判」），避免误杀「有事加我」这类正常名片。
+- **收紧 `_SHOP_LINK_RE`**：移出「加微/加v/小店/下单/代购/接单」等引流词（改由上面的初筛+LLM 处理），
+  只保留明确的网址/电商域名/裸域名/扫码/二维码/旗舰店，使「仅拦链接」宽松模式名副其实。
+- **优化 LLM 名片审核提示词**：明确列出违规样例（科技加我/加V123/招收代理/ldxp 类缩写黑话）与
+  不违规样例（正常昵称/部门-姓名/游戏ID），并要求拿不准时倾向不违规，减少误杀。
+- **新增诊断日志**：收到 `group_card`/`group_admin` 事件即打印 INFO 日志，位置在所有开关判断【之前】。
+  改名片后日志无此行 ⇒ 协议端未上报事件；有此行但无动作 ⇒ 开关或判定问题。
+
+### 修复：撤回提示开关只对 LLM 路径生效（Issue 反馈）
+
+`auto_moderate_notice`（撤回后发说明消息，默认开）此前**只有 LLM 审核路径检查**，
+规则命中路径（`_execute_rule_penalty`）和 QQ 收藏撤回路径（`_handle_qq_favorite`）无条件发提示。
+用户关闭开关后，正则/词库命中仍会在群里刷提示。现三条撤回路径统一受该开关管控，并更新配置项描述与说明。
+
+### 已核实的事实（避免后续重复排查）
+
+经查阅 AstrBot 与 NapCat 源码确认（非推测）：
+- AstrBot aiocqhttp 适配器**注册了 `@bot.on_notice()`**，`_convert_handle_notice_event` **不按 notice_type 过滤**，
+  含 group_id 时 `type=GROUP_MESSAGE`、`raw_message=原始事件`，`handle_msg` 也无任何过滤 →
+  **`@filter.event_message_type(ALL)` 可以收到 notice 事件**，现有注册方式正确。
+- NapCat `OB11GroupCardEvent.ts` 确实存在，`notice_type='group_card'`，字段确为 `card_new`/`card_old`，
+  **无 `operator_id`** → 无法区分本人改/管理员改，只能记录变更事实。
+
 ## v2.7.0 - 2026-07-07
 
 ### 新板块：名片监控（独立 WebUI 页面，默认全部关闭）

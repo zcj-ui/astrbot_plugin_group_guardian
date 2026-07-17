@@ -65,10 +65,10 @@
         "hint": "管理员可通过 /auto_moderate on/off 命令随时启停"
     },
     "auto_moderate_notice": {
-        "description": "撤回后发送说明消息",
+        "description": "撤回提示开关（撤回后是否在群内发说明消息）",
         "type": "bool",
         "default": true,
-        "hint": "关闭后撤回违规消息时不发送原因说明"
+        "hint": "开启后，消息被自动撤回/处罚时在群内发送提示（内容见 ban_notice 模板）。关闭则静默处理，不打扰群聊。统一管控三条撤回路径：规则命中撤回、LLM审核撤回、QQ收藏撤回"
     },
     "scan_swear": {
         "description": "辱骂脏话检测开关",
@@ -490,7 +490,11 @@
         "description": "OCR提示词模板",
         "type": "string",
         "default": "default",
-        "options": ["default", "strict", "text_only"],
+        "options": [
+            "default",
+            "strict",
+            "text_only"
+        ],
         "hint": "default=通用识别、strict=严格审核、text_only=纯文字转录；填写自定义提示词后此项无效"
     },
     "ocr_custom_system_prompt": {
@@ -569,7 +573,11 @@
         "description": "入群-默认动作（都不命中时）",
         "type": "string",
         "default": "manual",
-        "options": ["manual", "accept", "reject"],
+        "options": [
+            "manual",
+            "accept",
+            "reject"
+        ],
         "hint": "manual=转人工(不处理)，accept=自动通过，reject=自动拒绝"
     },
     "join_reject_reason": {
