@@ -687,5 +687,11 @@
         "type": "bool",
         "default": false,
         "hint": "开启后，有人被设为/被取消群管理员时在群内发送通知（协议不含操作者，只报被任免者）"
+    },
+    "recall_reply_notice": {
+        "description": "「/回复撤回」成功后回复确认消息",
+        "type": "bool",
+        "default": true,
+        "hint": "关闭后 /回复撤回 撤回成功时静默处理，不再回复「已撤回被引用的消息」（Issue #44）。撤回失败的错误提示不受影响，仍会提示"
     }
 }

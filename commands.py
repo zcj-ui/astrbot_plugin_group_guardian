@@ -662,7 +662,10 @@ class CommandsMixin:
         if not ok:
             yield event.plain_result(f"撤回失败: {err}（注意：仅能撤回约2分钟内的消息）")
             return
-        yield event.plain_result("已撤回被引用的消息")
+        # Issue #44：成功确认回复可关闭。撤回的目的本就是让内容安静消失，
+        # 再回一句"已撤回"反而多一条噪音消息。失败提示不受此开关影响（需要让操作者知道没成功）。
+        if self._cfg("recall_reply_notice", True, group_id=gid):
+            yield event.plain_result("已撤回被引用的消息")
 
     async def cmd_join_verify(self, event: AstrMessageEvent):
         '''修改入群验证方式。用法: /加群方式 <需要验证/允许/禁止>'''
