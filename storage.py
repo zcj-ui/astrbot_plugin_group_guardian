@@ -10,6 +10,11 @@ from typing import Dict, Iterable, List, Optional
 
 from astrbot.api import logger
 
+try:
+    from .lexicon_migration import ensure_swear_expansion
+except ImportError:  # 允许直接运行 storage.py 的离线迁移/测试脚本
+    from lexicon_migration import ensure_swear_expansion
+
 
 class SQLiteStorage:
     # 持久化层统一使用 SQLite。_connect() 是 contextmanager，进入时创建连接并开启 WAL，退出时自动关闭。
@@ -28,6 +33,19 @@ class SQLiteStorage:
             self._create_tables(conn)
         self._ensure_seed_lexicon()
         self._ensure_seed_rules()
+        # 词库扩展使用 meta 版本键幂等执行：新安装会导入 seed，已有运行库
+        # 也会补齐新增辱骂变体，不再依赖 moderation_rules 为空这一旧条件。
+        try:
+            with self._connect() as conn:
+                stats = ensure_swear_expansion(conn)
+            if stats.get("inserted"):
+                logger.info(
+                    f"[GroupMgr] 已应用辱骂词库扩展: 新增 {stats['inserted']} 条，"
+                    f"当前共 {stats['total_swear_rules']} 条"
+                )
+        except Exception as e:
+            # 词库扩展失败不应阻止插件启动；原有 seed 规则仍可继续工作。
+            logger.warning(f"[GroupMgr] 应用辱骂词库扩展失败: {e}")
 
     def db_mtime(self) -> float:
         try:

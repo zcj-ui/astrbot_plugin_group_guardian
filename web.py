@@ -114,6 +114,7 @@ class WebMixin:
             "combine_detect_count": (2, 20),
             "combine_detect_window_seconds": (5, 600),
             "kick_recall_count": (1, 50),
+            "card_sync_interval": (30, 3600),
         }
 
     def _normalize_int_config_value(self, key: str, value) -> int:
@@ -1598,7 +1599,7 @@ class WebMixin:
         "disclaimer_agreed", "webui_dark_mode", "prompt_injection_enabled",
         "moderation_llm_provider_id", "ocr_provider_id",
         "join_accept_keywords", "join_reject_keywords",
-        "auto_unban_scan_interval",
+        "auto_unban_scan_interval", "card_sync_interval",
         "group_admin_grant_enabled", "legacy_role_admin_enabled",
         "group_white_list", "group_black_list", "user_black_list", "user_white_list", "admin_list",
     }
@@ -1647,6 +1648,8 @@ class WebMixin:
         "appeal_at_template": "申诉",
         "auto_unban_enabled": "定时解禁", "auto_unban_permanent_hours": "定时解禁",
         "join_audit_enabled": "入群审核", "join_reject_use_lexicon": "入群审核",
+        "join_llm_moderation_enabled": "入群审核", "join_llm_custom_prompt": "入群审核",
+        "join_accept_overrides_lexicon": "入群审核",
         "join_default_action": "入群审核", "join_reject_reason": "入群审核",
     }
 
@@ -1807,7 +1810,8 @@ class WebMixin:
 
     # ==================== 名片监控 WebUI API ====================
     _CARD_MONITOR_KEYS = [
-        "card_monitor_enabled", "card_log_enabled", "card_monitor_notify",
+        "card_monitor_enabled", "card_sync_enabled", "card_sync_interval",
+        "card_log_enabled", "card_monitor_notify",
         "card_protect_enabled", "card_audit_link_only", "card_audit_enabled",
         "card_audit_llm_always", "admin_change_notify_enabled",
     ]
@@ -1840,10 +1844,24 @@ class WebMixin:
             cfg = {}
             for k in self._CARD_MONITOR_KEYS:
                 meta = self._config_schema.get(k, {})
+                value_type = meta.get("type", "bool")
+                if value_type == "int":
+                    value = self._normalize_int_config_value(
+                        k, self.config.get(k, meta.get("default", 0))
+                    )
+                else:
+                    value = self._parse_bool(
+                        self.config.get(k, meta.get("default", False)),
+                        bool(meta.get("default", False)),
+                    )
+                minimum, maximum = self._config_int_ranges().get(k, (None, None))
                 cfg[k] = {
-                    "value": self._parse_bool(self.config.get(k, meta.get("default", False)), bool(meta.get("default", False))),
+                    "value": value,
+                    "type": value_type,
                     "description": meta.get("description", k),
                     "hint": meta.get("hint", ""),
+                    "minimum": minimum,
+                    "maximum": maximum,
                 }
             return jsonify({"status": "success", "data": cfg})
         except Exception as e:
@@ -1855,7 +1873,11 @@ class WebMixin:
             key = str(data.get("key", "")).strip()
             if key not in self._CARD_MONITOR_KEYS:
                 return jsonify({"status": "error", "message": "非法配置项"})
-            value = self._parse_bool(data.get("value"), False)
+            meta = self._config_schema.get(key, {})
+            if meta.get("type", "bool") == "int":
+                value = self._normalize_int_config_value(key, data.get("value"))
+            else:
+                value = self._parse_bool(data.get("value"), False)
             self.config[key] = value
             self._save_config_safe()
             self._invalidate_group_cfg_cache()

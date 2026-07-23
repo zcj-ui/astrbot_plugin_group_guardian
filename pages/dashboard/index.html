@@ -1184,20 +1184,45 @@ async function loadCardMonConfig() {
   var box = $('#cardMonConfig');
   var res = await safeGet('card_monitor/config');
   if (isApiError(res)) { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  var order = ['card_monitor_enabled','card_log_enabled','card_protect_enabled','card_audit_link_only','card_audit_enabled','card_audit_llm_always','admin_change_notify_enabled','card_monitor_notify'];
+  var order = ['card_monitor_enabled','card_sync_enabled','card_sync_interval','card_log_enabled','card_protect_enabled','card_audit_link_only','card_audit_enabled','card_audit_llm_always','admin_change_notify_enabled','card_monitor_notify'];
   var html = order.map(function(k) {
     var it = res[k]; if (!it) return '';
+    var control;
+    if (it.type === 'int') {
+      var minAttr = it.minimum != null ? ' min="' + escAttr(String(it.minimum)) + '"' : '';
+      var maxAttr = it.maximum != null ? ' max="' + escAttr(String(it.maximum)) + '"' : '';
+      control = '<input type="number" class="input-sm" data-card-key="' + escAttr(k) +
+        '" data-card-type="int" data-card-saved="' + escAttr(String(it.value)) + '" value="' +
+        escAttr(String(it.value)) + '"' + minAttr + maxAttr + ' style="width:120px" />';
+    } else {
+      control = '<label class="toggle"><input type="checkbox" data-card-key="' + escAttr(k) +
+        '" data-card-type="bool"' + (it.value ? ' checked' : '') +
+        ' /><span class="slider"></span></label>';
+    }
     return '<div class="setting-item"><div class="setting-info"><div class="setting-label">' + esc(it.description) +
       ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(k) + ')</span></div>' +
       (it.hint ? '<div class="setting-desc">' + esc(it.hint) + '</div>' : '') +
-      '</div><label class="toggle"><input type="checkbox" data-card-key="' + esc(k) + '"' + (it.value ? ' checked' : '') +
-      ' /><span class="slider"></span></label></div>';
+      '</div>' + control + '</div>';
   }).join('');
   box.innerHTML = html || '<p class="empty">无配置项</p>';
   $$('[data-card-key]', box).forEach(function(inp) {
     inp.addEventListener('change', async function() {
-      var ok = await postOrToast('card_monitor/config/set', { key: inp.dataset.cardKey, value: inp.checked }, '已保存', '保存失败');
-      if (!ok) inp.checked = !inp.checked;
+      var isInt = inp.dataset.cardType === 'int';
+      var value = isInt ? parseInt(inp.value, 10) : inp.checked;
+      if (isInt) {
+        var previous = inp.dataset.cardSaved;
+        if (!Number.isFinite(value)) { inp.value = previous; return; }
+        if (inp.min !== '') value = Math.max(parseInt(inp.min, 10), value);
+        if (inp.max !== '') value = Math.min(parseInt(inp.max, 10), value);
+        inp.value = String(value);
+      }
+      var ok = await postOrToast('card_monitor/config/set', { key: inp.dataset.cardKey, value: value }, '已保存', '保存失败');
+      if (!ok) {
+        if (isInt) inp.value = inp.dataset.cardSaved;
+        else inp.checked = !inp.checked;
+      } else if (isInt) {
+        inp.dataset.cardSaved = String(value);
+      }
     });
   });
 }
@@ -1828,6 +1853,8 @@ var FEATURE_TOGGLES = [
   { key: 'group_stats_enabled', label: '群统计' },
   { key: 'join_audit_enabled', label: '入群自动审核' },
   { key: 'join_reject_use_lexicon', label: '入群词库过滤' },
+  { key: 'join_llm_moderation_enabled', label: '入群 AI 审核', desc: '将验证信息交由 LLM 判断，默认关闭' },
+  { key: 'join_accept_overrides_lexicon', label: '入群通过词优先', desc: '显式通过词可覆盖通用词库候选' },
   { key: 'appeal_enabled', label: '刷屏申诉模式' },
   { key: 'auto_unban_enabled', label: '定时自动解禁' },
   { key: 'group_admin_grant_enabled', label: '群管理员动态授权' },
@@ -1930,6 +1957,8 @@ var MANUAL_SETTING_KEYS = {
   group_stats_enabled: true,
   join_audit_enabled: true,
   join_reject_use_lexicon: true,
+  join_llm_moderation_enabled: true,
+  join_accept_overrides_lexicon: true,
   appeal_enabled: true,
   auto_unban_enabled: true,
   group_admin_grant_enabled: true,
@@ -1952,6 +1981,7 @@ var MANUAL_SETTING_KEYS = {
   long_text_threshold: true,
   join_default_action: true,
   join_reject_reason: true,
+  join_llm_custom_prompt: true,
   appeal_window_minutes: true,
   appeal_context_count: true,
   appeal_at_template: true,
@@ -2676,6 +2706,7 @@ function renderExtraSettings() {
   var banNotice = CONFIG.ban_notice || '[群管] {name}({uid}) 的消息已被撤回（违规内容）';
   var joinAction = CONFIG.join_default_action || 'manual';
   var joinRejectReason = CONFIG.join_reject_reason || '';
+  var joinLlmPrompt = CONFIG.join_llm_custom_prompt || '';
   var appealWindow = CONFIG.appeal_window_minutes != null ? CONFIG.appeal_window_minutes : 10;
   var appealContext = CONFIG.appeal_context_count != null ? CONFIG.appeal_context_count : 30;
   var appealTemplate = CONFIG.appeal_at_template || '';
@@ -2692,6 +2723,7 @@ function renderExtraSettings() {
     '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">入群审核设置</h3>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">入群默认动作</div><div class="setting-desc">未命中通过/拒绝关键词时的兜底动作</div></div><select class="input-sm" id="inputJoinAction" style="width:160px"><option value="manual"' + (joinAction === 'manual' ? ' selected' : '') + '>转人工</option><option value="accept"' + (joinAction === 'accept' ? ' selected' : '') + '>自动通过</option><option value="reject"' + (joinAction === 'reject' ? ' selected' : '') + '>自动拒绝</option></select></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">入群拒绝理由</div><div class="setting-desc">自动拒绝加群申请时回传给申请人的理由</div></div><input type="text" class="input-sm" id="inputJoinRejectReason" value="' + escAttr(joinRejectReason) + '" style="width:260px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">入群 LLM 自定义审核标准</div><div class="setting-desc">仅在「入群 AI 审核」开启时生效；留空使用内置标准，可按群覆盖</div></div><textarea class="input-md" id="inputJoinLlmPrompt" rows="3" style="width:100%;max-width:520px" placeholder="例如：只拒绝明确广告引流，正常交流均通过">' + esc(joinLlmPrompt) + '</textarea></div>' +
     '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
     '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">申诉 / 解禁设置</h3>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">申诉窗口（分钟）</div><div class="setting-desc">刷屏处罚后允许用户私聊申诉的时间</div></div><input type="number" class="input-sm" id="inputAppealWindow" value="' + appealWindow + '" min="1" max="10080" style="width:100px" /></div>' +
@@ -2803,6 +2835,8 @@ async function saveSettings() {
   if (joinAction) payload.join_default_action = joinAction.value;
   var joinRejectReason = $('#inputJoinRejectReason');
   if (joinRejectReason) payload.join_reject_reason = joinRejectReason.value.trim();
+  var joinLlmPrompt = $('#inputJoinLlmPrompt');
+  if (joinLlmPrompt) payload.join_llm_custom_prompt = joinLlmPrompt.value.trim();
   var appealWindow = $('#inputAppealWindow');
   if (appealWindow) payload.appeal_window_minutes = parseIntOrDefault(appealWindow.value, 10);
   var appealContext = $('#inputAppealContext');
@@ -3150,9 +3184,13 @@ function renderGroupCfgItems(items) {
     } else {
       var textVal = inherited ? '' : String(it.override);
       var isText = it.type === 'text';
+      var isJoinPrompt = it.key === 'join_llm_custom_prompt';
+      var placeholder = isJoinPrompt
+        ? '留空并保存 = 本群使用内置标准'
+        : (isText ? '继承全局' : '继承(' + globalText + ')');
       var field = isText
-        ? '<textarea class="input-md gc-text" data-key="' + escAttr(it.key) + '" data-type="text" rows="2" placeholder="继承全局" style="width:260px">' + esc(textVal) + '</textarea>'
-        : '<input class="input-sm gc-text" data-key="' + escAttr(it.key) + '" data-type="string" placeholder="继承(' + escAttr(globalText) + ')" value="' + escAttr(textVal) + '" style="width:180px" />';
+        ? '<textarea class="input-md gc-text" data-key="' + escAttr(it.key) + '" data-type="text" rows="2" placeholder="' + escAttr(placeholder) + '" style="width:260px">' + esc(textVal) + '</textarea>'
+        : '<input class="input-sm gc-text" data-key="' + escAttr(it.key) + '" data-type="string" placeholder="' + escAttr(placeholder) + '" value="' + escAttr(textVal) + '" style="width:180px" />';
       control = field +
         '<button class="btn btn-outline btn-sm gc-text-save" data-key="' + escAttr(it.key) + '">保存</button>' +
         '<button class="btn btn-ghost btn-sm gc-text-clear" data-key="' + escAttr(it.key) + '">继承</button>';
@@ -3201,7 +3239,10 @@ function renderGroupCfgItems(items) {
       var key = b.dataset.key;
       var inp = box.querySelector('.gc-text[data-key="' + cssAttr(key) + '"]');
       var v = (inp && inp.value || '').trim();
-      var ok = v === ''
+      // An explicit empty join prompt means "use the built-in standard for
+      // this group". The separate inherit button deletes the override.
+      var allowExplicitEmpty = key === 'join_llm_custom_prompt';
+      var ok = v === '' && !allowExplicitEmpty
         ? await postOrToast('group_config/delete', { group_id: GC_CUR, key: key }, '已恢复继承', '恢复继承失败')
         : await postOrToast('group_config/set', { group_id: GC_CUR, key: key, value: v }, '已保存', '保存失败');
       if (ok) openGroupCfg(GC_CUR);

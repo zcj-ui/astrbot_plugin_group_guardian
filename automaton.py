@@ -15,12 +15,13 @@ try:
 except ImportError:
     ahocorasick = None
     logger.warning(
-        "[GroupMgr] pyahocorasick 未安装，词库 AC 自动机不可用，已自动降级为逐词正则匹配"
-        "（性能较低）。建议安装依赖以获得高性能: pip install pyahocorasick"
+        "[GroupMgr] pyahocorasick 未安装，词库 AC 自动机不可用，"
+        "已降级为纯 Python Trie 字面量扫描 + 正则回退。"
+        "建议安装依赖以获得高性能: pip install pyahocorasick"
     )
 
 # 正则元字符集，用于判断 pattern 是否为纯文本
-_REGEX_META = re.compile(r"[.^$*+?{}\[\]|\\]")
+_REGEX_META = re.compile(r"[().^$*+?{}\[\]|\\]")
 
 
 def is_literal_pattern(pattern: str) -> bool:
@@ -52,17 +53,17 @@ def _extract_alternatives(pattern: str) -> List[str]:
             inner = pattern[i + 1 : end]
             if inner.startswith("?:"):
                 inner = inner[2:]
-            options = [o.strip() for o in inner.split("|") if o.strip()]
-            if not options:
+            options = inner.split("|")
+            # Only expand when every branch is a non-empty literal.  Dropping an
+            # unsupported branch changes the regex semantics and can create both
+            # false positives and false negatives.
+            if not options or any(not o or _REGEX_META.search(o) for o in options):
                 return []
-            valid_options = [o for o in options if not _REGEX_META.search(o)]
-            if not valid_options:
-                return []
-            if len(candidates) * len(valid_options) > _MAX_EXPAND_CANDIDATES:
+            if len(candidates) * len(options) > _MAX_EXPAND_CANDIDATES:
                 return []  # 超限回退为正则匹配，防止笛卡尔积撑爆内存
             new_candidates = []
             for c in candidates:
-                for opt in valid_options:
+                for opt in options:
                     new_candidates.append(c + opt)
             candidates = new_candidates
             i = end + 1
@@ -70,12 +71,24 @@ def _extract_alternatives(pattern: str) -> List[str]:
             end = pattern.find("]", i)
             if end == -1:
                 return []
+            body = pattern[i + 1 : end]
+            # Negated and escaped classes need the regex engine.  Treating '^'
+            # or '\\s' as literal alternatives silently broadens the rule.
+            if not body or body.startswith("^") or "\\" in body:
+                return []
             chars = []
             j = i + 1
             while j < end:
                 if j + 2 < end and pattern[j + 1] == "-":
                     start_c = pattern[j]
                     end_c = pattern[j + 2]
+                    range_size = ord(end_c) - ord(start_c) + 1
+                    if range_size <= 0:
+                        return []
+                    # Check before materialising the range; a user supplied
+                    # Unicode-wide range must not allocate millions of entries.
+                    if len(candidates) * (len(chars) + range_size) > _MAX_EXPAND_CANDIDATES:
+                        return []
                     for c in range(ord(start_c), ord(end_c) + 1):
                         chars.append(chr(c))
                     j += 3
@@ -108,9 +121,12 @@ def regex_to_literals(pattern: str, min_len: int = 1) -> List[str]:
     if is_literal_pattern(pattern):
         return [pattern.strip().lower()] if pattern.strip() else []
     try:
+        # Invalid regular expressions must never be accepted merely because the
+        # lightweight expander happened to recognise part of their syntax.
+        re.compile(pattern)
         expanded = _extract_alternatives(pattern.strip())
         return [e.lower() for e in expanded if len(e) >= min_len]
-    except Exception:
+    except (Exception, re.error):
         return []
 
 
@@ -121,41 +137,85 @@ class KeywordAutomaton:
         self._auto = None
         self._count = 0
         self._built = False
+        # pyahocorasick 不可用时使用轻量 Trie。此前的降级路径会为每个
+        # 字面量编译一个正则，词库扩大后会造成 O(关键词数) 的逐条扫描。
+        # None 作为终止标记，文本字符始终是 str，不会与其冲突。
+        self._fallback_trie = {}
+        self._seen = set()
 
     def add_keywords(self, keywords: List[str]) -> None:
         """批量添加纯文本关键词，自动跳过空值和重复。"""
-        if ahocorasick is None:
-            return
-        if self._auto is None:
-            self._auto = ahocorasick.Automaton()
-        seen = set()
         for kw in keywords:
             kw = kw.strip().lower()
-            if not kw or kw in seen:
+            if not kw or kw in self._seen:
                 continue
-            seen.add(kw)
-            self._auto.add_word(kw, kw)
+            self._seen.add(kw)
+            if ahocorasick is not None:
+                if self._auto is None:
+                    self._auto = ahocorasick.Automaton()
+                self._auto.add_word(kw, kw)
+            else:
+                node = self._fallback_trie
+                for char in kw:
+                    node = node.setdefault(char, {})
+                node[None] = kw
             self._count += 1
+        self._built = False
 
     def build(self) -> None:
         """构建 fail 指针，调用后不可再添加关键词。"""
         if self._auto is not None and not self._built:
             self._auto.make_automaton()
             self._built = True
+        elif ahocorasick is None:
+            # Trie 在插入时已经完成构建；保留显式 build 调用以兼容原 API。
+            self._built = True
 
-    def exists(self, text: str) -> bool:
-        if not self._built or self._auto is None:
-            return False
+    def first_match(self, text: str) -> Optional[Tuple[int, str]]:
+        """Return one match without materialising every overlapping result."""
+        if not self._built:
+            return None
+        if self._auto is None:
+            text_lower = text.lower()
+            for start in range(len(text_lower)):
+                node = self._fallback_trie
+                for end in range(start, len(text_lower)):
+                    node = node.get(text_lower[end])
+                    if node is None:
+                        break
+                    keyword = node.get(None)
+                    if keyword is not None:
+                        return end, keyword
+            return None
         text_lower = text.lower()
         try:
-            next(self._auto.iter(text_lower))
-            return True
+            return next(self._auto.iter(text_lower))
         except StopIteration:
+            return None
+
+    def exists(self, text: str) -> bool:
+        if not self._built:
             return False
+        return self.first_match(text) is not None
 
     def iter_matches(self, text: str) -> List[Tuple[int, str]]:
-        if not self._built or self._auto is None:
+        if not self._built:
             return []
+        if self._auto is None:
+            text_lower = text.lower()
+            results: List[Tuple[int, str]] = []
+            for start in range(len(text_lower)):
+                node = self._fallback_trie
+                for end in range(start, len(text_lower)):
+                    node = node.get(text_lower[end])
+                    if node is None:
+                        break
+                    keyword = node.get(None)
+                    if keyword is not None:
+                        results.append((end, keyword))
+            # 与 pyahocorasick 一样按结束位置返回；同一位置按词典序稳定化。
+            results.sort(key=lambda item: (item[0], item[1]))
+            return results
         text_lower = text.lower()
         try:
             return list(self._auto.iter(text_lower))
@@ -187,15 +247,10 @@ class HybridMatcher:
         self._built = False
 
     def _add_ac_keywords(self, keywords: List[str]) -> None:
-        """把纯文本关键词加入 AC；AC 不可用时降级为 re.escape 字面量正则，避免静默丢弃。"""
+        """把纯文本关键词加入 AC；不可用时进入内置 Trie。"""
         if not keywords:
             return
-        if ahocorasick is not None:
-            self._ac.add_keywords(keywords)
-        else:
-            for kw in keywords:
-                if kw:
-                    self._regex_fallback.append(re.compile(re.escape(kw), re.IGNORECASE))
+        self._ac.add_keywords(keywords)
 
     def add_literal_keywords(self, keywords: List[str]) -> None:
         """添加纯文本字面量关键词（不做正则解析），供用户自定义违禁词等场景使用。"""
@@ -227,16 +282,22 @@ class HybridMatcher:
         self._ac.build()
         self._built = True
 
+    def first_match(self, text: str) -> Optional[Tuple[int, str, str]]:
+        """Return one AC/regex match without collecting all overlaps."""
+        if not self._built:
+            return None
+        match = self._ac.first_match(text)
+        if match is not None:
+            return match[0], match[1], "ac"
+        for p in self._regex_fallback:
+            regex_match = p.search(text)
+            if regex_match:
+                return regex_match.end(), p.pattern, "regex"
+        return None
+
     def is_match(self, text: str) -> bool:
         """文本是否匹配任意 pattern（AC 优先，退火正则回退）。"""
-        if not self._built:
-            return False
-        if self._ac.exists(text):
-            return True
-        for p in self._regex_fallback:
-            if p.search(text):
-                return True
-        return False
+        return self.first_match(text) is not None
 
     def iter_matches(self, text: str) -> List[Tuple[int, str, str]]:
         """返回所有匹配：(end_pos, keyword_or_pattern, 'ac'|'regex')。"""

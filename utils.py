@@ -473,9 +473,9 @@ class UtilitiesMixin:
         for cat_name, automaton in self._compiled_lexicon.items():
             if not isinstance(automaton, KeywordAutomaton):
                 continue
-            matches = automaton.iter_matches(text)
-            if matches:
-                logger.debug(f"[GroupMgr] 词库命中 [{cat_name}]: {len(matches)} 个, 示例='{matches[0][1]}'")
+            match = automaton.first_match(text)
+            if match is not None:
+                logger.debug(f"[GroupMgr] 词库命中 [{cat_name}], 示例='{match[1]}'")
                 result[cat_name] = True
             else:
                 result[cat_name] = False
@@ -491,7 +491,8 @@ class UtilitiesMixin:
             return text[:max_chars]
         return text[:limit] + suffix
 
-    def _format_message_content(self, raw_message) -> str:
+    def _format_message_content(self, raw_message,
+                                include_forward_content: bool = True) -> str:
         # 将 OneBot 消息链按段类型转为纯文本供审核规则匹配。
         # dict 段走 _SEG_FORMATTERS；组件对象段按类名映射——绝不能 str(seg) 转储：
         # pydantic repr 会带出 Reply 的引用原文（#33 组合检测路径复活）和 At/Reply 的
@@ -500,10 +501,38 @@ class UtilitiesMixin:
             return '[空消息]'
         if not isinstance(raw_message, list):
             return str(raw_message)
+
+        # Main 通过 Mixin 组合同时提供了 ModerationMixin 的递归解析器。复用它，
+        # 让防刷屏组合检测和 LLM 上下文也能看到 Node/Nodes、JSON/App 的深层文本；
+        # 单独使用 UtilitiesMixin（例如外部脚本/旧版本加载）时仍走下方兼容逻辑。
+        extractor = getattr(self, '_extract_inline_message_content', None)
+        if callable(extractor):
+            try:
+                nested_text, image_urls, has_forward, forward_ids = extractor(
+                    raw_message,
+                    state={'include_forward_content': bool(include_forward_content)},
+                )
+                if nested_text or image_urls or has_forward or forward_ids:
+                    parts = []
+                    if nested_text:
+                        parts.append(nested_text)
+                    if image_urls:
+                        parts.extend('[图片]' for _ in image_urls)
+                    if has_forward and not nested_text and not forward_ids:
+                        parts.append('[合并转发消息]')
+                    elif forward_ids and not nested_text:
+                        parts.append('[合并转发消息]')
+                    return ''.join(parts) or '[空消息]'
+            except Exception as e:
+                logger.debug(f"[GroupMgr] 递归格式化消息失败，回退兼容解析: {e}")
+
         parts = []
         for seg in raw_message:
             if isinstance(seg, dict):
                 t = seg.get('type', '')
+                if not include_forward_content and t in ('forward', 'node', 'nodes'):
+                    parts.append('[合并转发消息]')
+                    continue
                 d = seg.get('data', {}) or {}
                 formatter = self._SEG_FORMATTERS.get(t)
                 parts.append(formatter(d) if formatter else f"[{t}]")
@@ -520,6 +549,8 @@ class UtilitiesMixin:
                 parts.append('[图片]')
             elif cls == 'Forward' or seg_type == 'forward':
                 parts.append('[合并转发消息]')
+            elif cls in ('Node', 'Nodes') or seg_type in ('node', 'nodes'):
+                parts.append('[合并转发消息]' if not include_forward_content else f"[{cls}]")
             else:
                 parts.append(f"[{cls or seg_type or '未知'}]")
         return ''.join(parts) if parts else '[空消息]'

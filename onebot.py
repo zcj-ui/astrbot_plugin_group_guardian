@@ -69,9 +69,20 @@ class OneBotMixin:
             if hasattr(event, 'group_id') and event.group_id:
                 return str(event.group_id)
             if hasattr(event, 'message_obj') and hasattr(event.message_obj, 'group_id'):
-                return str(event.message_obj.group_id)
+                gid = event.message_obj.group_id
+                if gid:
+                    return str(gid)
             if hasattr(event, 'raw_message') and hasattr(event.raw_message, 'group_id'):
-                return str(event.raw_message.group_id)
+                gid = event.raw_message.group_id
+                if gid:
+                    return str(gid)
+            for raw in (
+                getattr(event, 'raw_event', None),
+                getattr(event, 'raw_message', None),
+                getattr(getattr(event, 'message_obj', None), 'raw_message', None),
+            ):
+                if isinstance(raw, dict) and raw.get('group_id'):
+                    return str(raw['group_id'])
             gid = event.get_group_id()
             if gid:
                 return str(gid)
@@ -209,12 +220,16 @@ class OneBotMixin:
         try:
             client = await self._get_client(event)
             if client:
-                info = await client.call_action('get_group_member_info', group_id=group_id_int, user_id=user_id_int, no_cache=False)
-                info = self._extract_data_result(info)
-                if info:
+                ok, info, error = await self._call_group_api_result(
+                    client, 'get_group_member_info', '获取群成员信息',
+                    group_id=group_id_int, user_id=user_id_int, no_cache=False,
+                )
+                if ok and isinstance(info, dict):
                     role = info.get('role', '') or ""
                     self._admin_role_cache[cache_key] = (role, now)
                     return role
+                if error:
+                    logger.debug(f"[GroupMgr] 获取群成员信息失败: {error}")
         except Exception as e:
             logger.debug(f"[GroupMgr] 获取群成员信息失败: {e}")
         return ""
@@ -225,8 +240,13 @@ class OneBotMixin:
         if cached:
             return cached
         try:
-            info = await client.call_action("get_login_info")
-            info = self._extract_data_result(info)
+            ok, info, error = await self._call_group_api_result(
+                client, "get_login_info", "获取 bot QQ"
+            )
+            if not ok:
+                if error:
+                    logger.debug(f"[GroupMgr] 获取 bot QQ 失败: {error}")
+                return 0
             uin = self._safe_int(info.get("user_id", 0), 0) if isinstance(info, dict) else 0
             if uin:
                 self._bot_uin_cache = uin
@@ -242,10 +262,14 @@ class OneBotMixin:
         if not gid or not uid or not client:
             return ""
         try:
-            info = await client.call_action("get_group_member_info", group_id=gid, user_id=uid, no_cache=False)
-            info = self._extract_data_result(info)
-            if isinstance(info, dict):
+            ok, info, error = await self._call_group_api_result(
+                client, "get_group_member_info", "查询群成员角色",
+                group_id=gid, user_id=uid, no_cache=False,
+            )
+            if ok and isinstance(info, dict):
                 return info.get("role", "") or ""
+            if error:
+                logger.debug(f"[GroupMgr] 查询群成员角色失败({group_id}/{user_id}): {error}")
         except Exception as e:
             logger.debug(f"[GroupMgr] 查询群成员角色失败({group_id}/{user_id}): {e}")
         return ""
@@ -425,23 +449,31 @@ class OneBotMixin:
             return group_id, client, gid, ""
         return group_id, client, ""
 
-    async def _call_group_api(self, client, action: str, result_name: str = "", **kwargs) -> Tuple[bool, str]:
-        # 调用 OneBot API 并用 _check_api_result 统一判断结果（status=failed 或 retcode!=0 视为失败）。
-        # 统一加 20s 超时，防止协议端无响应导致协程永久挂起。
+    async def _call_group_api_result(self, client, action: str,
+                                     result_name: str = "", **kwargs):
+        """Call OneBot with timeout and return ``(ok, data, error)``."""
         try:
             result = await asyncio.wait_for(client.call_action(action, **kwargs), timeout=ONEBOT_CALL_TIMEOUT)
             ok, err = self._check_api_result(result, result_name or action)
             if not ok:
-                return False, err
-            return True, ""
+                return False, None, err
+            return True, self._extract_data_result(result), ""
         except asyncio.TimeoutError:
-            return False, f"{result_name or action} 超时（协议端 {ONEBOT_CALL_TIMEOUT:.0f}s 无响应）"
+            return False, None, f"{result_name or action} 超时（协议端 {ONEBOT_CALL_TIMEOUT:.0f}s 无响应）"
         except Exception as e:
             err = str(e)
             # Issue #34：QQ 权限错误的原始 OIDB 报文对用户不友好，转成可读提示
             if "ERR_NO_PERMISSION" in err or "120101007" in err:
-                return False, "机器人在该群权限不足（需为管理员/群主，且不能对同级或更高身份操作）"
-            return False, err
+                return False, None, "机器人在该群权限不足（需为管理员/群主，且不能对同级或更高身份操作）"
+            return False, None, err
+
+    async def _call_group_api(self, client, action: str, result_name: str = "", **kwargs) -> Tuple[bool, str]:
+        # 调用 OneBot API 并用 _check_api_result 统一判断结果（status=failed 或 retcode!=0 视为失败）。
+        # 统一加 20s 超时，防止协议端无响应导致协程永久挂起。
+        ok, _data, error = await self._call_group_api_result(
+            client, action, result_name, **kwargs
+        )
+        return ok, error
 
     async def _recall_msg(self, event: AiocqhttpMessageEvent, msg_id: str):
         mid = self._safe_int(msg_id)

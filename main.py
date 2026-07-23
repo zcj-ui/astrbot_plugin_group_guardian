@@ -120,7 +120,8 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
             custom_raw = [custom_raw]
         custom = [str(x).strip() for x in custom_raw if str(x).strip()]
         matcher = HybridMatcher()
-        matcher.add_regex_patterns(patterns + custom)
+        matcher.add_regex_patterns(patterns)
+        matcher.add_literal_keywords(custom)
         matcher.build()
         if category == "swear":
             self._swear_matcher = matcher
@@ -623,6 +624,20 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
                 event.stop_event()
         except Exception as e:
             logger.warning(f"[GroupMgr] 名片变更处理出错: {e}")
+
+    # 名片监控兼容入口：group_increase 是 OneBot v11 标准通知。
+    # 部分协议端不发送非标准 group_card，入群时查询一次成员名片，避免必须先发言。
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
+    async def _on_group_increase_card_check(self, event: AiocqhttpMessageEvent):
+        if not self._is_group_increase_notice(event):
+            return
+        try:
+            await CardMonitorMixin._handle_group_increase(self, event)
+            # group_increase 是标准广播通知；名片被还原也不应阻断欢迎消息等
+            # 其他插件继续处理该入群事件。
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 入群名片检查出错: {e}")
 
     # 名片监控：监听 group_admin（管理员任免）通知事件。
     @filter.event_message_type(filter.EventMessageType.ALL)

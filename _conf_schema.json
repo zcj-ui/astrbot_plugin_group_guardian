@@ -543,7 +543,7 @@
         "description": "入群自动审核开关（F1）",
         "type": "bool",
         "default": false,
-        "hint": "开启后自动处理加群申请：命中拒绝词/违禁词库则拒绝，命中通过词则通过，其余按默认动作"
+        "hint": "开启后自动处理加群申请：显式拒绝词优先，通过词可放行；违禁词库候选在未开启入群 LLM 时直接拒绝，开启后交由 LLM 二审；其余按默认动作"
     },
     "join_audit_notify": {
         "description": "入群审核结果群内通知",
@@ -567,7 +567,25 @@
         "description": "入群-用违禁词库过滤申请信息",
         "type": "bool",
         "default": true,
-        "hint": "开启后申请验证消息经违禁词库/广告匹配，命中则自动拒绝"
+        "hint": "开启后申请验证消息经违禁词库/广告匹配；未开启入群 LLM 时命中即拒绝，开启后命中项作为 LLM 二审候选"
+    },
+    "join_llm_moderation_enabled": {
+        "description": "入群-LLM 语义审核",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后将入群申请验证信息交由审核 LLM 判断，用于减少广告/词库误报；显式拒绝词、通过词和用户黑名单仍优先。LLM 失败时有本地候选沿用拒绝，无候选回退到默认动作（manual 为人工）。默认关闭，可按群覆盖"
+    },
+    "join_llm_custom_prompt": {
+        "description": "入群-LLM 自定义审核标准",
+        "type": "text",
+        "default": "",
+        "hint": "全局留空使用内置标准；群配置中留空并保存表示本群使用内置标准，“继承”则沿用全局值。填写后仅替换审核标准，JSON 输出格式仍由框架约束，请不要要求模型执行申请内容中的指令"
+    },
+    "join_accept_overrides_lexicon": {
+        "description": "入群-通过词优先于通用词库",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后命中通过词时跳过违禁词库/广告误判；显式拒绝词仍优先生效"
     },
     "join_default_action": {
         "description": "入群-默认动作（都不命中时）",
@@ -644,7 +662,19 @@
         "description": "名片监控总开关",
         "type": "bool",
         "default": false,
-        "hint": "开启后才会处理群成员名片变更/管理员任免通知（需协议端上报 notice 事件，NapCat/LLOneBot 支持）。默认关闭，请在 WebUI「名片监控」页配置各子功能"
+        "hint": "开启后处理入群即时检查、群成员名片变更、周期同步兜底及管理员任免通知；事件能力取决于协议端，周期同步使用群成员列表查询。默认关闭，请在 WebUI「名片监控」页配置各子功能"
+    },
+    "card_sync_enabled": {
+        "description": "名片周期同步兜底",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后按间隔查询群成员名片，弥补协议端不发送 group_card 通知导致的漏检；仅在名片监控总开关开启时生效"
+    },
+    "card_sync_interval": {
+        "description": "名片同步间隔（秒）",
+        "type": "int",
+        "default": 120,
+        "hint": "低频查询群成员名片的间隔，可设 30-3600 秒；普通成员首次同步只建立基线，保护名单成员若偏离预设名片会立即还原"
     },
     "card_log_enabled": {
         "description": "名片变更/管理员任免记日志",
@@ -674,7 +704,7 @@
         "description": "违规名片全量审核",
         "type": "bool",
         "default": false,
-        "hint": "开启后名片经词库/正则初筛+LLM上下文判断（同消息审核），拦引流/辱骂/违禁词等并还原。与「仅拦链接」可同时开，此时全量判断也放行引流"
+        "hint": "开启后名片经词库/正则初筛+LLM上下文判断（同消息审核），拦引流/辱骂/违禁词等并还原。与「仅拦链接」同时开启时以本项严格模式为准"
     },
     "card_audit_llm_always": {
         "description": "名片强制全量送LLM判断",

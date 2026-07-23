@@ -20,6 +20,7 @@ class SchedulerMixin:
     def _init_scheduler(self) -> None:
         """初始化调度器状态。在 __init__ 中调用。"""
         self._scheduler_task = None
+        self._card_sync_task = None
         self._scheduler_stop = False
 
     def _start_scheduler(self) -> None:
@@ -29,6 +30,10 @@ class SchedulerMixin:
         self._scheduler_stop = False
         try:
             self._scheduler_task = asyncio.create_task(self._scheduler_loop())
+            # 名片同步使用独立低频 loop，避免 auto_unban_scan_interval 较大时
+            # 延迟名片变更检测；没有 CardMonitorMixin 时自动跳过。
+            if callable(getattr(self, "_sync_group_cards", None)):
+                self._card_sync_task = asyncio.create_task(self._card_sync_loop())
         except RuntimeError:
             # 无运行中的事件循环（极少见），放弃后台任务，不影响其它功能
             logger.debug("[GroupMgr] 无事件循环，跳过调度器启动")
@@ -42,6 +47,12 @@ class SchedulerMixin:
                 await self._scheduler_task
             except asyncio.CancelledError:
                 logger.debug("[GroupMgr] 调度器任务已取消")
+        if self._card_sync_task and not self._card_sync_task.done():
+            self._card_sync_task.cancel()
+            try:
+                await self._card_sync_task
+            except asyncio.CancelledError:
+                logger.debug("[GroupMgr] 名片同步任务已取消")
 
     async def _scheduler_loop(self) -> None:
         consecutive_errors = 0
@@ -70,6 +81,65 @@ class SchedulerMixin:
                     logger.error("[GroupMgr] 调度器连续错误过多，暂停 5 分钟")
                     await asyncio.sleep(300)
                     consecutive_errors = 0
+
+    async def _card_sync_loop(self) -> None:
+        """周期同步成员名片，弥补协议端不发送 group_card 的实现差异。"""
+        # 启动后留出连接建立时间；之后每次间隔均从最新配置读取，支持 WebUI 热更新。
+        first_run = True
+        consecutive_errors = 0
+        while not self._scheduler_stop:
+            try:
+                interval = self._clamp_int(
+                    self._cfg_int("card_sync_interval", 120), 120, 30, 3600
+                )
+                await asyncio.sleep(5 if first_run else interval)
+                first_run = False
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                await asyncio.sleep(30)
+                continue
+            if self._scheduler_stop:
+                break
+            # 没有任何全局或单群启用项时不查询群列表，避免无意义 API 请求；
+            # 标准入群通知仍由 `_on_group_increase_card_check` 即时处理。
+            if not self._card_sync_any_group_enabled():
+                continue
+            try:
+                await self._sync_group_cards()
+                consecutive_errors = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                consecutive_errors += 1
+                logger.warning(f"[GroupMgr] 名片周期同步出错({consecutive_errors}): {e}")
+                if consecutive_errors >= 5:
+                    # 避免协议端持续异常时刷日志和请求；下一轮仍会自动恢复。
+                    await asyncio.sleep(min(300, interval))
+                    consecutive_errors = 0
+
+    def _card_sync_any_group_enabled(self) -> bool:
+        """判断是否至少有一个群同时开启名片监控与周期同步。"""
+        config = getattr(self, "config", {}) or {}
+        if not config.get("disclaimer_agreed", False):
+            return False
+        if (self._cfg("enabled", True)
+                and self._cfg("card_monitor_enabled", False)
+                and self._cfg("card_sync_enabled", True)):
+            return True
+        group_ids = set()
+        for attr in ("_group_white_set", "_card_sync_known_groups"):
+            group_ids.update(str(x) for x in (getattr(self, attr, set()) or set()) if x)
+        try:
+            group_ids.update(str(x) for x in self._storage.list_configured_groups() if x)
+        except Exception:
+            pass
+        return any(
+            self._cfg("enabled", True, group_id=gid)
+            and self._cfg("card_monitor_enabled", False, group_id=gid)
+            and self._cfg("card_sync_enabled", True, group_id=gid)
+            for gid in group_ids
+        )
 
     async def _run_due_unbans(self) -> None:
         """执行所有到期的定时解禁。"""
