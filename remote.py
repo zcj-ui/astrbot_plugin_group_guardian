@@ -106,7 +106,89 @@ class RemoteMixin:
             return await self._call_group_api(client, "delete_essence_msg", "取消精华", message_id=mid)
         return False, f"未知操作: {action}"
 
-    async def _remote_execute(self, group_id: str, action: str, params: dict) -> dict:
+    def _resolve_operator_from_bindings(self, operator_name: str = "", operator_qq: str = ""):
+        """从 web_operator_bindings（用户名:QQ号,用户名2:QQ2）解析操作者身份。
+
+        返回 (operator_name, operator_qq)。规则：
+        - 若前端已传 operator_qq，直接采用；
+        - 否则若传了 operator_name（Dashboard 登录用户名），按绑定映射到 QQ；
+        - 都没有则返回空（是否放行由 web_remote_require_operator 决定）。
+        """
+        try:
+            bindings = self._cfg_str("web_operator_bindings", "")
+            mapping = {}
+            for pair in str(bindings or "").replace("；", ";").replace("，", ",").split(";"):
+                for sub in pair.split(","):
+                    sub = sub.strip()
+                    if ":" not in sub:
+                        continue
+                    name, qq = sub.split(":", 1)
+                    name, qq = name.strip(), qq.strip()
+                    if name and qq and name not in mapping:
+                        mapping[name] = qq
+            if operator_qq:
+                return operator_name or "", str(operator_qq)
+            if operator_name and operator_name in mapping:
+                return operator_name, mapping[operator_name]
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 解析操作者绑定失败: {e}")
+        return operator_name or "", ""
+
+    def _record_web_audit(self, operator_name: str, operator_qq: str, group_id: str,
+                          action: str, target_user: str, params: str,
+                          result: str, message: str) -> None:
+        """记录 WebUI 远程操作审计日志（失败静默）。"""
+        try:
+            self._storage.record_web_audit(
+                operator_name=operator_name, operator_qq=operator_qq,
+                group_id=group_id, action=action, target_user=target_user,
+                params=params, result=result, message=message,
+            )
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 审计记录失败: {e}")
+
+    async def _check_remote_operator(self, group_id: str, operator_qq: str):
+        """远程写操作授权校验：操作者（QQ 身份）是否可操作目标群。
+
+        权限模型（自上而下，v2.15.0 明确）：
+          1. plugin_admin：插件全局管理员 / AstrBot 全局 admin_id / web_operator_bindings 绑定用户
+             → 可操作【所有群】（产品设计的全局管理模型）；
+          2. group_super_admin：目标群的群超管（WebUI 为该群单独设置）→ 可操作该群；
+          3. owner/admin：目标群的群主 / 群管理员（按 QQ 号查群角色）→ 可操作该群；
+          4. 其余拒绝。
+
+        返回 (ok, role, msg)。
+        """
+        if not operator_qq:
+            return False, "", ("缺少操作者身份(operator_qq)：请在 WebUI 配置 web_operator_bindings "
+                               "绑定 Dashboard 用户与 QQ，或在远程操作请求中携带操作者QQ")
+        qq = str(operator_qq).strip()
+        # ① 插件全局管理员 / AstrBot 全局 admin：可操作所有群
+        try:
+            if qq in self._get_all_admin_ids():
+                return True, "plugin_admin", ""
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 远程操作者管理员判定失败: {e}")
+        # ② 群超管（目标群专属）
+        try:
+            if self._storage.is_group_super_admin(group_id, qq):
+                return True, "group_super_admin", ""
+        except Exception:
+            pass
+        # ③ 群主 / 群管理员（按 QQ 号查目标群角色）
+        try:
+            client = await self._get_client(None)
+            if client:
+                role = await self._get_role_by_id(client, group_id, qq)
+                if role in ("owner", "admin"):
+                    return True, role, ""
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 远程操作者角色查询失败: {e}")
+        return False, "member", ("权限不足：操作者非全局插件管理员，也不是该群的群超管/群主/群管理员，"
+                                 "无法远程操作该群")
+
+    async def _remote_execute(self, group_id: str, action: str, params: dict,
+                              operator_qq: str = "", operator_name: str = "") -> dict:
         """WebUI 远程执行统一入口。
 
         params 约定：
@@ -133,6 +215,14 @@ class RemoteMixin:
         ok, msg = self._cfg_check(cfg_key, cn_name, group_id=gid_str)
         if not ok:
             return {"ok": False, "message": msg}
+        # v2.15.0 远程写操作授权校验：开启 web_remote_require_operator 或提供了操作者身份时，
+        # 必须校验操作者对目标群的授权（plugin_admin 全局 / 群超管 / 群主 / 群管理员）。
+        if self._cfg("web_remote_require_operator", False) or operator_qq:
+            op_ok, op_role, op_err = await self._check_remote_operator(gid_str, operator_qq)
+            if not op_ok:
+                self._record_web_audit(operator_name, operator_qq, gid_str, action,
+                                       "", str(params)[:200], "拒绝", op_err)
+                return {"ok": False, "message": op_err}
         client = await self._get_client(None)
         if not client:
             return {"ok": False, "message": "无法获取 QQ 客户端，请确保已连接"}
@@ -166,11 +256,15 @@ class RemoteMixin:
             if len(targets) > 1:
                 await asyncio.sleep(0.3)  # 批量防限频
 
-        # 记录一条操作日志便于审计
+        # 审计日志（v2.15.0）：记录操作者身份、目标群、操作与结果
+        self._record_web_audit(operator_name, operator_qq, gid_str, action,
+                               ",".join(targets[:50]), str(params)[:200],
+                               "成功" if success > 0 else "失败", f"{cn_name} 成功 {success}/{len(targets)}")
+        # 兼容旧 moderation_logs 记录（附带操作者身份便于追溯）
         try:
             self._log_moderation(str(gid), targets[0] if targets else "", "",
-                                 f"[远程操作] {cn_name} x{len(targets)}", f"远程{cn_name}",
-                                 f"成功{success}/{len(targets)}", [])
+                                 f"[远程操作] {cn_name} x{len(targets)} (操作者:{operator_name or operator_qq or '未知'})",
+                                 f"远程{cn_name}", f"成功{success}/{len(targets)}", [])
         except Exception:
             pass
 

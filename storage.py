@@ -317,6 +317,25 @@ class SQLiteStorage(GroupStorageMixin):
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_group_ts ON group_activity(group_id, ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_ts ON group_activity(ts)")
+        # WebUI 远程操作审计日志（v2.15.0）：记录操作者身份、目标群、操作与结果
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS web_audit_logs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "time TEXT, "
+            "operator_name TEXT DEFAULT '', "
+            "operator_qq TEXT DEFAULT '', "
+            "group_id TEXT DEFAULT '', "
+            "action TEXT DEFAULT '', "
+            "target_user TEXT DEFAULT '', "
+            "params TEXT DEFAULT '', "
+            "result TEXT DEFAULT '', "
+            "message TEXT DEFAULT ''"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_ts ON web_audit_logs(ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_operator ON web_audit_logs(operator_qq)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_group ON web_audit_logs(group_id)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -1054,6 +1073,42 @@ class SQLiteStorage(GroupStorageMixin):
             return int(row["cnt"] or 0) if row else 0
         except Exception:
             return 0
+
+    def record_web_audit(self, operator_name: str = "", operator_qq: str = "",
+                         group_id: str = "", action: str = "", target_user: str = "",
+                         params: str = "", result: str = "", message: str = "") -> None:
+        """记录一条 WebUI 远程操作审计日志（失败静默）。"""
+        try:
+            now = int(time.time())
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO web_audit_logs(ts, time, operator_name, operator_qq, group_id, "
+                    "action, target_user, params, result, message) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (now, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                     str(operator_name or ""), str(operator_qq or ""), str(group_id or ""),
+                     str(action or ""), str(target_user or ""), str(params or ""),
+                     str(result or ""), str(message or "")),
+                )
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 记录 Web 审计日志失败: {e}")
+
+    def list_web_audit_logs(self, limit: int = 100, group_id: str = "") -> List[dict]:
+        """查询 WebUI 远程操作审计日志（按时间倒序，可指定群过滤）。"""
+        try:
+            with self._connect() as conn:
+                if group_id:
+                    rows = conn.execute(
+                        "SELECT * FROM web_audit_logs WHERE group_id=? "
+                        "ORDER BY ts DESC LIMIT ?", (str(group_id), max(1, int(limit))),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM web_audit_logs ORDER BY ts DESC LIMIT ?",
+                        (max(1, int(limit)),),
+                    ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
 
     # ============================================================
     # v2.4.0 新增：F1 入群审核规则

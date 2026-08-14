@@ -298,6 +298,7 @@ class WebMixin:
                 ("/admin_grant/delete", self._web_delete_admin_grant, ["POST"], "删除群管理员授权配置"),
                 ("/remote/actions", self._web_remote_actions, ["GET"], "获取可远程执行的操作列表"),
                 ("/remote/execute", self._web_remote_execute, ["POST"], "远程执行群管操作（支持批量）"),
+                ("/audit_logs", self._web_audit_logs, ["GET"], "查询WebUI远程操作审计日志"),
                 ("/super_admin", self._web_get_super_admins, ["GET"], "获取群超管列表"),
                 ("/super_admin/add", self._web_add_super_admin, ["POST"], "添加群超管"),
                 ("/super_admin/remove", self._web_remove_super_admin, ["POST"], "移除群超管"),
@@ -1535,17 +1536,38 @@ class WebMixin:
 
     async def _web_remote_execute(self):
         # 远程执行群管操作，支持单个 user_id 或批量 user_ids。
+        # v2.15.0：解析操作者身份（Dashboard 用户名 → web_operator_bindings 映射 QQ，或显式 operator_qq），
+        # 交由 _remote_execute 做目标群授权校验并写入审计日志。
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
             action = str(data.get("action", "")).strip()
             params = data.get("params", {}) or {}
+            operator_qq = str(data.get("operator_qq", "") or "").strip()
+            operator_name = str(data.get("operator_name", "") or "").strip()
+            operator_name, operator_qq = self._resolve_operator_from_bindings(operator_name, operator_qq)
             if not group_id or not action:
                 return jsonify({"status": "error", "message": "缺少 group_id 或 action"})
-            result = await self._remote_execute(group_id, action, params)
+            result = await self._remote_execute(
+                group_id, action, params,
+                operator_qq=operator_qq, operator_name=operator_name,
+            )
             return jsonify({"status": "success" if result.get("ok") else "error", "data": result, "message": result.get("message", "")})
         except Exception as e:
             logger.exception("[GroupMgr] 远程执行失败")
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_audit_logs(self):
+        # 查询 WebUI 远程操作审计日志（可按群过滤）。
+        try:
+            group_id = str(quart_request.args.get("group_id", "") or "").strip()
+            try:
+                limit = max(1, min(int(quart_request.args.get("limit", 100) or 100), 500))
+            except (TypeError, ValueError):
+                limit = 100
+            data = self._storage.list_web_audit_logs(limit=limit, group_id=group_id)
+            return jsonify({"status": "success", "data": data})
+        except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_get_super_admins(self):

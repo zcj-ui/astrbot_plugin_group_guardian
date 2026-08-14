@@ -1,5 +1,31 @@
 # Changelog
 
+## v2.15.0 - 2026-08-14
+
+### 安全增强：Web 后台远程操作的权限模型、身份绑定与审计日志
+
+**1. Dashboard 用户与 QQ 身份绑定（`web_operator_bindings`）**
+- 新增配置 `web_operator_bindings`（格式 `用户名:QQ号,用户名2:QQ2`）：把 AstrBot Dashboard 登录用户名映射到 QQ 身份；
+- WebUI 远程操作时前端携带操作者身份，服务端 `_resolve_operator_from_bindings` 完成用户名 → QQ 的解析。
+
+**2. 远程写操作授权校验（`web_remote_require_operator`，默认关闭）**
+- `_remote_execute` 新增 `_check_remote_operator`：操作者（QQ 身份）对目标群的授权自上而下校验——
+  全局插件管理员（admin_list / AstrBot 全局 admin_id / 绑定用户）可操作**所有群**；
+  群超管、群主、群管理员仅可操作其授权群；其余拒绝；
+- 开启 `web_remote_require_operator` 后，未绑定身份或非授权用户的远程写操作一律拒绝；
+  关闭时依赖 AstrBot Dashboard 登录鉴权（默认兼容原有行为）。
+
+**3. 审计日志（新增 `web_audit_logs` 表 + `GET /audit_logs` 接口）**
+- 所有远程写操作**无论成功/拒绝都记录**：操作者姓名、QQ、目标群、操作、目标成员、参数、结果、时间；
+- storage 新增 `record_web_audit` / `list_web_audit_logs`；旧 moderation_logs 记录同步附带操作者身份。
+
+**4. 文档明确权限模型**
+- README 新增「Web 后台远程操作权限模型」章节：明确"全局插件管理员可操作所有群"是产品设计的全局管理模型，
+  并给出安全部署建议（勿暴露公网、开启强制校验、配置身份绑定）。
+
+**前端**
+- pages/dashboard 远程操作（单操作/批量）请求携带 `operator_qq`/`operator_name`（本地记忆，首次提示输入）。
+
 ## v2.14.0 - 2026-08-14
 
 ### 新增：违规积分累进制（`violation_points_enabled`，默认关闭）
