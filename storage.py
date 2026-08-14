@@ -305,6 +305,18 @@ class SQLiteStorage(GroupStorageMixin):
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_learned_group_status ON learned_keywords(group_id, status)")
+        # 群活跃度统计（v2.13.0）：记录每群每条发言，供日活/周活/月活报表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS group_activity ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT ''"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_group_ts ON group_activity(group_id, ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_ts ON group_activity(ts)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -973,6 +985,56 @@ class SQLiteStorage(GroupStorageMixin):
                 (since,),
             ).fetchall()
         return [{"hour": r["hour"], "count": r["count"] or 0} for r in rows]
+
+    # ============================================================
+    # v2.13.0 新增：群活跃度统计（日活/周活/月活）
+    # ============================================================
+    def record_group_activity(self, group_id: str, user_id: str, user_name: str, ts: int = None) -> None:
+        """记录一条群发言（群活跃度统计的数据源）。失败静默。"""
+        if not group_id or not user_id:
+            return
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO group_activity(ts, group_id, user_id, user_name) VALUES(?,?,?,?)",
+                    (int(ts or time.time()), str(group_id), str(user_id), str(user_name or "")),
+                )
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 记录群活跃度失败: {e}")
+
+    def get_group_activity_summary(self, group_id: str, days: int = 30) -> List[dict]:
+        """按日聚合某群最近 days 天的活跃度，返回 [{date, users, msgs}]。"""
+        import datetime as _dt
+
+        since = int(time.time()) - days * 86400
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT ts, user_id FROM group_activity "
+                "WHERE group_id=? AND ts>=? ORDER BY ts ASC",
+                (str(group_id), since),
+            ).fetchall()
+        daily = {}
+        for r in rows:
+            day = _dt.date.fromtimestamp(r["ts"]).isoformat()
+            entry = daily.setdefault(day, {"date": day, "users": set(), "msgs": 0})
+            entry["users"].add(r["user_id"])
+            entry["msgs"] += 1
+        out = []
+        for day in sorted(daily.keys()):
+            e = daily[day]
+            out.append({"date": day, "users": len(e["users"]), "msgs": e["msgs"]})
+        return out
+
+    def get_group_activity_top_users(self, group_id: str, days: int = 30, top_n: int = 10) -> List[dict]:
+        """某群最近 days 天的活跃用户排行（按发言条数）。"""
+        since = int(time.time()) - days * 86400
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT user_id, user_name, COUNT(*) as cnt FROM group_activity "
+                "WHERE group_id=? AND ts>=? GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
+                (str(group_id), since, top_n),
+            ).fetchall()
+        return [{"user_id": r["user_id"], "user_name": r["user_name"], "count": r["cnt"] or 0} for r in rows]
 
     # ============================================================
     # v2.4.0 新增：F1 入群审核规则

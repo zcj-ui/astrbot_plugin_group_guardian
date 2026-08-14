@@ -289,6 +289,41 @@ class ImageAuditMixin:
 
         async def recognize(image_url: str) -> str:
             try:
+                data = None
+                # 感知哈希广告黑名单快速命中（可选）：命中直接标记并跳过视觉 API 调用，
+                # 并缓存哈希供广告确认后学习。
+                if self._cfg("ad_hash_blacklist_enabled", False, group_id=group_id):
+                    data = await self._download_bytes(image_url)
+                    if data:
+                        phash = self._phash_from_data(data)
+                        if phash:
+                            self._recent_media_hashes[image_url] = phash
+                            distance = self._cfg_int(
+                                "ad_hash_distance", 10, group_id=group_id
+                            )
+                            best = self._check_hash_blacklist(phash, distance)
+                            if best <= distance:
+                                result = (
+                                    f"[已知广告图] 命中广告黑名单"
+                                    f"(相似度{64 - best}/64)"
+                                )
+                                self._cache_image_evidence(image_url, "ocr", result)
+                                return result
+                # 非 LLM 识别引擎（local/umi/cloud），或 auto 的本地优先
+                engine = self._ad_engine(group_id)
+                if engine in ("local", "umi", "cloud", "auto"):
+                    if data is None:
+                        data = await self._download_bytes(image_url)
+                    media_text = await self._detect_media_text(data, group_id)
+                    if media_text:
+                        result = media_text
+                        if engine == "cloud":
+                            result = "[云API] " + media_text
+                        self._cache_image_evidence(image_url, "ocr", result)
+                        return result
+                    if engine in ("local", "umi", "cloud"):
+                        return ""
+                # llm 引擎，或 auto 本地无结果时回退 LLM 视觉
                 is_gif = self._is_gif_url(image_url)
                 is_sticker = self._is_sticker_image(image_url)
                 ocr_text = await self._call_llm_ocr(

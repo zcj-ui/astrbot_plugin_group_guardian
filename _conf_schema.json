@@ -191,6 +191,25 @@
         "default": false,
         "hint": "开启后 /禁言 /踢人 /设置名片 等群管指令要求操作者本群角色为群主或群管理员，即使是插件全局管理员在其非群管的群里也不能通过指令操作（防止跨群乱踢人）。查询指令与 WebUI 远程执行不受此限制"
     },
+    "role_high_require": {
+        "description": "高危群管操作所需角色",
+        "type": "string",
+        "default": "admin",
+        "hint": "设置/取消管理员、全体禁言、修改群名、设置头衔等操作的发起者最低角色：admin=群管理员及以上（默认，与原行为一致），owner=仅群主或插件管理员，plugin_admin=仅插件管理员。可按群覆盖"
+    },
+    "role_kick_require": {
+        "description": "踢人所需角色",
+        "type": "string",
+        "default": "admin",
+        "hint": "/踢人 指令与 LLM 踢人工具的操作者最低角色：admin=群管理员及以上（默认），owner=仅群主或插件管理员，plugin_admin=仅插件管理员。可按群覆盖"
+    },
+    "role_ban_require": {
+        "description": "禁言/解禁所需角色",
+        "type": "string",
+        "default": "admin",
+        "hint": "/禁言 /解禁 指令的操作者最低角色：admin=群管理员及以上（默认，与原行为一致），owner=仅群主或插件管理员，plugin_admin=仅插件管理员。可按群覆盖"
+    },
+
     "kick_recall_enabled": {
         "description": "踢人时自动撤回该成员最近消息",
         "type": "bool",
@@ -814,5 +833,253 @@
         "type": "list",
         "default": [],
         "hint": "列在此处的词永远不会被学成违禁词，用于保护本群常用词/正常商品名，避免误伤"
+    },
+    "video_audit_enabled": {
+        "description": "视频广告检测开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后自动下载群内视频、抽帧并送视觉模型识别广告内容（识别帧内引流文字/二维码/画面）。成本较高（下载+多次视觉调用），默认关闭。可按群覆盖"
+    },
+    "video_max_frames": {
+        "description": "每个视频最多抽帧数",
+        "type": "int",
+        "default": 3,
+        "hint": "从视频中等间隔抽取最多多少帧做识别，范围 1-10（超过 10 按 10 截断）。帧越多识别越全面但视觉调用越多。可按群覆盖"
+    },
+    "video_frame_interval_sec": {
+        "description": "视频抽帧间隔（秒）",
+        "type": "float",
+        "default": 5.0,
+        "hint": "每间隔多少秒抽一帧，范围 0.1-60。间隔越短帧越密集，覆盖短视频内短暂出现的广告画面。可按群覆盖"
+    },
+    "video_max_size_mb": {
+        "description": "单个视频最大体积（MB）",
+        "type": "int",
+        "default": 30,
+        "hint": "超过该体积的视频不下载识别，避免机器人流量/存储被耗尽，范围 1-200。可按群覆盖"
+    },
+    "video_download_timeout": {
+        "description": "视频下载超时（秒）",
+        "type": "int",
+        "default": 25,
+        "hint": "单个视频下载的最大耗时，范围 5-120。可按群覆盖"
+    },
+    "video_audit_timeout": {
+        "description": "单条消息视频审核总超时（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "包含下载、抽帧和逐帧识别的总时长上限，超过则放弃本次审核，范围 10-300。可按群覆盖"
+    },
+    "ad_hash_blacklist_enabled": {
+        "description": "广告图黑名单（感知哈希）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后图片/视频帧识别前先与历史广告样本（pHash）比对，命中直接标记「已知广告」并跳过视觉 API 调用（省费用）。命中仍走 LLM 复核防误杀。可按群覆盖"
+    },
+    "ad_hash_distance": {
+        "description": "广告图黑名单相似度阈值",
+        "type": "int",
+        "default": 10,
+        "hint": "感知哈希汉明距离 0-64，越小越严格（仅内容近似才命中），越大越宽松。默认 10。可按群覆盖"
+    },
+    "ad_hash_auto_learn": {
+        "description": "广告确认后自动学习黑名单",
+        "type": "bool",
+        "default": true,
+        "hint": "广告被确认违规后，自动把本次图片/视频帧的感知哈希加入黑名单，下次同图直接命中。关闭后黑名单只增不学。可按群覆盖"
+    },
+    "ad_escalation_enabled": {
+        "description": "广告分级处置（警告→禁言→踢出）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后按窗口内广告违规次数升级处罚：未达禁言阈值仅撤回+警告，达禁言阈值禁言，达踢出阈值踢出。默认关闭（保持原有直接撤回+禁言）。可按群覆盖"
+    },
+    "ad_escalation_warn_at": {
+        "description": "广告第几次仅警告",
+        "type": "int",
+        "default": 1,
+        "hint": "广告违规次数小于该值仅撤回+警告，范围 1-100。可按群覆盖"
+    },
+    "ad_escalation_ban_at": {
+        "description": "广告第几次禁言",
+        "type": "int",
+        "default": 2,
+        "hint": "广告违规次数达到该值禁言，范围 1-100。可按群覆盖"
+    },
+    "ad_escalation_kick_at": {
+        "description": "广告第几次踢出",
+        "type": "int",
+        "default": 3,
+        "hint": "广告违规次数达到该值踢出群聊，范围 1-100。可按群覆盖"
+    },
+    "ad_escalation_window_seconds": {
+        "description": "广告分级统计窗口（秒）",
+        "type": "int",
+        "default": 604800,
+        "hint": "窗口内累计广告违规次数，窗口外重置，默认 604800（7天），范围 60-31536000。可按群覆盖"
+    },
+    "video_frame_mode": {
+        "description": "视频抽帧模式",
+        "type": "string",
+        "default": "interval",
+        "hint": "interval=等间隔抽帧（默认）；scene=场景切换抽帧，仅在画面明显变化时保留帧，广告信息多在关键画面，可减少无效帧与视觉调用。可按群覆盖"
+    },
+    "video_scene_threshold": {
+        "description": "场景切换抽帧阈值",
+        "type": "float",
+        "default": 30.0,
+        "hint": "帧间平均像素差异超过该值才保留该帧（scene 模式生效），越大越少抽帧。可按群覆盖"
+    },
+    "video_quick_precheck": {
+        "description": "视频帧快速预检",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后每帧先用本地轻量特征（饱和度/纹理/文字区域）预检，得分低于阈值的帧跳过视觉 API 调用（省 GLM-4V 费用）。可按群覆盖"
+    },
+    "video_precheck_threshold": {
+        "description": "快速预检可疑度阈值",
+        "type": "float",
+        "default": 0.5,
+        "hint": "预检得分低于该值的帧跳过视觉 API（0-1），越高过滤越多但漏检风险增大。可按群覆盖"
+    },
+    "video_fingerprint_cache": {
+        "description": "视频指纹缓存",
+        "type": "bool",
+        "default": false,
+        "hint": "广告确认过的整段视频（首帧哈希+时长指纹）下次直接命中并跳过检测，群发同一广告视频时零视觉调用。可按群覆盖"
+    },
+    "ad_backend_enabled": {
+        "description": "独立Web管理后台开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后插件内置一个独立 HTTP 后台（独立端口，不依赖 AstrBot 管理面板），浏览器直接访问查看广告检测统计/违规记录/黑名单/指纹/分级处置，并支持管理操作。默认关闭"
+    },
+    "ad_backend_port": {
+        "description": "独立后台端口",
+        "type": "int",
+        "default": 8765,
+        "hint": "独立后台监听的端口，范围 1-65535，默认 8765。请确保该端口未被占用且在防火墙放行"
+    },
+    "ocr_engine": {
+        "description": "广告识别引擎",
+        "type": "string",
+        "default": "local",
+        "hint": "local=本地RapidOCR（默认，模型按需下载，开启后自动安装）；umi=Umi-OCR本地HTTP服务（默认127.0.0.1:1224）；cloud=第三方云广告检测API（如阿里云）；llm=云端视觉模型（可选，不再默认）；auto=本地优先回退云端视觉。可按群覆盖"
+    },
+    "local_ocr_auto_install": {
+        "description": "本地OCR自动安装（下载模型）",
+        "type": "bool",
+        "default": true,
+        "hint": "开启 local 引擎且本地未安装 RapidOCR 时，自动 pip install rapidocr_onnxruntime（含模型约30MB）；关闭后不卸载模型，仅停止自动安装"
+    },
+    "local_ocr_pip_mirror": {
+        "description": "本地OCR安装镜像源",
+        "type": "string",
+        "default": "https://pypi.tuna.tsinghua.edu.cn/simple",
+        "hint": "自动安装 RapidOCR 时使用的 pip 镜像源。国内/Docker 服务器建议用清华源（默认），官方 PyPI 连不上时更换为可用镜像或留空使用默认"
+    },
+    "umi_ocr_url": {
+        "description": "Umi-OCR 服务地址",
+        "type": "string",
+        "default": "http://127.0.0.1:1224",
+        "hint": "Umi-OCR（Rapid引擎版）的HTTP服务地址。需自行安装并运行 Umi-OCR，插件通过其 /api/ocr 接口识别图片/视频帧文字，专门为广告检测服务"
+    },
+    "cloud_audit_url": {
+        "description": "第三方云广告检测API地址",
+        "type": "string",
+        "default": "",
+        "hint": "如阿里云内容安全等第三方图片广告检测API（通用JSON协议：POST {image_base64} → {is_ad,score,reason}）。留空则禁用云检测。可按群覆盖"
+    },
+    "cloud_audit_api_key": {
+        "description": "云广告检测API Key",
+        "type": "string",
+        "default": "",
+        "hint": "调用云广告检测API时的认证Key（Authorization: Bearer）。留空则不携带"
+    },
+    "cloud_audit_threshold": {
+        "description": "云广告检测判定阈值",
+        "type": "float",
+        "default": 0.8,
+        "hint": "云API返回的广告分数达到该阈值即判定为广告（0-1），越大越严格"
+    },
+    "ad_backend_token": {
+        "description": "独立后台访问令牌",
+        "type": "string",
+        "default": "",
+        "hint": "访问后台需携带的令牌（URL 加 ?token=xxx 或请求头 X-Token）。留空则无需鉴权，仅建议在内网使用"
+    },
+    "multi_protocol_enabled": {
+        "description": "多协议适配开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后支持 Telegram/Discord/QQ官方等非 OneBot 平台的「受限模式」审核：文本关键词（脏话/广告）检测 + 撤回 + 违规记录，群主/群管理员按角色豁免。Telegram/Discord 额外支持禁言/解禁/踢人（平台路由实现，需群内操作开关）。图片/视频/转发审核、OCR/LLM 与任免管理员仍仅 AIOCQHTTP(QQ) 可用。默认关闭，仅 QQ 全量工作"
+    },
+    "multi_protocol_platforms": {
+        "description": "受限模式启用的平台列表",
+        "type": "list",
+        "default": ["telegram", "discord"],
+        "invisible": true,
+        "hint": "逗号分隔的平台名（telegram/discord/qq_official），仅列出的平台进入受限模式。请在 WebUI 或配置文件中维护"
+    },
+    "multi_protocol_ban_enabled": {
+        "description": "受限模式违规自动禁言",
+        "type": "bool",
+        "default": false,
+        "hint": "受限平台（Telegram/Discord）文本命中违规时，除撤回外在执行禁言（时长取 moderation_ban_duration）。默认关闭：跨平台规则判定依赖本地关键词，置信度低于 QQ 全量审核，先仅撤回记录避免误伤"
+    },
+    "invite_link_recall_enabled": {
+        "description": "外链邀请撤回",
+        "type": "bool",
+        "default": false,
+        "hint": "检测消息中的外部群邀请链接（QQ qm.qq.com/jq.qq.com/qun.qq.com/pd.qq.com、Telegram t.me、Discord discord.gg 等）并自动撤回。高置信文本特征，不经 LLM。可按群覆盖"
+    },
+    "url_safety_enabled": {
+        "description": "链接安全检测",
+        "type": "bool",
+        "default": false,
+        "hint": "提取消息中的 URL，命中内置短链域名、url_risk_domains 自定义风险域名或 url_risk_patterns 正则时自动撤回。用于拦截赌博/诈骗/引流链接。可按群覆盖"
+    },
+    "url_risk_domains": {
+        "description": "自定义风险域名列表",
+        "type": "string",
+        "default": "",
+        "hint": "逗号分隔的域名，如 888.com,example-bet.com。命中即判定为风险链接并撤回（内置已含 t.cn/dwz.cn/bit.ly 等短链域名）。可按群覆盖"
+    },
+    "url_risk_patterns": {
+        "description": "自定义风险链接正则（每行一条）",
+        "type": "string",
+        "default": "",
+        "hint": "每行一个正则表达式（忽略大小写），命中即判定为风险链接并撤回。以 # 开头的行视为注释"
+    },
+    "gif_frame_audit_enabled": {
+        "description": "GIF 帧级拆分审核",
+        "type": "bool",
+        "default": false,
+        "hint": "对 GIF 动图下载后用 OpenCV 逐帧拆解，每帧做本地 OCR 识别文字并入审核，避免中间帧违规漏检。帧数上限取 gif_max_frames，失败自动降级为整体图审核。可按群覆盖"
+    },
+    "gif_max_frames": {
+        "description": "GIF 最大拆分帧数",
+        "type": "int",
+        "default": 15,
+        "hint": "GIF 帧级拆分审核最多识别的帧数（范围 1-60）。帧越多越全但越慢、越耗资源。可按群覆盖"
+    },
+    "voice_audit_enabled": {
+        "description": "语音消息审核",
+        "type": "bool",
+        "default": false,
+        "hint": "把语音消息下载后调用通用 HTTP ASR 接口（voice_asr_url）转文字，并入审核正文。需自行部署 ASR 服务，默认关闭。可按群覆盖"
+    },
+    "voice_asr_url": {
+        "description": "语音 ASR 接口地址",
+        "type": "string",
+        "default": "",
+        "hint": "通用 ASR 服务地址，插件会 POST {audio}（multipart，字段名 audio）到 {url}/api/asr，期望返回 JSON {text}。留空则语音审核不生效"
+    },
+    "group_activity_enabled": {
+        "description": "群活跃度统计",
+        "type": "bool",
+        "default": false,
+        "hint": "记录每群每条发言到 SQLite，供 /群活跃度 命令查询今日/近7天/近30天发言条数与活跃人数、活跃用户排行。默认关闭，开启后开始记录新消息"
     }
+
 }

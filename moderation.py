@@ -7,6 +7,7 @@ import time
 from typing import Dict, Optional, Tuple
 
 from astrbot.api import logger
+from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 LLM_MESSAGE_MAX_CHARS = 6000
@@ -25,6 +26,9 @@ try:
         CONTEXT_TOTAL_MAX_CHARS,
         ModerationContextMixin,
     )
+    from .video_audit import VideoAuditMixin
+    from .hash_audit import HashAuditMixin
+    from .local_ocr import LocalOCRMixin
 except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
     from lexicon_migration import LOW_CONFIDENCE_LITERALS as LOW_CONFIDENCE_SWEAR_LITERALS
     from image_audit import ImageAuditMixin
@@ -34,6 +38,9 @@ except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
         CONTEXT_TOTAL_MAX_CHARS,
         ModerationContextMixin,
     )
+    from video_audit import VideoAuditMixin
+    from hash_audit import HashAuditMixin
+    from local_ocr import LocalOCRMixin
 
 
 class _LLMErrorBag:
@@ -52,16 +59,17 @@ class _LLMErrorBag:
         return "; ".join(self.errors[:limit]) if self.errors else "无任何可用Provider"
 
 
-class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
+class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAuditMixin, ModerationContextMixin):
     """审核主流程。由 _handle_message 驱动（注册在 main.py）。
 
     按以下顺序执行:
     1.  黑白名单 / 防刷屏 / 功能开关 / 管理员豁免检查
     2.  消息文本提取（支持普通消息 + 合并转发 + JSON 卡片 + QQ 收藏）
     3.  正则初筛（脏话、广告、敏感词库）
-    4.  OCR 识图审核（可选）
-    5.  LLM 二次判断（30 条上下文 + 可疑类型标签）
-    6.  违规处理（撤回 + 记录日志）
+    4.  OCR 识图审核（可选）+ 感知哈希广告黑名单快速命中（可选）
+    5.  视频抽帧识别审核（可选，默认关闭）
+    6.  LLM 二次判断（30 条上下文 + 可疑类型标签）
+    7.  违规处理（撤回 + 禁言；广告可启用分级处置 警告→禁言→踢出）
     """
 
     # 合并转发内容来自协议端，理论上可以构造循环引用或极深的嵌套树。
@@ -1429,7 +1437,7 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 value = data.get('text', '') if isinstance(data, dict) else data
                 if str(value or getattr(seg, 'text', '') or '').strip():
                     return True
-            elif seg_type in ('forward', 'image', 'market_face', 'json', 'app', 'node', 'nodes'):
+            elif seg_type in ('forward', 'image', 'market_face', 'json', 'app', 'node', 'nodes', 'video'):
                 return True
             else:
                 text, images, has_forward, ids = self._extract_inline_message_content(seg)
@@ -1835,6 +1843,9 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         user_id = self._try_get_sender_id(event)
         user_name = event.get_sender_name()
 
+        # v2.13.0 群活跃度统计（默认关闭）：记录所有群发言，供 /群活跃度 报表
+        self._record_activity(event, group_id, user_id)
+
         if self._pre_check_message(event, group_id, user_id):
             return
 
@@ -1917,6 +1928,10 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         has_images = bool(image_urls)
         context_seed = text or ("[图片消息识别中]" if has_images else "")
         original_text = text
+        # 感知哈希广告黑名单的媒体哈希缓存：每条消息审核开始时重置，
+        # 图片/视频审核过程中填充，广告确认处罚时批量学习入黑名单。
+        self._recent_media_hashes.clear()
+        self._recent_video_fingerprints.clear()
         try:
             if context_seed:
                 self._record_moderation_context(
@@ -1933,6 +1948,36 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 self._record_moderation_context(
                     event, group_id, user_id, user_name, ready_text,
                     pending=False,
+                )
+        # 视频广告检测（默认关闭）：收集 video 段 → 下载/定位 → 抽帧 → 逐帧
+        # 视觉模型识别 + 二维码解码，识别文本并入正文后走统一审核流程。
+        video_components = self._collect_video_components(event)
+        if video_components:
+            text = await self._apply_video_audit(
+                text, video_components, event, group_id
+            )
+        # v2.13.0 高级审核（均默认关闭）：
+        # 外链邀请 / 风险链接为高置信文本特征 → 直接撤回+记录，不进 LLM 审核
+        link_violation = await self._detect_link_violation(text, group_id)
+        if link_violation:
+            async for item in self._handle_link_violation(
+                event, group_id, user_id, user_name, text, link_violation
+            ):
+                yield item
+            return
+        # GIF 帧级拆分审核（默认关闭）：逐帧本地 OCR 识别文字并入正文
+        if self._gif_frame_hit(group_id):
+            gif_components = self._collect_gif_components(event)
+            if gif_components:
+                text = await self._apply_gif_frame_audit(
+                    text, gif_components, event, group_id
+                )
+        # 语音消息审核（默认关闭）：ASR 转文字并入正文
+        if self._voice_hit(group_id):
+            voice_components = self._collect_voice_components(event)
+            if voice_components:
+                text = await self._apply_voice_audit(
+                    text, voice_components, event, group_id
                 )
         text = self._append_stream_rule_evidence(
             text, [inline_scan, forward_scan]
@@ -2099,6 +2144,114 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
 
     # ===== 拆分出的子方法 =====
 
+    async def _handle_message_limited(self, event: AstrMessageEvent, platform: str):
+        """受限模式（多协议适配）：非 AIOCQHTTP 平台的文本关键词审核。
+
+        支持：白黑名单过滤 + 群角色豁免 + 文本规则匹配（脏话/广告）+ 撤回 +
+        可选禁言 + 违规记录。群管操作（撤回/禁言/踢人/查询角色）由
+        PlatformOpsMixin 平台路由实现（Telegram/Discord）。图片/视频/转发/
+        OCR/LLM/任免管理员依赖 OneBot 特有数据结构，受限模式不启用。
+        """
+        group_id = self._get_group_id(event)
+        if not group_id:
+            return
+        user_id = self._try_get_sender_id(event)
+        if not user_id:
+            return
+        try:
+            user_name = str(event.get_sender_name() or "")
+        except Exception:
+            user_name = ""
+        # 通用前检：名单 / 总开关 / 免责声明（不依赖 OneBot 事件结构）
+        if self._user_white_set and user_id in self._user_white_set:
+            return
+        if self._group_black_set and group_id in self._group_black_set:
+            return
+        if self._group_white_set and group_id not in self._group_white_set:
+            return
+        if not self._cfg("enabled", True, group_id=group_id):
+            return
+        if not self.config.get("disclaimer_agreed", False):
+            return
+        # 群主/群管理员/插件全局管理员消息不审核。多协议下 _is_admin 经平台路由
+        # 查询 Telegram/Discord 群角色（member/admin/owner），与 QQ 全量模式一致，
+        # 使按角色分权限在受限平台同样生效。
+        if await self._is_admin(event):
+            return
+        if self._user_black_set and user_id in self._user_black_set:
+            return
+        try:
+            text = event.message_str or ""
+        except Exception:
+            text = ""
+        if not text.strip():
+            return
+        hit_types = {}
+        if self._cfg("scan_swear", True, group_id=group_id) and getattr(self, "_swear_matcher", None) is not None:
+            try:
+                if self._swear_matcher.is_match(text):
+                    hit_types["swear"] = True
+            except Exception as e:
+                logger.debug(f"[GroupMgr] 受限模式脏话匹配失败: {e}")
+        if self._cfg("scan_ad", True, group_id=group_id):
+            try:
+                if self._is_ad_pattern(text):
+                    hit_types["ad"] = True
+            except Exception as e:
+                logger.debug(f"[GroupMgr] 受限模式广告匹配失败: {e}")
+        if not hit_types:
+            return
+        # 统一违规记录（进 SQLite，可在 WebUI 查看）
+        try:
+            reason = "多协议受限模式命中: " + "/".join(sorted(hit_types.keys()))
+            self._log_moderation(group_id, user_id, user_name, text[:200], "撤回", reason)
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 受限模式记录违规失败: {e}")
+        # 尽力撤回：多协议下经 OneBotMixin._recall_msg 平台路由完成（Telegram
+        # delete_message / Discord 频道删除），失败仅记录不影响主流程。
+        try:
+            mid = str(getattr(event, "message_id", "") or "")
+            if not mid:
+                mid = str(getattr(getattr(event, "message_obj", None), "message_id", "") or "")
+        except Exception:
+            mid = ""
+        if mid:
+            await self._limited_recall(event, platform, mid)
+        # 可选禁言（multi_protocol_ban_enabled）：Telegram 临时 ban / Discord
+        # timeout 由平台路由实现。默认关闭，仅撤回记录，避免跨平台误伤。
+        ban_applied = False
+        if self._cfg("multi_protocol_ban_enabled", False, group_id=group_id):
+            ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
+            try:
+                muted = await self._mute_member(event, ban_duration)
+                if muted:
+                    ban_applied = True
+                    self._mark_moderation_penalty(group_id, user_id, ban_duration)
+                    self._schedule_unban(group_id, user_id, ban_duration)
+            except Exception as e:
+                logger.debug(f"[GroupMgr] 受限模式禁言失败: {e}")
+        # 群内提示（如开启）
+        if self._cfg("auto_moderate_notice", True, group_id=group_id):
+            label = "、".join(
+                {"swear": "脏话", "ad": "广告"}.get(k, k) for k in sorted(hit_types.keys())
+            )
+            action_desc = "已撤回" if not ban_applied else "已撤回并禁言"
+            yield event.plain_result(f"检测到疑似{label}内容，{action_desc}")
+
+    async def _limited_recall(self, event: AstrMessageEvent, platform: str, mid: str) -> bool:
+        """受限模式尽力撤回：经 OneBotMixin._recall_msg 平台路由完成（Telegram
+        delete_message / Discord 频道删除），失败仅记录不影响主流程。"""
+        try:
+            result = await self._recall_msg(event, mid)
+            if result is True:
+                logger.info(f"[GroupMgr] 受限模式[{platform}] 已撤回消息 {mid}")
+                return True
+            logger.debug(f"[GroupMgr] 受限模式[{platform}] 撤回未生效(消息 {mid})")
+            return False
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 受限模式[{platform}] 撤回失败: {e}")
+            return False
+
     def _pre_check_message(self, event: AiocqhttpMessageEvent, group_id: str, user_id: str) -> bool:
         if user_id and self._user_white_set and user_id in self._user_white_set:
             return True
@@ -2247,6 +2400,19 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 self._log_moderation(group_id, user_id, user_name, text, "撤回", reason, image_urls)
                 event.stop_event()
                 return
+            # 广告确认：可选把本次媒体（图片/视频帧）感知哈希学习入黑名单，
+            # 下次同图/近图直接命中，省视觉 API 调用。
+            is_ad_violation = self._ad_escalation_is_ad(hit_types=hit_types)
+            if is_ad_violation and self._cfg("ad_hash_auto_learn", True, group_id=group_id):
+                self._learn_recent_ad_hashes(group_id)
+                self._learn_recent_video_fingerprints()
+            # 广告分级处置（可选）：按窗口内次数 警告 → 禁言 → 踢出
+            if is_ad_violation and self._cfg("ad_escalation_enabled", False, group_id=group_id):
+                async for item in self._handle_ad_escalation(
+                    event, group_id, user_id, user_name, text, reason, image_urls
+                ):
+                    yield item
+                return
             ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
             self._mark_moderation_penalty(group_id, user_id, ban_duration)
             mute_succeeded = await self._mute_member(event, ban_duration)
@@ -2286,6 +2452,18 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
             if self._moderation_in_penalty_cooldown(group_id, user_id) or self._anti_flood_in_cooldown(group_id, user_id):
                 self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
                 event.stop_event()
+                return
+            # 广告确认：可选学习本次媒体感知哈希入黑名单（省视觉 API）
+            is_ad_violation = self._ad_escalation_is_ad(hit_summary=hit_summary)
+            if is_ad_violation and self._cfg("ad_hash_auto_learn", True, group_id=group_id):
+                self._learn_recent_ad_hashes(group_id)
+                self._learn_recent_video_fingerprints()
+            # 广告分级处置（可选）：按窗口内次数 警告 → 禁言 → 踢出
+            if is_ad_violation and self._cfg("ad_escalation_enabled", False, group_id=group_id):
+                async for item in self._handle_ad_escalation(
+                    event, group_id, user_id, user_name, text, reason, image_urls
+                ):
+                    yield item
                 return
             ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
             self._mark_moderation_penalty(group_id, user_id, ban_duration)

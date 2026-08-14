@@ -23,15 +23,20 @@ from .llm_tools import LlmToolsMixin
 from .membership import MembershipMixin
 from .moderation import ModerationMixin
 from .onebot import OneBotMixin
+from .platform_ops import PlatformOpsMixin
+from .platforms import DEFAULT_LIMITED_PLATFORMS, get_platform_name, is_aiocqhttp, log_startup_support
 from .remote import RemoteMixin
 from .scheduler import SchedulerMixin
 from .storage import SQLiteStorage
 from .utils import UtilitiesMixin
 from .web import WebMixin
+from .ad_backend import AdBackendMixin
+from .activity import ActivityMixin
+from .advanced_audit import AdvancedAuditMixin
 
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
-class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
+class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, Star):
     """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -86,6 +91,9 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
         # 审核上下文独立于防刷屏队列，并负责合并/限流群历史请求。
         self._init_moderation_context_resources(llm_concurrency)
         self._init_image_audit_resources(llm_concurrency)
+        self._init_video_audit_resources(llm_concurrency)
+        self._init_hash_audit_resources()
+        self._init_local_ocr()
         # 防刷屏追踪数据结构
         self._init_anti_flood()
         # 自适应上下文学习：初始化按群缓冲/匹配器，并从 DB 载入已审批学习词
@@ -101,6 +109,10 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
         # 后台调度器（F3 定时解禁 + F2 申诉超时清理）
         self._init_scheduler()
         self._start_scheduler()
+        # 独立 Web 管理后台（可选，按配置启动独立端口服务）
+        self._init_ad_backend()
+        # 多协议支持日志（AIOCQHTTP 全量 / 其他平台受限）
+        log_startup_support()
 
     async def terminate(self):
         if self._rebuild_task and not self._rebuild_task.done():
@@ -112,6 +124,8 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
         await self._stop_scheduler()
         await self._close_moderation_context_resources()
         await self._close_image_audit_resources()
+        await self._close_video_audit_resources()
+        await self._stop_ad_backend()
         logger.info("[GroupMgr] 插件卸载，SQLite 存储已自动持久化")
 
     def _set_rebuild_status(self, state: str, target: str = "", message: str = "") -> None:
@@ -242,6 +256,12 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
     async def group_stats(self, event: AstrMessageEvent):
         '''显示群内今日消息统计和活跃排行'''
         async for item in CommandsMixin.group_stats(self, event):
+            yield item
+
+    @filter.command("群活跃度")
+    async def group_activity(self, event: AstrMessageEvent):
+        '''群活跃度统计：日活/周活/月活 + 活跃用户排行'''
+        async for item in ActivityMixin.cmd_group_activity(self, event):
             yield item
 
     # 管理命令注册区：权限校验由插件内部 _is_admin / _is_plugin_admin 统一处理，
@@ -604,11 +624,39 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
 
     # 消息监听注册区：审核主流程由 moderation.py 实现，这里只负责注册事件入口。
     # moderation._handle_message 是 async generator，必须用 async for/yield 转发，不能 await。
+    # 多协议适配：不再限定 AIOCQHTTP 平台，非 QQ 平台（Telegram/Discord 等）在开启
+    # multi_protocol_enabled 后进入「受限模式」审核：文本关键词 + 撤回 + 可选禁言 +
+    # 违规记录，群主/群管理员按角色豁免（_is_admin 经 PlatformOpsMixin 平台路由查询群角色）。
     @filter.event_message_type(filter.EventMessageType.ALL)
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    async def _handle_message(self, event: AiocqhttpMessageEvent):
+    async def _handle_message(self, event: AstrMessageEvent):
+        platform = get_platform_name(event)
+        if not is_aiocqhttp(platform):
+            # 受限模式：仅当开关开启且该平台在启用列表时处理，否则静默忽略
+            if not self._multi_protocol_active(platform):
+                return
+            async for item in ModerationMixin._handle_message_limited(self, event, platform):
+                yield item
+            return
         async for item in ModerationMixin._handle_message(self, event):
             yield item
+
+    def _multi_protocol_active(self, platform: str) -> bool:
+        """多协议受限模式是否对该平台生效（总开关 + 平台启用列表）。"""
+        try:
+            if not self._cfg("multi_protocol_enabled", False):
+                return False
+            raw = self.config.get(
+                "multi_protocol_platforms",
+                list(DEFAULT_LIMITED_PLATFORMS),
+            )
+            if isinstance(raw, str):
+                allowed = [p.strip().lower() for p in raw.split(",") if p.strip()]
+            else:
+                allowed = [str(p).strip().lower() for p in (raw or []) if str(p).strip()]
+            return platform in allowed
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 多协议开关判定失败: {e}")
+            return False
 
     # F1 入群自动审核：监听加群申请事件（与 _handle_message 共用 ALL 监听，互不干扰）。
     @filter.event_message_type(filter.EventMessageType.ALL)

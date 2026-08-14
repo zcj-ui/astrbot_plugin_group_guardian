@@ -24,6 +24,19 @@ except ImportError:
 _REGEX_META = re.compile(r"[().^$*+?{}\[\]|\\]")
 
 
+def _ensure_ahocorasick() -> None:
+    """运行时重新检测 pyahocorasick：安装后无需重启插件即可在下次构建时启用 AC。"""
+    global ahocorasick
+    if ahocorasick is not None:
+        return
+    try:
+        import ahocorasick as _ac
+        ahocorasick = _ac
+        logger.info("[GroupMgr] pyahocorasick 已检测到，词库 AC 自动机已启用")
+    except ImportError:
+        pass
+
+
 def is_literal_pattern(pattern: str) -> bool:
     """判断 pattern 是否不含正则元字符，可直接逐字匹配。"""
     return not _REGEX_META.search(pattern)
@@ -145,6 +158,11 @@ class KeywordAutomaton:
 
     def add_keywords(self, keywords: List[str]) -> None:
         """批量添加纯文本关键词，自动跳过空值和重复。"""
+        # 运行时检测 pyahocorasick：装好后无需重载插件即可在下次构建时启用 AC
+        _ensure_ahocorasick()
+        if ahocorasick is not None and self._auto is None:
+            self._migrate_trie_to_ac()
+            self._auto = ahocorasick.Automaton()
         for kw in keywords:
             kw = kw.strip().lower()
             if not kw or kw in self._seen:
@@ -161,6 +179,22 @@ class KeywordAutomaton:
                 node[None] = kw
             self._count += 1
         self._built = False
+
+    def _migrate_trie_to_ac(self) -> None:
+        """把降级 Trie 中的关键词迁移到 AC 自动机（运行时装好 pyahocorasick 时），避免丢词。"""
+        if not self._fallback_trie:
+            return
+        auto = ahocorasick.Automaton()
+        stack = [(self._fallback_trie, "")]
+        while stack:
+            node, prefix = stack.pop()
+            for key, child in node.items():
+                if key is None:
+                    auto.add_word(prefix, child)
+                else:
+                    stack.append((child, prefix + key))
+        self._fallback_trie = {}
+        self._auto = auto
 
     def build(self) -> None:
         """构建 fail 指针，调用后不可再添加关键词。"""
@@ -232,6 +266,7 @@ class KeywordAutomaton:
 
     @property
     def available(self) -> bool:
+        _ensure_ahocorasick()
         return ahocorasick is not None
 
 

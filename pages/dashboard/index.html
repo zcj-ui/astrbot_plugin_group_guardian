@@ -1933,6 +1933,9 @@ var AUDIT_TOGGLES = [
 var OCR_TOGGLES = [
   { key: 'ocr_enabled', label: 'OCR识图审核', desc: '使用LLM视觉模型识别图片内容进行审核' },
   { key: 'scan_sticker_enabled', label: '表情包审核', desc: '识别商城表情/表情包图片内容' },
+  { key: 'video_audit_enabled', label: '视频广告检测', desc: '下载群内视频并抽帧，逐帧送视觉模型识别广告内容（成本较高，默认关闭）' },
+  { key: 'ad_hash_blacklist_enabled', label: '广告图黑名单', desc: '图片/视频帧识别前比对历史广告样本（pHash），命中跳过视觉API（省费用）' },
+  { key: 'ad_escalation_enabled', label: '广告分级处置', desc: '首次警告→二次禁言→三次踢出，降低误伤投诉' },
 ];
 var LEXICON_TOGGLES = [
   { key: 'lexicon_political_enabled', label: '政治敏感' },

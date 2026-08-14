@@ -121,6 +121,16 @@ class WebMixin:
             "lexicon_learn_min_length": (2, 20),
             "lexicon_learn_max_per_run": (1, 50),
             "lexicon_learn_sample_size": (15, 300),
+            "video_max_frames": (1, 10),
+            "video_max_size_mb": (1, 200),
+            "video_download_timeout": (5, 120),
+            "video_audit_timeout": (10, 300),
+            "ad_hash_distance": (0, 64),
+            "ad_escalation_warn_at": (1, 100),
+            "ad_escalation_ban_at": (1, 100),
+            "ad_escalation_kick_at": (1, 100),
+            "ad_escalation_window_seconds": (60, 31536000),
+            "ad_backend_port": (1, 65535),
         }
 
     def _normalize_int_config_value(self, key: str, value) -> int:

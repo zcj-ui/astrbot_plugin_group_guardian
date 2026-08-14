@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQ群智能守护者 · 广告检测后台</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:"Segoe UI","Microsoft YaHei",sans-serif; background:#0f1117; color:#e6e8ef; min-height:100vh; }
+a { color:#5ea2ff; text-decoration:none; }
+header { background:#171a24; border-bottom:1px solid #232838; padding:14px 22px; display:flex; align-items:center; gap:18px; flex-wrap:wrap; }
+header h1 { font-size:17px; color:#fff; }
+header .sub { color:#8b93a7; font-size:12px; }
+.tabs { display:flex; gap:6px; margin-left:auto; flex-wrap:wrap; }
+.tab { background:none; border:1px solid #2a3040; color:#aab; padding:7px 14px; border-radius:8px; cursor:pointer; font-size:13px; transition:all .15s; }
+.tab:hover { border-color:#5ea2ff; color:#fff; }
+.tab.active { background:#2b5bd7; border-color:#2b5bd7; color:#fff; }
+main { padding:20px 22px; max-width:1200px; margin:0 auto; }
+.view { display:none; }
+.view.active { display:block; }
+.cards { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:14px; margin-bottom:20px; }
+.card { background:#171a24; border:1px solid #232838; border-radius:12px; padding:18px; }
+.card .num { font-size:30px; font-weight:700; color:#5ea2ff; margin-top:6px; }
+.card .lbl { color:#8b93a7; font-size:12px; }
+.card.green .num { color:#37d67a; }
+.card.orange .num { color:#ffa657; }
+.card.purple .num { color:#b184ff; }
+.grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+@media(max-width:800px){ .grid2{ grid-template-columns:1fr; } }
+.panel { background:#171a24; border:1px solid #232838; border-radius:12px; padding:16px; margin-bottom:16px; }
+.panel h2 { font-size:14px; margin-bottom:12px; color:#fff; }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+th,td { text-align:left; padding:8px 10px; border-bottom:1px solid #232838; }
+th { color:#8b93a7; font-weight:600; }
+tr:hover td { background:#1b1f2b; }
+.badge { display:inline-block; padding:2px 8px; border-radius:10px; font-size:11px; }
+.badge.ad { background:#7a1f1f; color:#ff8a8a; }
+.badge.img { background:#1f4d7a; color:#8ac9ff; }
+.badge.video { background:#4d2b7a; color:#cf9aff; }
+.badge.warn { background:#7a5a1f; color:#ffd28a; }
+.btn { background:#2b5bd7; border:none; color:#fff; padding:5px 12px; border-radius:6px; cursor:pointer; font-size:12px; }
+.btn:hover { opacity:.85; }
+.btn.danger { background:#8a2b2b; }
+.btn.gray { background:#333a4d; }
+.filters { display:flex; gap:10px; margin-bottom:12px; align-items:center; flex-wrap:wrap; }
+.filters input, .filters select { background:#1b1f2b; border:1px solid #2a3040; color:#e6e8ef; padding:6px 10px; border-radius:6px; font-size:12px; }
+.empty { color:#5c6378; text-align:center; padding:30px; font-size:13px; }
+.mono { font-family:Consolas,monospace; font-size:11px; color:#9fb0c9; word-break:break-all; }
+.time { color:#8b93a7; font-size:11px; }
+.pager { display:flex; gap:10px; align-items:center; margin-top:10px; }
+.toast { position:fixed; bottom:20px; left:50%; transform:translateX(-50%); background:#2b5bd7; color:#fff; padding:10px 20px; border-radius:8px; font-size:13px; display:none; z-index:99; }
+.kv { display:grid; grid-template-columns:200px 1fr; gap:6px 14px; font-size:13px; }
+.kv dt { color:#8b93a7; }
+.kv dd { color:#e6e8ef; word-break:break-all; }
+.status-on { color:#37d67a; font-weight:600; }
+.status-off { color:#8b93a7; }
+img.ev { max-width:140px; max-height:90px; border-radius:6px; cursor:zoom-in; border:1px solid #2a3040; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛡 QQ群智能守护者 <span class="sub">广告检测管理后台</span></h1>
+  <nav class="tabs">
+    <button class="tab active" data-view="stats">总览</button>
+    <button class="tab" data-view="logs">违规记录</button>
+    <button class="tab" data-view="blacklist">广告黑名单</button>
+    <button class="tab" data-view="fingerprints">视频指纹</button>
+    <button class="tab" data-view="escalation">分级处置</button>
+    <button class="tab" data-view="config">配置状态</button>
+  </nav>
+</header>
+<main>
+  <!-- 总览 -->
+  <section class="view active" id="view-stats">
+    <div class="cards">
+      <div class="card"><div class="lbl">今日广告拦截</div><div class="num" id="s-blocked">-</div></div>
+      <div class="card orange"><div class="lbl">今日图片广告</div><div class="num" id="s-img">-</div></div>
+      <div class="card purple"><div class="lbl">今日视频广告</div><div class="num" id="s-video">-</div></div>
+      <div class="card green"><div class="lbl">累计审核记录</div><div class="num" id="s-total">-</div></div>
+    </div>
+    <div class="grid2">
+      <div class="panel">
+        <h2>最近拦截</h2>
+        <table><thead><tr><th>时间</th><th>用户</th><th>操作</th><th>内容</th></tr></thead><tbody id="recent-body"></tbody></table>
+        <div class="empty" id="recent-empty" style="display:none">暂无广告拦截记录</div>
+      </div>
+      <div class="panel">
+        <h2>拦截用户排行 Top10</h2>
+        <table><thead><tr><th>QQ号</th><th>拦截次数</th></tr></thead><tbody id="topusers-body"></tbody></table>
+        <div class="empty" id="topusers-empty" style="display:none">暂无数据</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 违规记录 -->
+  <section class="view" id="view-logs">
+    <div class="panel">
+      <h2>审核记录（支持按操作筛选）</h2>
+      <div class="filters">
+        <input id="log-action" placeholder="操作关键词，如 撤回/禁言/踢">
+        <button class="btn" onclick="loadLogs()">查询</button>
+        <button class="btn gray" onclick="document.getElementById('log-action').value='';loadLogs();">重置</button>
+        <span class="time" id="log-total"></span>
+      </div>
+      <table><thead><tr><th>时间</th><th>群</th><th>用户</th><th>操作</th><th>内容预览</th><th>证据</th></tr></thead><tbody id="logs-body"></tbody></table>
+      <div class="pager">
+        <button class="btn gray" onclick="logsPage(-1)">上一页</button>
+        <span class="time" id="log-page"></span>
+        <button class="btn gray" onclick="logsPage(1)">下一页</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 广告黑名单 -->
+  <section class="view" id="view-blacklist">
+    <div class="panel">
+      <h2>感知哈希广告黑名单 <span class="time" id="bl-status"></span></h2>
+      <table><thead><tr><th>感知哈希</th><th>命中次数</th><th>首次</th><th>最近</th><th>操作</th></tr></thead><tbody id="bl-body"></tbody></table>
+      <div class="empty" id="bl-empty" style="display:none">黑名单为空（广告确认后会自动学习）</div>
+    </div>
+  </section>
+
+  <!-- 视频指纹 -->
+  <section class="view" id="view-fingerprints">
+    <div class="panel">
+      <h2>广告视频指纹缓存 <span class="time" id="fp-status"></span></h2>
+      <div class="filters"><button class="btn danger" onclick="clearFingerprints()">清空全部指纹</button></div>
+      <table><thead><tr><th>视频指纹（首帧哈希_总帧数）</th><th>收录时间</th></tr></thead><tbody id="fp-body"></tbody></table>
+      <div class="empty" id="fp-empty" style="display:none">指纹缓存为空</div>
+    </div>
+  </section>
+
+  <!-- 分级处置 -->
+  <section class="view" id="view-escalation">
+    <div class="panel">
+      <h2>广告分级处置记录 <span class="time" id="esc-status"></span></h2>
+      <table><thead><tr><th>群号</th><th>QQ号</th><th>累计次数</th><th>首次</th><th>最近</th><th>操作</th></tr></thead><tbody id="esc-body"></tbody></table>
+      <div class="empty" id="esc-empty" style="display:none">暂无分级处置记录</div>
+    </div>
+  </section>
+
+  <!-- 配置状态 -->
+  <section class="view" id="view-config">
+    <div class="panel">
+      <h2>关键配置状态</h2>
+      <dl class="kv" id="cfg-body"></dl>
+    </div>
+  </section>
+
+</main>
+<div class="toast" id="toast"></div>
+<script>
+// ===== Token 管理 =====
+var TOKEN = localStorage.getItem('ad_backend_token') || '';
+(function(){
+  var u = new URLSearchParams(location.search);
+  var t = u.get('token');
+  if (t) { TOKEN = t; localStorage.setItem('ad_backend_token', t); history.replaceState(null,'',location.pathname); }
+})();
+
+function api(path, opts) {
+  opts = opts || {};
+  opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
+  if (TOKEN) opts.headers['X-Token'] = TOKEN;
+  return fetch(path, opts).then(function(r){ return r.json().catch(function(){ return {status:'error',message:'响应解析失败'}; }); });
+}
+function qs(obj){
+  var s=[]; for (var k in obj){ if(obj[k]!=='' && obj[k]!=null) s.push(encodeURIComponent(k)+'='+encodeURIComponent(obj[k])); }
+  return s.length?'?'+s.join('&'):'';
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+function fmtTs(ts){ if(!ts) return '-'; var d=new Date(ts*1000); var p=function(n){return n<10?'0'+n:n}; return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); }
+function fmtTsShort(ts){ if(!ts) return '-'; var d=new Date(ts*1000); var p=function(n){return n<10?'0'+n:n}; return p(d.getMonth()+1)+'-'+p(d.getDate())+' '+p(d.getHours())+':'+p(d.getMinutes()); }
+function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(function(){t.style.display='none';},2000); }
+function badge(kind){ return '<span class="badge '+kind+'">'+({'ad':'广告','img':'图片','video':'视频','warn':'警告'}[kind]||kind)+'</span>'; }
+
+// ===== Tab 切换 =====
+document.querySelectorAll('.tab').forEach(function(btn){
+  btn.addEventListener('click', function(){
+    document.querySelectorAll('.tab').forEach(function(b){b.classList.remove('active');});
+    btn.classList.add('active');
+    document.querySelectorAll('.view').forEach(function(v){v.classList.remove('active');});
+    document.getElementById('view-'+btn.dataset.view).classList.add('active');
+    if (btn.dataset.view==='stats') loadStats();
+    if (btn.dataset.view==='logs') loadLogs();
+    if (btn.dataset.view==='blacklist') loadBlacklist();
+    if (btn.dataset.view==='fingerprints') loadFingerprints();
+    if (btn.dataset.view==='escalation') loadEscalation();
+    if (btn.dataset.view==='config') loadConfig();
+  });
+});
+
+// ===== 总览 =====
+function loadStats(){
+  api('/api/stats').then(function(r){
+    if(r.status!=='success'){ toast('加载失败: '+r.message); return; }
+    var d=r.data;
+    document.getElementById('s-blocked').textContent=d.today_blocked;
+    document.getElementById('s-img').textContent=d.today_image_blocked;
+    document.getElementById('s-video').textContent=d.today_video_blocked;
+    document.getElementById('s-total').textContent=d.total_logs;
+    var rb=document.getElementById('recent-body'); rb.innerHTML='';
+    var rempty=document.getElementById('recent-empty');
+    if(!d.recent.length){ rempty.style.display='block'; }
+    else{
+      rempty.style.display='none';
+      d.recent.forEach(function(l){
+        var tr=document.createElement('tr');
+        tr.innerHTML='<td class="time">'+fmtTsShort(l.ts)+'</td><td>'+esc(l.user_name||l.user_id)+'</td><td>'+esc(l.action)+'</td><td>'+esc(String(l.msg_text||'').slice(0,40))+'</td>';
+        rb.appendChild(tr);
+      });
+    }
+    var tb=document.getElementById('topusers-body'); tb.innerHTML='';
+    var tempty=document.getElementById('topusers-empty');
+    if(!d.top_users.length){ tempty.style.display='block'; }
+    else{
+      tempty.style.display='none';
+      d.top_users.forEach(function(u,idx){
+        var tr=document.createElement('tr');
+        tr.innerHTML='<td>'+(idx+1)+'. '+esc(u.user_id)+'</td><td>'+u.count+'</td>';
+        tb.appendChild(tr);
+      });
+    }
+  }).catch(function(e){ toast('请求失败: '+e); });
+}
+
+// ===== 违规记录 =====
+var logsPageNum=0;
+function loadLogs(){
+  var action=document.getElementById('log-action').value.trim();
+  api('/api/logs'+qs({limit:50,offset:logsPageNum*50,action:action})).then(function(r){
+    if(r.status!=='success'){ toast('加载失败: '+r.message); return; }
+    var tb=document.getElementById('logs-body'); tb.innerHTML='';
+    document.getElementById('log-total').textContent='共 '+r.total+' 条';
+    document.getElementById('log-page').textContent='第 '+(logsPageNum+1)+' 页';
+    r.data.forEach(function(l){
+      var tr=document.createElement('tr');
+      var urls=l.image_urls||[];
+      var ev=urls.length?'<img class="ev" src="'+esc(urls[0])+'" onclick="window.open(this.src)" title="点击查看大图">':'-';
+      var msg=String(l.msg_text||'');
+      var kind='ad';
+      if(msg.indexOf('视频')>-1||String(l.action).indexOf('视频')>-1) kind='video';
+      else if(urls.length) kind='img';
+      tr.innerHTML='<td class="time">'+fmtTs(l.ts)+'</td><td>'+esc(l.group_id)+'</td><td>'+esc(l.user_name||l.user_id)+'</td>'+'<td>'+badge(kind)+' '+esc(l.action)+'</td><td>'+esc(msg.slice(0,50))+'</td><td>'+ev+'</td>';
+      tb.appendChild(tr);
+    });
+  });
+}
+function logsPage(d){ logsPageNum=Math.max(0,logsPageNum+d); loadLogs(); }
+
+// ===== 广告黑名单 =====
+function loadBlacklist(){
+  api('/api/blacklist').then(function(r){
+    if(r.status!=='success'){ toast('加载失败: '+r.message); return; }
+    document.getElementById('bl-status').textContent='共 '+r.count+' 条，功能'+(r.enabled?'<span class="status-on">已开启</span>':'<span class="status-off">未开启</span>');
+    var tb=document.getElementById('bl-body'); tb.innerHTML='';
+    var em=document.getElementById('bl-empty');
+    if(!r.data.length){ em.style.display='block'; return; }
+    em.style.display='none';
+    r.data.forEach(function(e){
+      var tr=document.createElement('tr');
+      tr.innerHTML='<td class="mono">'+esc(e.h)+'</td><td>'+e.count+'</td><td class="time">'+fmtTs(e.first_ts)+'</td><td class="time">'+fmtTs(e.last_ts)+'</td><td><button class="btn danger" onclick="removeBlacklist(\''+esc(e.h)+'\')">删除</button></td>';
+      tb.appendChild(tr);
+    });
+  });
+}
+function removeBlacklist(h){
+  if(!confirm('确认删除该广告样本？')) return;
+  api('/api/blacklist/remove',{method:'POST',body:JSON.stringify({h:h})}).then(function(r){
+    if(r.status==='success'){ toast('已删除'); loadBlacklist(); } else toast('删除失败: '+r.message);
+  });
+}
+
+// ===== 视频指纹 =====
+function loadFingerprints(){
+  api('/api/fingerprints').then(function(r){
+    if(r.status!=='success'){ toast('加载失败: '+r.message); return; }
+    document.getElementById('fp-status').textContent='共 '+r.count+' 条，功能'+(r.enabled?'<span class="status-on">已开启</span>':'<span class="status-off">未开启</span>');
+    var tb=document.getElementById('fp-body'); tb.innerHTML='';
+    var em=document.getElementById('fp-empty');
+    if(!r.data.length){ em.style.display='block'; return; }
+    em.style.display='none';
+    r.data.forEach(function(e){
+      var tr=document.createElement('tr');
+      tr.innerHTML='<td class="mono">'+esc(e.fingerprint)+'</td><td class="time">'+fmtTs(e.ts)+'</td>';
+      tb.appendChild(tr);
+    });
+  });
+}
+function clearFingerprints(){
+  if(!confirm('确认清空全部广告视频指纹缓存？')) return;
+  api('/api/fingerprints/clear',{method:'POST'}).then(function(r){
+    if(r.status==='success'){ toast('已清空'); loadFingerprints(); } else toast('清空失败: '+r.message);
+  });
+}
+
+// ===== 分级处置 =====
+function loadEscalation(){
+  api('/api/escalation').then(function(r){
+    if(r.status!=='success'){ toast('加载失败: '+r.message); return; }
+    document.getElementById('esc-status').textContent='共 '+r.data.length+' 条，功能'+(r.enabled?'<span class="status-on">已开启</span>':'<span class="status-off">未开启</span>');
+    var tb=document.getElementById('esc-body'); tb.innerHTML='';
+    var em=document.getElementById('esc-empty');
+    if(!r.data.length){ em.style.display='block'; return; }
+    em.style.display='none';
+    r.data.forEach(function(e){
+      var tr=document.createElement('tr');
+      tr.innerHTML='<td>'+esc(e.group_id)+'</td><td>'+esc(e.user_id)+'</td><td>'+e.count+'</td><td class="time">'+fmtTs(e.first_ts)+'</td><td class="time">'+fmtTs(e.last_ts)+'</td><td><button class="btn danger" onclick="resetEscalation(\''+esc(e.group_id)+'\',\''+esc(e.user_id)+'\')">重置</button></td>';
+      tb.appendChild(tr);
+    });
+  });
+}
+function resetEscalation(gid,uid){
+  if(!confirm('确认重置该用户的分级记录？')) return;
+  api('/api/escalation/reset',{method:'POST',body:JSON.stringify({group_id:gid,user_id:uid})}).then(function(r){
+    if(r.status==='success'){ toast('已重置'); loadEscalation(); } else toast('重置失败: '+r.message);
+  });
+}
+
+// ===== 配置状态 =====
+var CFG_LABELS={
+  video_audit_enabled:'视频广告检测', video_max_frames:'每视频抽帧数', video_frame_mode:'抽帧模式',
+  video_quick_precheck:'快速预检', video_fingerprint_cache:'视频指纹缓存',
+  ad_hash_blacklist_enabled:'广告图黑名单', ad_hash_distance:'黑名单相似度阈值', ad_hash_auto_learn:'自动学习黑名单',
+  ad_escalation_enabled:'广告分级处置', ad_escalation_warn_at:'警告档位', ad_escalation_ban_at:'禁言档位', ad_escalation_kick_at:'踢出档位',
+  ocr_provider_id:'视觉LLM Provider', llm_moderation_enabled:'LLM审核'
+};
+function loadConfig(){
+  api('/api/config').then(function(r){
+    if(r.status!=='success'){ toast('加载失败: '+r.message); return; }
+    var body=document.getElementById('cfg-body'); body.innerHTML='';
+    Object.keys(CFG_LABELS).forEach(function(k){
+      var v=r.data[k];
+      var dt=document.createElement('dt'); dt.textContent=CFG_LABELS[k];
+      var dd=document.createElement('dd');
+      if(typeof v==='boolean'){ dd.innerHTML=v?'<span class="status-on">开启</span>':'<span class="status-off">关闭</span>'; }
+      else if(v===''||v==null){ dd.textContent='未配置'; }
+      else{ dd.textContent=v; }
+      body.appendChild(dt); body.appendChild(dd);
+    });
+  });
+}
+
+// ===== 启动 =====
+loadStats();
+setInterval(function(){ if(document.querySelector('.tab.active').dataset.view==='stats') loadStats(); }, 15000);
+</script>
+</body>
+</html>

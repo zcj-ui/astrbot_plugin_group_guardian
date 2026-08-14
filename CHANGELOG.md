@@ -1,5 +1,150 @@
 # Changelog
 
+## v2.13.0 - 2026-08-14
+
+### 新增：五项增强审核/统计功能（均默认关闭）
+
+**1. 外链邀请撤回（`invite_link_recall_enabled`，默认关闭）**
+- 检测消息中的外部群邀请链接（QQ `qm.qq.com`/`jq.qq.com`/`qun.qq.com`/`pd.qq.com`、Telegram `t.me`、Discord `discord.gg`/`discord.com/invite`）及明文"群号+数字"特征，命中即撤回并记录；高置信文本特征，不经 LLM，可按群覆盖。
+
+**2. 链接安全检测（`url_safety_enabled`，默认关闭）**
+- 提取消息中全部 URL → 解析域名 → 与「内置短链域名（t.cn/dwz.cn/bit.ly 等）+ `url_risk_domains` 自定义域名 + `url_risk_patterns` 自定义正则」比对，命中即撤回并记录，用于拦截赌博/诈骗/引流链接，可按群覆盖。
+
+**3. GIF 帧级拆分审核（`gif_frame_audit_enabled`，默认关闭）**
+- 对 GIF 动图下载后用 OpenCV 逐帧拆解（帧数上限 `gif_max_frames`，默认 15），每帧做本地 OCR（复用多识别引擎）并把各帧文字并入审核正文，避免中间帧违规漏检；失败自动降级为整体图审核，可按群覆盖。
+
+**4. 语音消息审核（`voice_audit_enabled`，默认关闭）**
+- 收集语音消息段 → 下载音频 → 调通用 HTTP ASR 接口（`voice_asr_url`，POST multipart `audio` 到 `{url}/api/asr`，期望返回 JSON `{text}`）转文字并入审核正文；ASR 为外部自建服务（如 whisper/云 ASR），默认关闭，可按群覆盖。
+
+**5. 群活跃度统计（`group_activity_enabled`，默认关闭）**
+- 记录每群每条发言到 SQLite 新表 `group_activity`（storage.py 新增 `record_group_activity`/`get_group_activity_summary`/`get_group_activity_top_users`）；
+- 新增 `/群活跃度 [天数]` 命令：展示今日/近7天/近30天发言条数与活跃人数、活跃用户 Top10。
+
+**实现说明**
+- 新增 `advanced_audit.py`（`AdvancedAuditMixin`）与 `activity.py`（`ActivityMixin`），均接入 `Main` 继承链；
+- 审核管线（`moderation._handle_message`）：外链邀请/风险链接在 LLM 审核前以高置信特征直接撤回+记录；GIF 帧级与语音 ASR 的识别文本并入正文走统一审核；群活跃度在消息入口统一记录；
+- 全部功能默认关闭，纯增量，不影响既有审核行为。
+
+## v2.12.0 - 2026-08-13
+
+### 新增：按角色分权限完善 + 多协议适配升级（Telegram/Discord 群管操作）
+
+**按角色分权限（在 QQ 全量基础上完善，并跨平台生效）**
+
+- 新增 `role_ban_require` 配置：`/禁言` `/解禁` 指令的发起者最低角色独立可配（admin/owner/plugin_admin），与已有的 `role_high_require`（高危操作）、`role_kick_require`（踢人）共同构成三级角色分级；
+- 「按角色分权限」跨平台生效：`_get_member_role` 增加平台路由，Telegram/Discord 受限模式下同样能查询群角色（member/admin/owner），群主/群管理员审核豁免与 `role_*_require` 分级在受限平台与 QQ 行为一致。
+
+**多协议适配升级（`platform_ops.py` 新增，受限模式从"仅文本关键词"升级为"文本关键词 + 群管操作"）**
+
+- 新增 `platform_ops.py`（`PlatformOpsMixin`）：Telegram / Discord 群管操作平台路由，全部 **duck typing** 实现（不强制 import python-telegram-bot / discord.py，纯 QQ 部署零影响），带统一超时与失败降级：
+  - Telegram：撤回 `delete_message`、禁言=临时 ban（`until_date` 到时自动解封）、解禁 `unban_chat_member`、踢人=ban+unban、角色 `get_chat_member.status`（creator/administrator）；
+  - Discord：撤回（频道 `fetch_message` + `delete`）、禁言=timeout、解禁=取消 timeout、踢人 `member.kick`、角色（群主 / `guild_permissions.administrator`）；
+- `onebot.py` 群管方法（`_recall_msg` / `_kick_member` / `_mute_member` / `_unban_member` / `_get_member_role`）非 AIOCQHTTP 平台时自动委托平台路由，QQ 全量行为零变化；
+- 受限模式升级（`_handle_message_limited`）：命中违规后撤回走平台路由（此前 `call_action` 对 Telegram/Discord 无效）；新增 `multi_protocol_ban_enabled`（默认关闭）可开启违规自动禁言；群主/群管理员按角色豁免；
+- `platforms.py` 能力表更新：telegram/discord 的 `recall/ban/kick` 标记为可用；`metadata.yaml` 的 `support_platforms` 加入 `telegram`、`discord`。
+
+### 兼容性说明
+
+- 默认行为不变：`multi_protocol_enabled` 默认关闭，纯 QQ 部署不受影响；开启后 Telegram/Discord 受限模式默认仅"撤回+记录"，禁言需显式开启 `multi_protocol_ban_enabled`。
+
+## v2.11.0 - 2026-08-13
+
+### 新增：多广告识别引擎（Umi-OCR / 第三方云API / 本地RapidOCR，不再默认智谱）
+
+- **识别引擎可配置**（`ocr_engine`，默认改为 `local`）：
+  - `local`（默认）：本地 RapidOCR，模型**不随插件打包**——首次启用时自动 `pip install rapidocr_onnxruntime`（含模型约30MB），关闭引擎**不卸载**模型；
+  - `umi`：接入 **Umi-OCR（Rapid 引擎版）** 本地 HTTP 服务（默认 `http://127.0.0.1:1224`），通过 `/api/ocr` 识别图片/视频帧文字，专门为广告检测服务；
+  - `cloud`：接入**第三方云广告检测 API**（如阿里云内容安全，通用 JSON 协议 `{image_base64}→{is_ad,score,reason}`），可配 `cloud_audit_url` / `cloud_audit_api_key` / `cloud_audit_threshold`；
+  - `llm`：云端视觉模型（智谱等）保留为**可选**，不再默认使用；
+  - `auto`：本地优先，识别不到再回退云端视觉。
+- `local_ocr.py` 重构：新增 `_umi_ocr_text`（Umi-OCR HTTP）、`_cloud_audit_image`（云API）、`_ensure_local_ocr`（模型按需安装）、`_detect_media_text`（统一入口）、`_ad_engine`（引擎选择）。
+- 图片（`_ocr_images`）与视频帧（`_recognize_video_frames`）均按引擎识别；云 API 命中返回 `[云API] 广告：xxx` 标记。
+- 新配置：`local_ocr_auto_install` / `umi_ocr_url` / `cloud_audit_url` / `cloud_audit_api_key` / `cloud_audit_threshold`。
+- `requirements.txt` 移除 `rapidocr_onnxruntime` 硬依赖（模型不打包，按需安装）。
+
+## v2.10.1 - 2026-08-13
+
+### 新增：本地 RapidOCR 识别引擎（低配/离线方案）
+
+接入 `rapidocr_onnxruntime` 本地 OCR 模型（ONNX 版 ~30MB，常驻 ~300MB），2 核 2G 服务器可跑，不依赖智谱等云端视觉 API：
+
+- **`local_ocr.py`（`LocalOCRMixin`）**：RapidOCR 单例懒加载、全局复用（避免冷启动），同步调用放入线程池不阻塞事件循环；
+- 图片（`_ocr_images`）与视频帧（`_recognize_video_frames`）均可使用本地 OCR 识别广告文字；
+- 新配置 `ocr_engine`：`llm`（默认，云端视觉）/ `local`（本地 RapidOCR）/ `auto`（本地优先，识别不到回退云端），可按群覆盖；
+- `requirements.txt` 加入可选依赖 `rapidocr_onnxruntime`（缺失时自动回退云端引擎）；
+- 本地二维码仍用 OpenCV 解码（免费），识别文字同样进入统一审核流程。
+
+## v2.10.0 - 2026-08-13
+
+### 新增：独立 Web 管理后台（服务端浏览器直接访问）
+
+- **`ad_backend.py`（`AdBackendMixin`）**：插件内置独立 Quart HTTP 服务（独立端口，不依赖 AstrBot 管理面板），服务端启动后浏览器直接访问。
+- 页面：总览（今日拦截/图片/视频/累计 + 最近拦截 + 用户排行，15s 自动刷新）、违规记录（按操作筛选/分页/图片证据放大）、广告黑名单（感知哈希样本查看/删除）、视频指纹缓存（查看/清空）、分级处置记录（查看/重置）、配置状态（只读）。
+- 鉴权：`ad_backend_token` 可设访问令牌（URL `?token=` 或请求头 `X-Token`），留空不鉴权（仅建议内网）。
+- 新配置项：`ad_backend_enabled` / `ad_backend_port`（默认 8765）/ `ad_backend_token`。
+- 数据全部来自插件本地（SQLite 审核日志 + JSON 黑名单/指纹/分级），不上传任何第三方。
+- 新教程：`使用教程-Web后台.md`。
+
+## v2.9.2 - 2026-08-13
+
+### 优化：视频广告检测实时性（智能抽帧 + 快速预检 + 指纹缓存）
+
+针对 LLM 视觉逐帧检测的延迟与费用，参考「场景切换抽帧 + 两级流水线 + 缓存」方案优化：
+
+- **场景切换抽帧**（`video_frame_mode=scene`）：不再均匀抽帧，仅在画面明显变化时保留帧（帧间平均像素差异 > `video_scene_threshold`），广告核心信息多在关键画面；不足 3 帧时自动补足前几帧，避免空结果。
+- **快速预检**（`video_quick_precheck`）：每帧先用本地轻量特征打分（HSV 饱和度 + Canny 边缘密度 + MSER 文字区域，全部 OpenCV 实现，<50ms/帧），得分低于 `video_precheck_threshold` 的帧直接跳过视觉 API 调用——正常视频 70% 左右的帧可在预检阶段被过滤，广告帧平均只需 2~3 次视觉调用。
+- **视频指纹缓存**（`video_fingerprint_cache`）：整段视频按「首帧感知哈希 + 总帧数」生成指纹；广告确认后写入指纹缓存（`video_fingerprint_cache.json`，LRU 500 条），同一广告视频被群发时直接命中并跳过检测，零视觉调用。
+- 新增配置项（均可按群覆盖）：`video_frame_mode` / `video_scene_threshold` / `video_quick_precheck` / `video_precheck_threshold` / `video_fingerprint_cache`。
+- 新测试：快速预检打分、视频指纹生成、指纹缓存学习/命中/持久化/LRU 上限。
+
+## v2.9.1 - 2026-08-13
+
+### 新增：感知哈希广告图黑名单 + 广告分级处置
+
+参考 AstrBot 社区常用方案（本地粗筛 + LLM 复核）补充两个降低误伤/成本的增强：
+
+- **感知哈希（pHash）广告图黑名单**：
+  - 新增 `hash_audit.py`（`HashAuditMixin`），用 OpenCV 实现 pHash（缩放→DCT→低频→中值→64bit），**不新增 imagehash/Pillow 依赖**；
+  - 图片（`_ocr_images`）与视频帧（`_recognize_video_frames`）识别前先比对黑名单，命中直接标记「已知广告」并**跳过视觉 API 调用**（省 GLM-4V 费用）；
+  - 命中黑名单不直接处罚，作为强信号进入统一流程（LLM 文本复核兜底防误杀）；
+  - 广告被确认违规后自动把本次媒体哈希学习入黑名单（`ad_hash_auto_learn`），支持去重计数、上限裁剪（5000 条）、JSON 持久化。
+- **广告分级处置**：
+  - 按窗口内广告违规次数升级：警告（撤回）→ 禁言 → 踢出，阈值与窗口可配（`ad_escalation_*`），默认关闭保持原有行为；
+  - 独立于防刷屏冷却，仍与禁言计划/通知开关联动。
+- **新配置项**（均可按群覆盖，自动出现在 WebUI Schema 面板）：
+  `ad_hash_blacklist_enabled` / `ad_hash_distance` / `ad_hash_auto_learn` /
+  `ad_escalation_enabled` / `ad_escalation_warn_at` / `ad_escalation_ban_at` /
+  `ad_escalation_kick_at` / `ad_escalation_window_seconds`。
+- **WebUI**：「功能开关」新增「广告图黑名单」「广告分级处置」两个开关。
+- **测试**：新增 `tests/test_hash_audit.py`（pHash 相似度/汉明距离/黑名单学习去重/持久化/分级计数窗口）。
+
+## v2.9.0 - 2026-08-12
+
+### 新增：视频广告检测
+
+在原有文字/图片/二维码审核基础上新增「识别广告视频」能力：
+
+- **视频消息接入审核**：`video` 消息段不再被忽略，`_should_scan_message` 与 `_handle_message`
+  全链路支持视频；纯视频消息也会进入审核流程。
+- **新模块 `video_audit.py`（`VideoAuditMixin`）**：
+  - `_collect_video_components`：从消息链（含 Reply 引用）收集 video 段并去重；
+  - `_resolve_video_source`：四级解析视频源（`convert_to_file_path` → url/path/file 字段 →
+    `file://` 前缀剥离 → 协议端 `get_file` API 兜底）；
+  - `_download_video`：复用 `_download_bytes` 的 SSRF 防护（逐跳校验重定向、拒绝内网）与
+    插件级 I/O 并发许可，仅放宽体积上限（默认 30MB）；
+  - `_extract_video_frames`：OpenCV 等间隔抽帧（复用已随插件安装的
+    `opencv-python-headless`，不新增依赖），抽帧放入线程池并限时；
+  - `_recognize_video_frames`：逐帧复用现有 LLM 视觉 OCR（`_call_llm_ocr`，data URL 传图）
+    + 本地二维码解码（`_decode_qr_from_bytes`），识别文本以 `[视频第N帧]` 标记并入正文，
+    统一走「正则初筛 + LLM 二次判断 + 处罚」流程。
+- **安全与降级**：默认关闭（`video_audit_enabled`）；受单视频体积（`video_max_size_mb`）、
+  下载超时（`video_download_timeout`）、抽帧超时、总超时（`video_audit_timeout`）多重上限
+  保护；任一环节失败静默降级，不误杀正常消息；临时文件用完即删、卸载时清理。
+- **新配置项**（均可按群覆盖）：`video_audit_enabled` / `video_max_frames` /
+  `video_frame_interval_sec` / `video_max_size_mb` / `video_download_timeout` /
+  `video_audit_timeout`，自动出现在 WebUI「设置」的 Schema 面板。
+- **测试**：新增 `tests/test_video_audit.py`（组件收集/源解析/抽帧/合并审核/开关降级）。
+
 ## v2.8.1 - 2026-08-08
 
 ### 修复：v2.8.0 多智能体审查确认的问题

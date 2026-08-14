@@ -31,9 +31,12 @@ def _load_moderation():
             "astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event"
         )
         event_module.AiocqhttpMessageEvent = object
+        api_event = types.ModuleType("astrbot.api.event")
+        api_event.AstrMessageEvent = object
         sys.modules.update({
             "astrbot": astrbot,
             "astrbot.api": api,
+            "astrbot.api.event": api_event,
             "astrbot.core": core,
             "astrbot.core.platform": platform,
             "astrbot.core.platform.sources": sources,
