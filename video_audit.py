@@ -294,11 +294,15 @@ class VideoAuditMixin:
 
     @staticmethod
     def _strip_file_prefix(value: str) -> str:
-        """去除 ``file://`` / ``file:///`` 前缀，便于本地路径判断。"""
+        """去除 ``file://`` / ``file:///`` 前缀，便于本地路径判断。
+
+        ``file:///tmp/a.mp4`` 的路径部分是 ``/tmp/a.mp4``（host 为空），
+        因此 ``file:///`` 前缀剥离后需保留前导 ``/``。
+        """
         value = str(value or "")
         lower = value.lower()
         if lower.startswith("file:///"):
-            return value[len("file:///"):]
+            return "/" + value[len("file:///"):]
         if lower.startswith("file://"):
             return value[len("file://"):]
         return value

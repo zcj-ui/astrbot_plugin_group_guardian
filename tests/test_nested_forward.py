@@ -313,6 +313,10 @@ class _HandleHarness(_StreamHarness):
         self.llm_inputs = []
 
     @staticmethod
+    def _record_activity(*_args, **_kwargs):
+        pass
+
+    @staticmethod
     def _get_group_id(_event):
         return "1"
 

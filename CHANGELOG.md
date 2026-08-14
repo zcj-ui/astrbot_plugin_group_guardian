@@ -28,6 +28,8 @@
 
 **修复（CI py_compile 发现）**
 - `advanced_audit.py`：修复 `_find_risk_url` 被截断导致的 SyntaxError（`return` 带值出现在 async generator `_handle_link_violation` 中）；URL 风险匹配循环复位到 `_find_risk_url` 尾部。
+- `video_audit.py`：`_strip_file_prefix` 对 `file:///` 前缀剥离时保留前导 `/`（`file:///tmp/a.mp4` → `/tmp/a.mp4`）。
+- 测试：`test_nested_forward.py` harness 补 `_record_activity`；`test_hash_audit.py` `test_window_resets` 用 `setdefault` 初始化 escalation 键；`test_web_remote_audit.py` setUpClass 改用 `type()` 组合 harness 基类。
 
 ## v2.14.0 - 2026-08-14
 

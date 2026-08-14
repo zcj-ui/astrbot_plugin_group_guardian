@@ -145,11 +145,11 @@ class WebRemoteAuditTests(unittest.TestCase):
         global remote_module
         remote_module = _load_remote()
         cls.RemoteMixin = remote_module.RemoteMixin
-        # 动态把 RemoteMixin 挂到 harness 基类上，避免模块加载顺序问题
-        _Harness.__bases__ = (remote_module.RemoteMixin,)
+        # 动态组合 RemoteMixin + _Harness（避免 __bases__ 赋值限制）
+        cls.Harness = type("Harness", (remote_module.RemoteMixin, _Harness), {})
 
     def make(self, **kw):
-        return _Harness(**kw)
+        return self.Harness(**kw)
 
     # ---------- 身份绑定解析 ----------
     def test_bindings_resolve_username_to_qq(self):

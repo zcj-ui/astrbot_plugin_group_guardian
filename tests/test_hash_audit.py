@@ -146,7 +146,7 @@ class AdEscalationTests(unittest.TestCase):
         self.assertEqual(self.h._record_ad_escalation("100", "201", 3600), 1)
 
     def test_window_resets(self):
-        self.h._ad_escalation["100"]["200"] = {
+        self.h._ad_escalation.setdefault("100", {})["200"] = {
             "count": 5, "first_ts": int(time.time()) - 99999
         }
         self.assertEqual(self.h._record_ad_escalation("100", "200", 60), 1)
