@@ -363,6 +363,14 @@ class _HandleHarness(_StreamHarness):
         # 测试不启用外链邀请/风险链接（默认关闭），直接跳过链接违规分支
         return None
 
+    @staticmethod
+    def _gif_frame_hit(group_id=""):
+        return False
+
+    @staticmethod
+    def _voice_hit(group_id=""):
+        return False
+
     async def _call_llm_for_moderation(self, _event, text, hit_types, **_kwargs):
         self.llm_calls += 1
         self.llm_inputs.append((text, dict(hit_types)))
