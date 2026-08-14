@@ -224,8 +224,12 @@ class VideoSourceResolutionTests(unittest.IsolatedAsyncioTestCase):
                 return {"file": "/tmp/real.mp4"}
 
         class _WithClient(_Harness):
+            def __init__(self):
+                super().__init__()
+                self._client = _Client()
+
             async def _get_client(self, event):
-                return _Client()
+                return self._client
 
         h = _WithClient()
         client = await h._get_client(None)

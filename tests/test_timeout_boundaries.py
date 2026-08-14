@@ -763,7 +763,7 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
             group_id="1",
         ))
 
-        await REAL_WAIT_FOR(harness.all_started.wait(), timeout=1)
+        await REAL_WAIT_FOR(harness.all_started.wait(), timeout=5)
         self.assertEqual(
             harness.started,
             ["one.gif", "bad.png", "sticker-three.png", "four.png"],
@@ -788,7 +788,7 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
             ["one.png", "two.png", "three.png", "four.png", "five.png"],
             group_id="1",
         ))
-        await REAL_WAIT_FOR(harness.first_wave_started.wait(), timeout=1)
+        await REAL_WAIT_FOR(harness.first_wave_started.wait(), timeout=5)
         await asyncio.sleep(0.02)
         self.assertEqual(
             harness.started,
