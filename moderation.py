@@ -555,8 +555,9 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         fail_closed = False
         if callable(cfg):
             fail_closed = bool(cfg("moderation_llm_fail_closed", False, group_id=group_id))
-            if not fail_closed:
-                fail_closed = self._llm_fallback_blocks(group_id)
+        if not fail_closed:
+            # llm_fallback_mode=block_on_error 视为 moderation_llm_fail_closed 的超集
+            fail_closed = self._llm_fallback_blocks(group_id)
         if fail_closed:
             real_hit = any(
                 v for k, v in hit_types.items() if k not in self._NEVER_FAIL_CLOSED_HITS
