@@ -188,10 +188,11 @@ class DbPerfThreadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(st.get_user_violation_count("100", "200", 30), 1)
         # 命中缓存仍为 1
         self.assertEqual(st.get_user_violation_count("100", "200", 30), 1)
-        # add_log 主动失效缓存，新日志计入 → 2
+        # add_log 写日志后主动失效违规计数缓存
         st.add_log(make_log(2))
-        self.assertEqual(st.get_user_violation_count("100", "200", 30), 2)
         self.assertNotIn("violation:100:200:30", st._query_cache)
+        # 失效后重新查询得到新值（查询结果会重新入缓存，属正常）
+        self.assertEqual(st.get_user_violation_count("100", "200", 30), 2)
 
 
 if __name__ == "__main__":
