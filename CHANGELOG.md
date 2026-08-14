@@ -26,6 +26,9 @@
 **前端**
 - pages/dashboard 远程操作（单操作/批量）请求携带 `operator_qq`/`operator_name`（本地记忆，首次提示输入）。
 
+**修复（CI py_compile 发现）**
+- `advanced_audit.py`：修复 `_find_risk_url` 被截断导致的 SyntaxError（`return` 带值出现在 async generator `_handle_link_violation` 中）；URL 风险匹配循环复位到 `_find_risk_url` 尾部。
+
 ## v2.14.0 - 2026-08-14
 
 ### 新增：违规积分累进制（`violation_points_enabled`，默认关闭）

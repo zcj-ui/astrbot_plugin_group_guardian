@@ -133,6 +133,13 @@ class AdvancedAuditMixin:
                     patterns.append(re.compile(p, re.I))
                 except re.error:
                     logger.debug(f"[GroupMgr] 无效的风险链接正则: {p}")
+        for url in self._extract_urls(text):
+            host = self._url_domain(url)
+            if host and any(host == d or host.endswith("." + d) for d in domains):
+                return url
+            if any(rx.search(url) for rx in patterns):
+                return url
+        return ""
 
     # ------------------------------------------------------------------
     # 3. GIF 帧级拆分审核（默认关闭）
@@ -344,15 +351,6 @@ class AdvancedAuditMixin:
             event.stop_event()
         except Exception:
             pass
-
-
-        for url in self._extract_urls(text):
-            host = self._url_domain(url)
-            if host and any(host == d or host.endswith("." + d) for d in domains):
-                return url
-            if any(rx.search(url) for rx in patterns):
-                return url
-        return ""
 
     def _url_safety_hit(self, group_id: str) -> bool:
         """链接安全检测是否开启（可按群覆盖）。"""
