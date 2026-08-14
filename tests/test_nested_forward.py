@@ -359,6 +359,10 @@ class _HandleHarness(_StreamHarness):
         if False:
             yield None
 
+    async def _detect_link_violation(self, text, group_id=""):
+        # 测试不启用外链邀请/风险链接（默认关闭），直接跳过链接违规分支
+        return None
+
     async def _call_llm_for_moderation(self, _event, text, hit_types, **_kwargs):
         self.llm_calls += 1
         self.llm_inputs.append((text, dict(hit_types)))
