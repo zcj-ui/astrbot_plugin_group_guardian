@@ -1361,7 +1361,8 @@ class WebMixin:
         except (ValueError, TypeError):
             days = 30
         try:
-            data = self._storage.get_daily_trend(days=days)
+            # v2.16.0：聚合查询在线程池执行，避免阻塞事件循环；storage 带 30s TTL 缓存
+            data = await asyncio.to_thread(self._storage.get_daily_trend, days=days)
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1373,7 +1374,7 @@ class WebMixin:
         except (ValueError, TypeError):
             days = 30
         try:
-            data = self._storage.get_violation_distribution(days=days)
+            data = await asyncio.to_thread(self._storage.get_violation_distribution, days=days)
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1385,7 +1386,7 @@ class WebMixin:
         except (ValueError, TypeError):
             days = 7
         try:
-            data = self._storage.get_hourly_distribution(days=days)
+            data = await asyncio.to_thread(self._storage.get_hourly_distribution, days=days)
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1401,7 +1402,9 @@ class WebMixin:
         except (ValueError, TypeError):
             top_n = 10
         try:
-            data = self._storage.get_group_activity_ranking(days=days, top_n=top_n)
+            data = await asyncio.to_thread(
+                self._storage.get_group_activity_ranking, days=days, top_n=top_n,
+            )
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})

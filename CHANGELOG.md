@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.16.0 - 2026-08-14
+
+### 性能优化：同步 DB 操作线程化 + 统计结果 TTL 缓存 + 高频查询组合索引
+
+**1. 耗时的同步数据库操作改为后台线程执行（asyncio.to_thread）**
+- storage 新增 `run_in_thread`（`asyncio.to_thread` 包装），供 async 调用方在线程池执行同步 SQLite 操作；
+- `activity.py`：`_record_activity` 改为 async，每条发言的 `record_group_activity` INSERT 在线程执行；
+  `/群活跃度` 命令的聚合查询与 `_active_user_count` 同样走线程池；
+- `moderation.py`：违规积分判断的 `get_user_violation_count` COUNT 聚合走 `asyncio.to_thread`；
+- `web.py`：Dashboard 四个统计接口（趋势/分布/时段/群排行）全部改 `asyncio.to_thread`，聚合查询不再阻塞事件循环。
+
+**2. 统计结果带 TTL 的内存缓存（storage `_query_cached`）**
+- 报表类统计（`get_daily_trend` / `get_violation_distribution` / `get_group_activity_ranking` / `get_hourly_distribution`）TTL 30s；
+- 群活跃度（`get_group_activity_summary` / `get_group_activity_top_users`）TTL 10s；
+- 违规积分计数（`get_user_violation_count`）TTL 5s，且 `add_log` 写日志时按 `violation:` 前缀**主动失效**，保证积分升级判断相对实时；
+- 缓存自动清理过期项，上限 256 条；提供 `invalidate_query_cache` 供数据变更时失效。
+
+**3. 高频查询组合索引（`_create_tables` 幂等创建，旧库升级自动补建）**
+- `idx_logs_group_user_ts ON moderation_logs(group_id, user_id, ts)` → 违规积分 COUNT 查询；
+- `idx_activity_group_ts_user ON group_activity(group_id, ts, user_id)` → 群活跃用户排行 GROUP BY；
+- `idx_web_audit_group_ts ON web_audit_logs(group_id, ts)` → 按群倒序查审计日志。
+
+**测试**
+- 新增 `tests/test_db_perf.py`：组合索引存在性与持久化、TTL 缓存命中/过期/前缀失效、`run_in_thread` 执行、`add_log` 联动失效违规计数缓存。
+
 ## v2.15.0 - 2026-08-14
 
 ### 安全增强：Web 后台远程操作的权限模型、身份绑定与审计日志

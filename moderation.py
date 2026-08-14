@@ -1844,7 +1844,7 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         user_name = event.get_sender_name()
 
         # v2.13.0 群活跃度统计（默认关闭）：记录所有群发言，供 /群活跃度 报表
-        self._record_activity(event, group_id, user_id)
+        await self._record_activity(event, group_id, user_id)
 
         if self._pre_check_message(event, group_id, user_id):
             return
@@ -2408,7 +2408,9 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         """
         notices = []
         try:
-            count = self._storage.get_user_violation_count(
+            # v2.16.0：COUNT 聚合查询在线程池执行，避免阻塞事件循环；storage 带 5s TTL 缓存
+            count = await asyncio.to_thread(
+                self._storage.get_user_violation_count,
                 group_id, user_id,
                 self._cfg_int("violation_points_window_days", 30, group_id=group_id),
             )

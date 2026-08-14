@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import json
 import os
 import shutil
@@ -28,6 +29,8 @@ class SQLiteStorage(GroupStorageMixin):
         self.db_path = self.data_dir / "group_guardian.db"
         self.seed_lexicon_db_path = self.plugin_dir / "lexicon.db"
         self.legacy_logs_path = self.data_dir / "moderation_logs.json"
+        # v2.16.0 统计查询带 TTL 的内存缓存：key -> (monotonic_ts, result)
+        self._query_cache: dict = {}
 
     def initialize(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -78,6 +81,41 @@ class SQLiteStorage(GroupStorageMixin):
             seen.add(item)
             items.append(item)
         return items
+
+    # v2.16.0 统计查询 TTL 缓存：报表类 30s、群活跃度 10s、违规积分计数 5s（写日志时主动失效）
+    _QUERY_CACHE_TTL_STATS = 30.0
+    _QUERY_CACHE_TTL_ACTIVITY = 10.0
+    _QUERY_CACHE_TTL_VIOLATION = 5.0
+    _QUERY_CACHE_MAX_ENTRIES = 256
+
+    def _query_cached(self, key: str, ttl: float, fn, *args, **kwargs):
+        """带 TTL 的统计查询缓存：命中直接返回，未命中执行 fn 后缓存。失败不缓存（下次重试）。"""
+        now = time.monotonic()
+        entry = self._query_cache.get(key)
+        if entry is not None and now - entry[0] < ttl:
+            return entry[1]
+        result = fn(*args, **kwargs)
+        self._query_cache[key] = (now, result)
+        if len(self._query_cache) > self._QUERY_CACHE_MAX_ENTRIES:
+            expired = [k for k, v in self._query_cache.items() if now - v[0] > ttl]
+            for k in expired:
+                self._query_cache.pop(k, None)
+        return result
+
+    def invalidate_query_cache(self, prefix: str = "") -> None:
+        """清除全部或指定前缀的统计缓存（写日志/数据变更时调用）。"""
+        if not self._query_cache:
+            return
+        if prefix:
+            keys = [k for k in self._query_cache if k.startswith(prefix)]
+            for k in keys:
+                self._query_cache.pop(k, None)
+        else:
+            self._query_cache.clear()
+
+    async def run_in_thread(self, func, *args, **kwargs):
+        """在事件循环外的线程中执行同步 DB 操作，避免阻塞插件事件循环。"""
+        return await asyncio.to_thread(func, *args, **kwargs)
 
     @contextmanager
     def _connect(self):
@@ -336,6 +374,13 @@ class SQLiteStorage(GroupStorageMixin):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_ts ON web_audit_logs(ts)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_operator ON web_audit_logs(operator_qq)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_group ON web_audit_logs(group_id)")
+        # v2.16.0 高频查询组合索引：
+        # 违规积分 COUNT（WHERE group_id=? AND user_id=? AND ts>=?）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_group_user_ts ON moderation_logs(group_id, user_id, ts)")
+        # 群活跃用户排行（WHERE group_id=? AND ts>=? GROUP BY user_id）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_group_ts_user ON group_activity(group_id, ts, user_id)")
+        # 按群倒序查 Web 审计日志（WHERE group_id=? ORDER BY ts DESC）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_group_ts ON web_audit_logs(group_id, ts)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -811,6 +856,8 @@ class SQLiteStorage(GroupStorageMixin):
                 self._log_to_row(log),
             )
             conn.commit()
+        # v2.16.0：写日志后失效违规积分计数缓存，保证积分升级判断相对实时
+        self.invalidate_query_cache("violation:")
 
     def import_logs(self, logs: Iterable[dict]) -> int:
         # 批量导入 dict 格式的日志到 SQLite（INSERT OR IGNORE 按 id 去重）。
@@ -955,7 +1002,13 @@ class SQLiteStorage(GroupStorageMixin):
 
     def get_daily_trend(self, days: int = 30) -> List[dict]:
         # 按天聚合审核日志，返回最近 days 天每日的拦截/放行/总审核数。
-        # 结果按日期升序排列，日期键为 YYYY-MM-DD 格式字符串。
+        # v2.16.0：统计报表走 30s TTL 缓存，避免 WebUI 图表反复全表聚合。
+        return self._query_cached(
+            f"daily_trend:{days}", self._QUERY_CACHE_TTL_STATS,
+            self._query_daily_trend, days,
+        )
+
+    def _query_daily_trend(self, days: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -971,6 +1024,12 @@ class SQLiteStorage(GroupStorageMixin):
 
     def get_violation_distribution(self, days: int = 30) -> List[dict]:
         # 按违规原因分组统计最近 days 天的分布情况，返回各类型及其出现次数。
+        return self._query_cached(
+            f"violation_dist:{days}", self._QUERY_CACHE_TTL_STATS,
+            self._query_violation_distribution, days,
+        )
+
+    def _query_violation_distribution(self, days: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -983,6 +1042,12 @@ class SQLiteStorage(GroupStorageMixin):
 
     def get_group_activity_ranking(self, days: int = 30, top_n: int = 10) -> List[dict]:
         # 按群号聚合最近 days 天的拦截量并排序，返回 Top N 群拦截排行。
+        return self._query_cached(
+            f"group_rank:{days}:{top_n}", self._QUERY_CACHE_TTL_STATS,
+            self._query_group_activity_ranking, days, top_n,
+        )
+
+    def _query_group_activity_ranking(self, days: int, top_n: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -995,6 +1060,12 @@ class SQLiteStorage(GroupStorageMixin):
 
     def get_hourly_distribution(self, days: int = 7) -> List[dict]:
         # 按小时聚合最近 days 天的拦截量，返回 0-23 各时段分布，用于分析活跃高峰。
+        return self._query_cached(
+            f"hourly:{days}", self._QUERY_CACHE_TTL_STATS,
+            self._query_hourly_distribution, days,
+        )
+
+    def _query_hourly_distribution(self, days: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -1023,6 +1094,12 @@ class SQLiteStorage(GroupStorageMixin):
 
     def get_group_activity_summary(self, group_id: str, days: int = 30) -> List[dict]:
         """按日聚合某群最近 days 天的活跃度，返回 [{date, users, msgs}]。"""
+        return self._query_cached(
+            f"activity_summary:{group_id}:{days}", self._QUERY_CACHE_TTL_ACTIVITY,
+            self._query_group_activity_summary, group_id, days,
+        )
+
+    def _query_group_activity_summary(self, group_id: str, days: int) -> List[dict]:
         import datetime as _dt
 
         since = int(time.time()) - days * 86400
@@ -1046,6 +1123,12 @@ class SQLiteStorage(GroupStorageMixin):
 
     def get_group_activity_top_users(self, group_id: str, days: int = 30, top_n: int = 10) -> List[dict]:
         """某群最近 days 天的活跃用户排行（按发言条数）。"""
+        return self._query_cached(
+            f"activity_top:{group_id}:{days}:{top_n}", self._QUERY_CACHE_TTL_ACTIVITY,
+            self._query_group_activity_top_users, group_id, days, top_n,
+        )
+
+    def _query_group_activity_top_users(self, group_id: str, days: int, top_n: int) -> List[dict]:
         since = int(time.time()) - days * 86400
         with self._connect() as conn:
             rows = conn.execute(
@@ -1059,20 +1142,28 @@ class SQLiteStorage(GroupStorageMixin):
         """某用户在指定群最近 days 天内的违规次数（违规积分累进制数据源）。
 
         统计审核处罚记录（撤回/禁言/踢出/警告等处置均写入 moderation_logs）。
+        带 5s TTL 缓存；add_log 写日志时主动失效，保证积分升级判断相对实时。
         """
         if not group_id or not user_id:
             return 0
         try:
-            since = int(time.time()) - max(1, int(days)) * 86400
-            with self._connect() as conn:
-                row = conn.execute(
-                    "SELECT COUNT(*) as cnt FROM moderation_logs "
-                    "WHERE group_id=? AND user_id=? AND ts>=? AND action != ''",
-                    (str(group_id), str(user_id), since),
-                ).fetchone()
-            return int(row["cnt"] or 0) if row else 0
+            return self._query_cached(
+                f"violation:{group_id}:{user_id}:{days}",
+                self._QUERY_CACHE_TTL_VIOLATION,
+                self._query_user_violation_count, group_id, user_id, days,
+            )
         except Exception:
             return 0
+
+    def _query_user_violation_count(self, group_id: str, user_id: str, days: int) -> int:
+        since = int(time.time()) - max(1, int(days)) * 86400
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM moderation_logs "
+                "WHERE group_id=? AND user_id=? AND ts>=? AND action != ''",
+                (str(group_id), str(user_id), since),
+            ).fetchone()
+        return int(row["cnt"] or 0) if row else 0
 
     def record_web_audit(self, operator_name: str = "", operator_qq: str = "",
                          group_id: str = "", action: str = "", target_user: str = "",

@@ -8,6 +8,8 @@
 数据源是审核管线的通用记录（_record_activity），与违规日志独立，正常聊天
 也会被统计。仅统计开启后产生的新消息，历史不回溯。
 """
+import asyncio
+
 from astrbot.api import logger
 
 
@@ -21,8 +23,12 @@ class ActivityMixin:
         except Exception:
             return False
 
-    def _record_activity(self, event, group_id: str, user_id: str) -> None:
-        """审核管线调用：记录一条普通群发言。失败静默。"""
+    async def _record_activity(self, event, group_id: str, user_id: str) -> None:
+        """审核管线调用：记录一条普通群发言。失败静默。
+
+        v2.16.0：改为 async，DB 写入通过 asyncio.to_thread 在后台线程执行，
+        避免每条消息的同步 INSERT 阻塞事件循环。
+        """
         if not group_id or not user_id:
             return
         if not self._activity_enabled(group_id):
@@ -32,14 +38,19 @@ class ActivityMixin:
         except Exception:
             user_name = ""
         try:
-            self._storage.record_group_activity(group_id, user_id, user_name)
+            await asyncio.to_thread(
+                self._storage.record_group_activity, group_id, user_id, user_name,
+            )
         except Exception as e:
             logger.debug(f"[GroupMgr] 群活跃度记录失败: {e}")
 
-    def _active_user_count(self, group_id: str, days: int) -> int:
+    async def _active_user_count(self, group_id: str, days: int) -> int:
         """近 days 天独立活跃人数（近似：取超大 top_n 的去重行数）。"""
         try:
-            return len(self._storage.get_group_activity_top_users(group_id, days, 100000))
+            rows = await asyncio.to_thread(
+                self._storage.get_group_activity_top_users, group_id, days, 100000,
+            )
+            return len(rows)
         except Exception:
             return 0
 
@@ -62,8 +73,13 @@ class ActivityMixin:
             )
             return
         try:
-            summary = self._storage.get_group_activity_summary(group_id, days)
-            top = self._storage.get_group_activity_top_users(group_id, days, 10)
+            # v2.16.0：聚合查询在后台线程执行，避免阻塞事件循环；结果有 storage 层 TTL 缓存
+            summary = await asyncio.to_thread(
+                self._storage.get_group_activity_summary, group_id, days,
+            )
+            top = await asyncio.to_thread(
+                self._storage.get_group_activity_top_users, group_id, days, 10,
+            )
         except Exception as e:
             logger.warning(f"[GroupMgr] 查询群活跃度失败: {e}")
             yield event.plain_result(f"查询失败: {e}")
@@ -74,8 +90,8 @@ class ActivityMixin:
         today = summary[-1]
         week_msgs = sum(e["msgs"] for e in summary[-7:])
         month_msgs = sum(e["msgs"] for e in summary[-30:])
-        week_users = self._active_user_count(group_id, 7)
-        month_users = self._active_user_count(group_id, 30)
+        week_users = await self._active_user_count(group_id, 7)
+        month_users = await self._active_user_count(group_id, 30)
         lines = [
             f"📊 群活跃度（最近 {days} 天）",
             f"今日：{today['msgs']} 条 / {today['users']} 人",

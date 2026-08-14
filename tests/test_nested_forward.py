@@ -323,7 +323,7 @@ class _HandleHarness(_StreamHarness):
         self._video_temp_dir = None
 
     @staticmethod
-    def _record_activity(*_args, **_kwargs):
+    async def _record_activity(*_args, **_kwargs):
         pass
 
     @staticmethod
