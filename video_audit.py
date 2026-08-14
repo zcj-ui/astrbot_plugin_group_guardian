@@ -282,12 +282,9 @@ class VideoAuditMixin:
                 fpath = self._strip_file_prefix(
                     str((info or {}).get("file") or "").strip()
                 )
-                if fpath.startswith(("http://", "https://")):
-                    return fpath
-                if fpath and os.path.exists(fpath):
-                    return fpath
                 if fpath:
-                    logger.debug(f"[GroupMgr] get_file 返回路径不存在: {fpath}")
+                    # 协议端 get_file 返回的真实路径/URL，直接信任采用
+                    return fpath
             except Exception as exc:
                 logger.debug(f"[GroupMgr] get_file 获取视频失败: {exc}")
         return ""

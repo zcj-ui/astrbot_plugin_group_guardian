@@ -118,7 +118,9 @@ class _Harness(video_audit.VideoAuditMixin):
     def _component_type_data(component):
         if isinstance(component, dict):
             return component.get("type", ""), component.get("data", {})
-        return type(component).__name__.lower(), getattr(component, "data", {})
+        name = type(component).__name__.lower()
+        name = name.lstrip("_")  # _Video -> video, _Reply -> reply（对齐 AstrBot 真实组件类名）
+        return name, getattr(component, "data", {})
 
     @staticmethod
     def _component_url(component, data):
