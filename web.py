@@ -279,6 +279,7 @@ class WebMixin:
                 ("/user_whitelist/remove", self._web_user_whitelist_remove, ["POST"], "移除审核白名单用户"),
                 ("/admin/add", self._web_admin_add, ["POST"], "添加管理员"),
                 ("/admin/remove", self._web_admin_remove, ["POST"], "移除管理员"),
+                ("/admin/lists", self._web_admin_lists, ["GET"], "获取插件/AstrBot管理员名单(排查权限)"),
                 ("/today_stats", self._web_today_stats, ["GET"], "获取今日拦截统计"),
                 ("/migration/status", self._web_migration_status, ["GET"], "获取SQLite迁移状态"),
                 ("/migration/run", self._web_migration_run, ["POST"], "执行SQLite迁移"),
@@ -1271,6 +1272,23 @@ class WebMixin:
             self._managed_list_remove("admin", user_id)
             self._admin_role_cache.clear()
             return jsonify({"status": "success", "user_id": user_id, "admin_list": self._get_admin_list()})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_admin_lists(self):
+        # v2.18.0：返回插件管理员与 AstrBot 全局管理员两份名单及继承开关，便于排查权限来源。
+        try:
+            plugin_admins = self._get_admin_list()
+            astrbot_admins = sorted(self._get_astrbot_admin_ids())
+            inherited = self._cfg("inherit_astrbot_admins", True)
+            effective = sorted(set(plugin_admins) | (set(astrbot_admins) if inherited else set()))
+            return jsonify({
+                "status": "success",
+                "plugin_admins": plugin_admins,
+                "astrbot_admins": astrbot_admins,
+                "inherited": inherited,
+                "effective_admins": effective,
+            })
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 

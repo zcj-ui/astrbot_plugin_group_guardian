@@ -108,17 +108,30 @@ class OneBotMixin:
                 pass
         return ""
 
-    def _get_all_admin_ids(self) -> set:
-        # 合并插件管理员名单(DB) + AstrBot 全局 admin_id
+    def _get_astrbot_admin_ids(self) -> set:
+        """读取 AstrBot 全局 admin_id（独立方法，供 _get_all_admin_ids 合并与 WebUI 双名单展示）。"""
         try:
-            astrbot_admin_ids = []
             ab_config = getattr(self.context, 'astrbot_config', None)
             if ab_config:
-                astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
-            return set(self._get_admin_list()) | set(astrbot_admin_ids)
+                return {
+                    str(x).strip() for x in (ab_config.get('admin_id', []) or [])
+                    if str(x).strip()
+                }
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 读取 AstrBot 全局管理员失败: {e}")
+        return set()
+
+    def _get_all_admin_ids(self) -> set:
+        # 合并插件管理员名单(DB) + AstrBot 全局 admin_id。
+        # v2.18.0：是否继承 AstrBot 全局管理员由 inherit_astrbot_admins 控制（默认 true 保持原行为），
+        # 关闭后插件权限仅认插件管理员名单，消除 AstrBot 全局配置与插件权限的隐式交叉污染。
+        admin_set = set(self._get_admin_list())
+        try:
+            if self._cfg("inherit_astrbot_admins", True):
+                admin_set |= self._get_astrbot_admin_ids()
         except Exception as e:
             logger.warning(f"[GroupMgr] 读取管理员名单失败: {e}")
-            return set(self._get_admin_list())
+        return admin_set
 
     def _is_group_admin_blocked(self, group_id: str, user_id: str) -> bool:
         if not group_id:

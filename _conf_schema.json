@@ -689,6 +689,12 @@
         "default": true,
         "hint": "保持历史行为：白名单内（或未设白名单且非黑名单）群的群主/管理员默认可用群管命令（仅本群，非插件全局管理员）。若只想用F5按群精细授权，可关闭此项"
     },
+    "inherit_astrbot_admins": {
+        "description": "继承 AstrBot 全局管理员为插件管理员",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启（保持历史行为）：AstrBot 全局 admin_id 自动成为插件全局管理员（可跨群管理插件）。关闭后插件权限仅认插件管理员名单，避免 AstrBot 全局配置变动反向影响插件权限（消除隐式交叉污染）。关闭后 WebUI「权限管理」会标注 AstrBot 全局管理员不再生效"
+    },
     "card_monitor_enabled": {
         "description": "名片监控总开关",
         "type": "bool",

@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.18.0 - 2026-08-14
+
+### 权限收敛：AstrBot 全局管理员继承可配置 + WebUI 双名单排查
+
+**背景**：`_get_all_admin_ids` 此前无条件合并插件管理员名单与 AstrBot 全局 `admin_id`，形成隐式交叉污染——AstrBot 全局配置变动会反向影响插件权限。
+
+**1. 可配置继承开关（`inherit_astrbot_admins`，默认 `true` 保持原行为）**
+- 开启：AstrBot 全局 `admin_id` 自动成为插件全局管理员（历史行为不变）；
+- 关闭：插件权限**仅认插件管理员名单**，AstrBot 全局配置不再影响插件权限，消除隐式信任关系；
+- 可按群覆盖。
+- 实现：`onebot.py` 抽出 `_get_astrbot_admin_ids()`（读取 `context.astrbot_config['admin_id']`），
+  `_get_all_admin_ids()` 按开关决定是否合并。
+
+**2. WebUI 双名单展示（`GET /admin/lists`）**
+- 返回 `plugin_admins`（插件管理员）、`astrbot_admins`（AstrBot 全局管理员）、`inherited`（继承开关）、`effective_admins`（实际生效名单）；
+- 前端「权限管理」页分两区展示：插件管理员（可移除）+ AstrBot 全局管理员（继承生效/已关闭不生效均有标注），便于排查"为什么这个人能/不能操作"；
+- 设置页新增 `inherit_astrbot_admins` 开关。
+
+**测试**
+- 新增 `tests/test_admin_inherit.py`：默认继承合并、关闭后排除、`_get_astrbot_admin_ids` 读取、无 context 降级、去重；web.py 双名单接口与 schema 静态检查。
+
 ## v2.17.0 - 2026-08-14
 
 ### LLM 审核失败降级策略：fail-close 可配置 + 管理员告警

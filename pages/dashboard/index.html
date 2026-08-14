@@ -1779,9 +1779,15 @@ function renderMembers(members) {
 }
 
 async function loadAdmins() {
-  var res = await loadConfigCached();
-  if (isApiError(res)) return;
-  renderAdmins();
+  // v2.18.0：优先用 /admin/lists 展示「插件管理员 + AstrBot 全局管理员」双名单与继承状态
+  var res = await safeGet('admin/lists');
+  if (isApiError(res)) {
+    var rc = await loadConfigCached();
+    if (isApiError(rc)) return;
+    renderAdmins();
+    return;
+  }
+  renderAdminLists(res.data || {});
 }
 
 function renderAdmins() {
@@ -1791,6 +1797,41 @@ function renderAdmins() {
   c.innerHTML = admins.map(function(uid) {
     return '<span class="admin-tag">' + esc(String(uid)) + '<button class="btn-remove" data-uid="' + escAttr(String(uid)) + '">&times;</button></span>';
   }).join('');
+  $$('.btn-remove', c).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var ok = await postOrToast('admin/remove', { user_id: btn.dataset.uid }, '已移除管理员', '移除管理员失败');
+      if (ok) loadAdmins();
+    });
+  });
+}
+
+function renderAdminLists(d) {
+  var c = $('#adminList');
+  if (!c) return;
+  var plugin = d.plugin_admins || [];
+  var astrbot = d.astrbot_admins || [];
+  var inherited = !!d.inherited;
+  var section = function(label) { return '<div style="margin:8px 0 4px;font-size:12px;color:#888">' + esc(label) + '</div>'; };
+  var html = '';
+  if (astrbot.length) {
+    if (inherited) {
+      html += section('AstrBot 全局管理员（继承生效，' + astrbot.length + '人，来源 AstrBot admin_id）') +
+        astrbot.map(function(uid) {
+          return '<span class="admin-tag" title="来自 AstrBot 全局配置，可在设置关闭 inherit_astrbot_admins">' + esc(String(uid)) + '</span>';
+        }).join('');
+    } else {
+      html += section('AstrBot 全局管理员（inherit_astrbot_admins 已关闭，不生效）') +
+        astrbot.map(function(uid) {
+          return '<span class="admin-tag" style="opacity:.5" title="inherit_astrbot_admins 已关闭，不参与插件权限">' + esc(String(uid)) + '</span>';
+        }).join('');
+    }
+  }
+  html += section('插件管理员（' + plugin.length + '人）');
+  if (!plugin.length) html += '<p class="empty">暂无插件管理员</p>';
+  else html += plugin.map(function(uid) {
+    return '<span class="admin-tag">' + esc(String(uid)) + '<button class="btn-remove" data-uid="' + escAttr(String(uid)) + '">&times;</button></span>';
+  }).join('');
+  c.innerHTML = html;
   $$('.btn-remove', c).forEach(function(btn) {
     btn.addEventListener('click', async function() {
       var ok = await postOrToast('admin/remove', { user_id: btn.dataset.uid }, '已移除管理员', '移除管理员失败');
@@ -1993,6 +2034,7 @@ var FEATURE_TOGGLES = [
   { key: 'auto_unban_enabled', label: '定时自动解禁' },
   { key: 'group_admin_grant_enabled', label: '群管理员动态授权' },
   { key: 'legacy_role_admin_enabled', label: '兼容群管授权' },
+  { key: 'inherit_astrbot_admins', label: '继承AstrBot全局管理员', desc: 'AstrBot 全局 admin_id 自动成为插件管理员；关闭后插件权限仅认插件管理员名单' },
 ];
 var RULES_STATE = { category: 'swear', q: '', enabled: '', page: 1, pageSize: 20 };
 var KEYWORDS_STATE = { category: '', q: '', page: 1, pageSize: 50 };
