@@ -311,6 +311,7 @@ class _HandleHarness(_StreamHarness):
         self.rule_penalties = 0
         self.llm_calls = 0
         self.llm_inputs = []
+        self._recent_media_hashes = {}
 
     @staticmethod
     def _record_activity(*_args, **_kwargs):

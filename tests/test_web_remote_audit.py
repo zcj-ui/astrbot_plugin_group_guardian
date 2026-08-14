@@ -145,8 +145,8 @@ class WebRemoteAuditTests(unittest.TestCase):
         global remote_module
         remote_module = _load_remote()
         cls.RemoteMixin = remote_module.RemoteMixin
-        # 动态组合 RemoteMixin + _Harness（避免 __bases__ 赋值限制）
-        cls.Harness = type("Harness", (remote_module.RemoteMixin, _Harness), {})
+        # 动态组合 _Harness + RemoteMixin（_Harness 在前，stub 方法优先于 RemoteMixin 真实实现）
+        cls.Harness = type("Harness", (_Harness, remote_module.RemoteMixin), {})
 
     def make(self, **kw):
         return self.Harness(**kw)
