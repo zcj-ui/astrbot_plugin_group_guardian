@@ -8,7 +8,10 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
-from .platforms import get_platform_name, is_platform_routed
+try:
+    from .platforms import get_platform_name, is_platform_routed
+except ImportError:  # 独立加载 onebot.py 的单元测试兼容路径
+    from platforms import get_platform_name, is_platform_routed
 
 # OneBot API 调用统一超时（秒），防止协议端无响应导致协程永久挂起
 ONEBOT_CALL_TIMEOUT = 20.0
