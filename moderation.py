@@ -2385,6 +2385,78 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             except Exception:
                 pass
 
+    def _violation_thresholds(self, group_id: str):
+        """解析违规积分档位阈值，返回 (ban_threshold, kick_threshold)。"""
+        raw = self._cfg_str("violation_points_thresholds", "2,5", group_id=group_id)
+        parts = [p.strip() for p in str(raw or "").split(",") if p.strip()]
+        try:
+            ban = max(1, int(parts[0]) if len(parts) >= 1 else 2)
+        except (TypeError, ValueError):
+            ban = 2
+        try:
+            kick = max(ban + 1, int(parts[1]) if len(parts) >= 2 else 5)
+        except (TypeError, ValueError):
+            kick = max(ban + 1, 5)
+        return ban, kick
+
+    async def _handle_violation_points(self, event: AiocqhttpMessageEvent, group_id: str,
+                                       user_id: str, user_name: str, text: str,
+                                       reason: str, image_urls: list):
+        """违规积分累进制处罚（默认关闭）：按窗口内累计违规次数升级 警告→禁言→踢出。
+
+        返回 (handled, notices)：handled=True 表示已按积分升级处置（调用方应 return）。
+        """
+        notices = []
+        try:
+            count = self._storage.get_user_violation_count(
+                group_id, user_id,
+                self._cfg_int("violation_points_window_days", 30, group_id=group_id),
+            )
+            ban_thr, kick_thr = self._violation_thresholds(group_id)
+            notice_enabled = self._cfg("auto_moderate_notice", True, group_id=group_id)
+            # 达到踢出阈值
+            if count >= kick_thr:
+                kicked = await self._kick_member(event)
+                self._log_moderation(group_id, user_id, user_name, text,
+                                     "积分踢出" if kicked else "积分踢出失败", reason, image_urls)
+                if notice_enabled and kicked:
+                    notices.append(f"[违规积分] {user_name}({user_id}) 累计违规 {count} 次，已踢出群聊")
+                try:
+                    event.stop_event()
+                except Exception:
+                    pass
+                return True, notices
+            # 达到禁言阈值
+            if count >= ban_thr:
+                ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
+                self._mark_moderation_penalty(group_id, user_id, ban_duration)
+                muted = await self._mute_member(event, ban_duration)
+                if muted:
+                    self._schedule_unban(group_id, user_id, ban_duration)
+                else:
+                    self._clear_moderation_penalty(group_id, user_id)
+                self._log_moderation(group_id, user_id, user_name, text,
+                                     "积分禁言" if muted else "积分禁言失败", reason, image_urls)
+                if notice_enabled and muted:
+                    notices.append(f"[违规积分] {user_name}({user_id}) 累计违规 {count} 次，已禁言")
+                try:
+                    event.stop_event()
+                except Exception:
+                    pass
+                return True, notices
+            # 未达阈值：警告（仅撤回+记录，不禁言）
+            self._log_moderation(group_id, user_id, user_name, text, "积分警告", reason, image_urls)
+            if notice_enabled:
+                notices.append(f"[违规积分] {user_name}({user_id}) 违规警告（累计 {count} 次，再犯将禁言）")
+            try:
+                event.stop_event()
+            except Exception:
+                pass
+            return True, notices
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 违规积分处罚异常: {e}")
+            return False, []
+
     async def _execute_rule_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
                                     user_id: str, user_name: str, text: str,
                                     hit_types: dict, image_urls: list,
@@ -2413,6 +2485,15 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 ):
                     yield item
                 return
+            # 违规积分累进制（可选，默认关闭）：按窗口累计次数 警告 → 禁言 → 踢出
+            if self._cfg("violation_points_enabled", False, group_id=group_id):
+                vp_handled, vp_notices = await self._handle_violation_points(
+                    event, group_id, user_id, user_name, text, reason, image_urls
+                )
+                if vp_handled:
+                    for vp_n in vp_notices:
+                        yield event.plain_result(vp_n)
+                    return
             ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
             self._mark_moderation_penalty(group_id, user_id, ban_duration)
             mute_succeeded = await self._mute_member(event, ban_duration)
@@ -2465,6 +2546,15 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 ):
                     yield item
                 return
+            # 违规积分累进制（可选，默认关闭）：按窗口累计次数 警告 → 禁言 → 踢出
+            if self._cfg("violation_points_enabled", False, group_id=group_id):
+                vp_handled, vp_notices = await self._handle_violation_points(
+                    event, group_id, user_id, user_name, text, reason, image_urls
+                )
+                if vp_handled:
+                    for vp_n in vp_notices:
+                        yield event.plain_result(vp_n)
+                    return
             ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
             self._mark_moderation_penalty(group_id, user_id, ban_duration)
             mute_succeeded = False

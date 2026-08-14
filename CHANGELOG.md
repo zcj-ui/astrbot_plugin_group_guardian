@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.14.0 - 2026-08-14
+
+### 新增：违规积分累进制（`violation_points_enabled`，默认关闭）
+
+- 按「窗口内累计违规次数」升级处罚：**首次警告（仅撤回+记录，不禁言）→ 达到禁言阈值禁言 → 达到踢出阈值踢出**；
+- 数据源复用 `moderation_logs`（新增 storage 方法 `get_user_violation_count`），无需新表，窗口外历史不计入；
+- 新配置（均可按群覆盖）：
+  - `violation_points_enabled`（默认 false）；
+  - `violation_points_window_days`（默认 30，统计窗口天数）；
+  - `violation_points_thresholds`（默认 `2,5`：第 2 次起禁言、第 5 次起踢出，未达为警告）；
+- 接入规则命中（`_execute_rule_penalty`）与 LLM 审核（`_execute_llm_penalty`）两条处罚路径；与广告分级处置互不冲突、均默认关闭。
+
 ## v2.13.0 - 2026-08-14
 
 ### 新增：五项增强审核/统计功能（均默认关闭）

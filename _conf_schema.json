@@ -1080,6 +1080,24 @@
         "type": "bool",
         "default": false,
         "hint": "记录每群每条发言到 SQLite，供 /群活跃度 命令查询今日/近7天/近30天发言条数与活跃人数、活跃用户排行。默认关闭，开启后开始记录新消息"
+    },
+    "violation_points_enabled": {
+        "description": "违规积分累进制",
+        "type": "bool",
+        "default": false,
+        "hint": "按窗口内累计违规次数升级处罚：首次警告（仅撤回记录）→ 达到禁言阈值禁言 → 达到踢出阈值踢出。次数取 violation_points_thresholds 档位，窗口取 violation_points_window_days。与广告分级处置互不冲突，均默认关闭。可按群覆盖"
+    },
+    "violation_points_window_days": {
+        "description": "违规积分统计窗口（天）",
+        "type": "int",
+        "default": 30,
+        "hint": "统计该天数内的违规次数（范围 1-365），窗口外的历史违规不计入。可按群覆盖"
+    },
+    "violation_points_thresholds": {
+        "description": "违规积分档位阈值（禁言,踢出）",
+        "type": "string",
+        "default": "2,5",
+        "hint": "逗号分隔两个数字：达到第 1 个数字的次数起禁言，达到第 2 个数字的次数起踢出；未达第 1 个数字为警告。示例：1,3 = 首次警告、第2次禁言、第3次起踢出。可按群覆盖"
     }
 
 }

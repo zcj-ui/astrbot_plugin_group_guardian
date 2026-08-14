@@ -1036,6 +1036,25 @@ class SQLiteStorage(GroupStorageMixin):
             ).fetchall()
         return [{"user_id": r["user_id"], "user_name": r["user_name"], "count": r["cnt"] or 0} for r in rows]
 
+    def get_user_violation_count(self, group_id: str, user_id: str, days: int = 30) -> int:
+        """某用户在指定群最近 days 天内的违规次数（违规积分累进制数据源）。
+
+        统计审核处罚记录（撤回/禁言/踢出/警告等处置均写入 moderation_logs）。
+        """
+        if not group_id or not user_id:
+            return 0
+        try:
+            since = int(time.time()) - max(1, int(days)) * 86400
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT COUNT(*) as cnt FROM moderation_logs "
+                    "WHERE group_id=? AND user_id=? AND ts>=? AND action != ''",
+                    (str(group_id), str(user_id), since),
+                ).fetchone()
+            return int(row["cnt"] or 0) if row else 0
+        except Exception:
+            return 0
+
     # ============================================================
     # v2.4.0 新增：F1 入群审核规则
     # ============================================================
