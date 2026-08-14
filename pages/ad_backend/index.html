@@ -152,11 +152,7 @@ img.ev { max-width:140px; max-height:90px; border-radius:6px; cursor:zoom-in; bo
 <script>
 // ===== Token 管理 =====
 var TOKEN = localStorage.getItem('ad_backend_token') || '';
-(function(){
-  var u = new URLSearchParams(location.search);
-  var t = u.get('token');
-  if (t) { TOKEN = t; localStorage.setItem('ad_backend_token', t); history.replaceState(null,'',location.pathname); }
-})();
+(function(){ try { if (new URLSearchParams(location.search).has('token')) { history.replaceState(null,'',location.pathname); } } catch(e){} })();
 
 function api(path, opts) {
   opts = opts || {};

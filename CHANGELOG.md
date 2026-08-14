@@ -1,5 +1,45 @@
 # Changelog
 
+## v2.21.0 - 2026-08-14
+
+### PR #69 审查修复：安全加固 + 测试结构修复 + 完整 CI
+
+针对上游审查的 5 个阻断项逐一修复（功能方向保留，不删功能）：
+
+**1. 修复 `tests/test_web_approvals.py` 文件结构损坏（阻断项）**
+- 原文件在 `_run()` 处被截断（`try:` 后直接出现测试方法、`test_migration_is_idempotent` 函数体为空），`python -m compileall -q .` 报 `IndentationError`；
+- 整文件重写：`_run()` 完整、三个测试类与全部测试方法结构正确。
+
+**2. 操作者身份只来自服务端绑定，不信任请求体自报 QQ（阻断项）**
+- `_resolve_operator_from_bindings`：**忽略请求体直接携带的 `operator_qq`**，操作者身份只能由
+  AstrBot Dashboard 已认证登录用户名（`/api/plug/` 路由由 AstrBot JWT 保护）经 `web_operator_bindings`
+  服务端绑定推导；未绑定用户名返回空 QQ，由授权校验拒绝；
+- `web.py` 远程执行与双管理员审批入口不再读取请求体 `operator_qq`；
+- 前端只携带/记忆操作者用户名（不再自报 QQ），`getOperatorIdentity` 改为仅管理 `gg_operator_name`；
+- 新增 `_parse_operator_bindings` 抽取绑定解析。
+
+**3. 独立后台默认仅回环监听 + 强制 token（阻断项）**
+- 新增 `ad_backend_host`（默认 `127.0.0.1`），不再固定 `0.0.0.0`；
+- **非回环监听必须配置 ≥8 位 `ad_backend_token`**，否则拒绝启动（避免无认证网络管理面）；
+- `_ad_backend_auth_ok`：**禁用 URL `?token=` 传参**（防令牌泄漏进日志/浏览器历史），仅接受 `X-Token` 请求头；
+  未配置 token 时仅回环地址放行；前端不再从 URL 读取 token。
+
+**4. float 配置支持按群覆盖（阻断项）**
+- `_group_overridable_keys()` 的 `supported_types` 增加 `float`（此前 schema 标注“可按群覆盖”的浮点配置
+  不会出现在 WebUI 多群配置中）。
+
+**5. `local_ocr_auto_install` 默认关闭（阻断项）**
+- 不再默认在运行期 `pip install rapidocr_onnxruntime`（避免版本漂移/启动延迟/失败恢复问题）；
+- 改为显式安装：`pip install rapidocr_onnxruntime`（schema hint 给出指引）。
+
+**6. 补齐完整 CI**
+- `.github/workflows/ci.yml`：Python 3.10/3.12 矩阵、`python -m compileall -q .` 全量语法检查
+  （可捕获此前 `IndentationError`）、schema JSON 校验、`unittest` 全量测试、支持 `workflow_dispatch` 手动触发。
+
+**测试**
+- `test_web_approvals.py` 重建修复；`test_web_remote_audit.py` 更新绑定测试
+  （`test_bindings_explicit_qq_ignored`：请求体自报 QQ 一律忽略）。
+
 ## v2.20.0 - 2026-08-14
 
 ### 视频广告识别增强：无文字广告判定 + 首中尾抽帧 + 字幕带放大 + 多帧鲁棒指纹

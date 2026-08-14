@@ -106,18 +106,12 @@ class RemoteMixin:
             return await self._call_group_api(client, "delete_essence_msg", "取消精华", message_id=mid)
         return False, f"未知操作: {action}"
 
-    def _resolve_operator_from_bindings(self, operator_name: str = "", operator_qq: str = ""):
-        """从 web_operator_bindings（用户名:QQ号,用户名2:QQ2）解析操作者身份。
-
-        返回 (operator_name, operator_qq)。规则：
-        - 若前端已传 operator_qq，直接采用；
-        - 否则若传了 operator_name（Dashboard 登录用户名），按绑定映射到 QQ；
-        - 都没有则返回空（是否放行由 web_remote_require_operator 决定）。
-        """
+    def _parse_operator_bindings(self) -> dict:
+        """解析 web_operator_bindings（用户名:QQ号,用户名2:QQ2）为 {用户名: QQ} 映射。"""
+        mapping = {}
         try:
-            bindings = self._cfg_str("web_operator_bindings", "")
-            mapping = {}
-            for pair in str(bindings or "").replace("；", ";").replace("，", ",").split(";"):
+            raw = self._cfg_str("web_operator_bindings", "")
+            for pair in str(raw or "").replace("；", ";").replace("，", ",").split(";"):
                 for sub in pair.split(","):
                     sub = sub.strip()
                     if ":" not in sub:
@@ -126,13 +120,28 @@ class RemoteMixin:
                     name, qq = name.strip(), qq.strip()
                     if name and qq and name not in mapping:
                         mapping[name] = qq
-            if operator_qq:
-                return operator_name or "", str(operator_qq)
-            if operator_name and operator_name in mapping:
-                return operator_name, mapping[operator_name]
         except Exception as e:
             logger.debug(f"[GroupMgr] 解析操作者绑定失败: {e}")
-        return operator_name or "", ""
+        return mapping
+
+    def _resolve_operator_from_bindings(self, operator_name: str = "", operator_qq: str = ""):
+        """从 web_operator_bindings（用户名:QQ号）解析操作者身份。
+
+        返回 (operator_name, operator_qq)。v2.21.0 安全加固：
+        **忽略请求体直接携带的 operator_qq**——操作者身份只能来自服务端绑定
+        （AstrBot Dashboard 已认证登录用户名 → QQ，`/api/plug/` 路由由 AstrBot JWT
+        保护），调用方不能自报 QQ 绕过身份绑定；未绑定用户名返回 (名, "")，
+        由 _check_remote_operator 授权校验拒绝。
+        """
+        try:
+            name = str(operator_name or "").strip()
+            if not name:
+                return "", ""
+            mapping = self._parse_operator_bindings()
+            return name, mapping.get(name, "")
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 解析操作者绑定失败: {e}")
+        return str(operator_name or "").strip(), ""
 
     def _record_web_audit(self, operator_name: str, operator_qq: str, group_id: str,
                           action: str, target_user: str, params: str,

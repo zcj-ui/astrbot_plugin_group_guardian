@@ -1581,18 +1581,18 @@ class WebMixin:
 
     async def _web_remote_execute(self):
         # 远程执行群管操作，支持单个 user_id 或批量 user_ids。
-        # v2.15.0：解析操作者身份（Dashboard 用户名 → web_operator_bindings 映射 QQ，或显式 operator_qq），
+        # v2.15.0：解析操作者身份（Dashboard 用户名 → web_operator_bindings 映射 QQ），
         # 交由 _remote_execute 做目标群授权校验并写入审计日志。
         # v2.19.0：记录操作人 IP；高敏感操作（web_remote_dual_approval_enabled）先落双管理员审批。
+        # v2.21.0 安全加固：忽略请求体自报 operator_qq，操作者身份只来自服务端绑定。
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
             action = str(data.get("action", "")).strip()
             params = data.get("params", {}) or {}
-            operator_qq = str(data.get("operator_qq", "") or "").strip()
             operator_name = str(data.get("operator_name", "") or "").strip()
             operator_ip = self._request_ip()
-            operator_name, operator_qq = self._resolve_operator_from_bindings(operator_name, operator_qq)
+            operator_name, operator_qq = self._resolve_operator_from_bindings(operator_name, "")
             if not group_id or not action:
                 return jsonify({"status": "error", "message": "缺少 group_id 或 action"})
             # v2.19.0 双管理员审批：高敏感操作先落 pending，由第二名管理员确认后执行
@@ -1647,11 +1647,14 @@ class WebMixin:
                 op_id = int(body.get("id") or 0)
             except (TypeError, ValueError):
                 return jsonify({"status": "error", "message": "id 无效"})
-            operator_qq = str(body.get("operator_qq", "") or "").strip()
             operator_name = str(body.get("operator_name", "") or "").strip()
             operator_ip = self._request_ip()
-            if not op_id or not operator_qq:
-                return jsonify({"status": "error", "message": "缺少 id 或 operator_qq"})
+            # v2.21.0 安全加固：忽略请求体自报 operator_qq，只从服务端绑定解析
+            operator_name, operator_qq = self._resolve_operator_from_bindings(operator_name, "")
+            if not op_id:
+                return jsonify({"status": "error", "message": "缺少 id"})
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "操作者用户名未绑定 QQ：请在 WebUI 配置 web_operator_bindings"})
             op = await asyncio.to_thread(self._storage.get_pending_web_operation, op_id)
             if not op:
                 return jsonify({"status": "error", "message": "审批记录不存在"})
@@ -1785,7 +1788,8 @@ class WebMixin:
     def _group_overridable_keys(self):
         # 动态计算可按群覆盖的配置项：schema 中除全局项外的通用配置。
         # list 类型通常是全局名单或复杂集合，WebUI 由专门页面维护，不进入单群覆盖。
-        supported_types = {"bool", "int", "string", "text"}
+        # v2.21.0：float 类型加入可覆盖（此前 float 配置标注“可按群覆盖”却不会出现在按群配置中）。
+        supported_types = {"bool", "int", "string", "text", "float"}
         return [
             k for k, meta in self._config_schema.items()
             if k not in self._GROUP_CONFIG_EXCLUDE

@@ -61,15 +61,47 @@ class AdBackendMixin:
         try:
             port = int(self.config.get("ad_backend_port", 8765) or 8765)
             port = max(1, min(port, 65535))
+            host = self._ad_backend_listen_host()
+            # v2.21.0 安全加固：非回环监听必须配置高强度 token，否则拒绝启动，
+            # 避免启用后台但漏配 token 时形成无认证网络管理面。
+            token = str(self.config.get("ad_backend_token", "") or "").strip()
+            if not self._ad_backend_is_loopback(host) and len(token) < 8:
+                logger.warning(
+                    "[GroupMgr] 独立后台监听非回环地址但 ad_backend_token 为空或过短(<8)，"
+                    "拒绝启动以避免无认证网络管理面；请配置 ≥8 位高强度 token，或把 "
+                    "ad_backend_host 改回 127.0.0.1"
+                )
+                return
             app = Quart(__name__)
             self._ad_backend_register_routes(app)
             self._ad_backend_app = app
             self._ad_backend_task = asyncio.create_task(
-                app.run_task(host="0.0.0.0", port=port, debug=False)
+                app.run_task(host=host, port=port, debug=False)
             )
-            logger.info(f"[GroupMgr] 独立管理后台已启动: http://0.0.0.0:{port}")
+            logger.info(f"[GroupMgr] 独立管理后台已启动: http://{host}:{port}")
         except Exception as exc:
             logger.warning(f"[GroupMgr] 启动独立后台失败: {exc}")
+
+    @staticmethod
+    def _ad_backend_is_loopback(host: str) -> bool:
+        """判断监听地址是否为回环（127.0.0.1 / ::1 / localhost）。"""
+        host = str(host or "").strip()
+        try:
+            import ipaddress
+            addr = ipaddress.ip_address(host.split("%")[0])
+            return addr.is_loopback
+        except ValueError:
+            return host in ("localhost", "127.0.0.1", "::1")
+
+    def _ad_backend_listen_host(self) -> str:
+        """后台监听地址（v2.21.0 默认仅回环 127.0.0.1，避免无认证网络管理面）。"""
+        try:
+            host = str(self.config.get("ad_backend_host", "") or "").strip()
+            if not host:
+                host = "127.0.0.1"
+            return host
+        except Exception:
+            return "127.0.0.1"
 
     async def _stop_ad_backend(self) -> None:
         """停止独立后台服务（插件卸载/停用时调用）。"""
@@ -85,21 +117,23 @@ class AdBackendMixin:
         self._ad_backend_page_cache = ("", 0.0)
 
     def _ad_backend_auth_ok(self) -> bool:
-        """Token 鉴权：未配置 Token 时放行（建议仅内网访问）。"""
+        """Token 鉴权（v2.21.0 安全加固）：
+        - 仅接受 X-Token 请求头，**禁用 URL query token**（避免 token 泄漏进日志/浏览器历史）；
+        - 未配置 token 时：仅回环地址监听放行（默认 127.0.0.1）；非回环监听在启动时已被强制要求 token。
+        """
         try:
             token = str(self.config.get("ad_backend_token", "") or "").strip()
         except Exception:
             token = ""
-        if not token:
-            return True
-        query_token = ""
-        header_token = ""
         try:
-            query_token = str(quart_request.args.get("token", "") or "").strip()
             header_token = str(quart_request.headers.get("X-Token", "") or "").strip()
         except Exception:
-            pass
-        return query_token == token or header_token == token
+            header_token = ""
+        if not token:
+            return self._ad_backend_is_loopback(self._ad_backend_listen_host())
+        if not header_token:
+            return False
+        return header_token == token
 
     def _ad_backend_register_routes(self, app) -> None:
         """注册独立后台的全部路由（页面 + API）。"""

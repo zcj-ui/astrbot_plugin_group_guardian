@@ -991,6 +991,12 @@
         "default": 8765,
         "hint": "独立后台监听的端口，范围 1-65535，默认 8765。请确保该端口未被占用且在防火墙放行"
     },
+    "ad_backend_host": {
+        "description": "独立后台监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "默认 127.0.0.1（仅本机可访问，安全）。如需局域网/公网访问改为 0.0.0.0 或具体网卡 IP，但此时**必须**配置 ≥8 位 ad_backend_token，否则后台拒绝启动（避免无认证网络管理面）"
+    },
     "ocr_engine": {
         "description": "广告识别引擎",
         "type": "string",
@@ -1000,8 +1006,8 @@
     "local_ocr_auto_install": {
         "description": "本地OCR自动安装（下载模型）",
         "type": "bool",
-        "default": true,
-        "hint": "开启 local 引擎且本地未安装 RapidOCR 时，自动 pip install rapidocr_onnxruntime（含模型约30MB）；关闭后不卸载模型，仅停止自动安装"
+        "default": false,
+        "hint": "v2.21.0 起默认关闭：开启 local 引擎且本地未安装 RapidOCR 时，插件会在运行期 pip install rapidocr_onnxruntime（含模型约30MB），可能造成版本漂移/启动延迟/失败恢复问题。建议改为**显式安装**：在 AstrBot 所在 Python 环境执行 `pip install rapidocr_onnxruntime`（国内可用清华源），安装后 local 引擎直接可用"
     },
     "local_ocr_pip_mirror": {
         "description": "本地OCR安装镜像源",
@@ -1037,7 +1043,7 @@
         "description": "独立后台访问令牌",
         "type": "string",
         "default": "",
-        "hint": "访问后台需携带的令牌（URL 加 ?token=xxx 或请求头 X-Token）。留空则无需鉴权，仅建议在内网使用"
+        "hint": "访问后台需在请求头携带 X-Token（v2.21.0 起不再支持 URL ?token= 传参，避免令牌泄漏进日志/浏览器历史）。默认留空，此时后台仅监听 127.0.0.1 可访问；若 ad_backend_host 改为非回环地址则**必须**配置 ≥8 位高强度令牌，否则后台拒绝启动"
     },
     "multi_protocol_enabled": {
         "description": "多协议适配开关",

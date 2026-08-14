@@ -71,6 +71,35 @@ def _run(coro):
     import asyncio
 
     try:
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+
+storage_mod = None
+
+
+class ApprovalStorageTests(unittest.TestCase):
+    """真实 SQLiteStorage 的审批表与审计字段落库测试。"""
+
+    @classmethod
+    def setUpClass(cls):
+        global storage_mod
+        storage_mod = _load_storage()
+        cls.SQLiteStorage = storage_mod.SQLiteStorage
+
+    def make_storage(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        st = self.SQLiteStorage(Path(tmp.name), str(_ROOT))
+        with st._connect() as conn:
+            st._create_tables(conn)  # 只建表，跳过 seed 导入，保持测试轻量
+        return st
+
     def test_create_and_list_pending(self):
         st = self.make_storage()
         op_id = st.create_pending_web_operation(
@@ -143,6 +172,14 @@ def _run(coro):
         self.assertTrue(item["time"])
 
     def test_migration_is_idempotent(self):
+        st = self.make_storage()
+        # 重复建表/补列不应报错（旧库升级场景）
+        with st._connect() as conn:
+            st._create_tables(conn)
+        with st._connect() as conn:
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(web_audit_logs)").fetchall()}
+        self.assertTrue({"operator_ip", "before_value", "after_value"} <= cols)
+
 
 class RemoteAuditFieldTests(unittest.TestCase):
     """_remote_execute 审计透传操作人 IP 与修改前后值。"""
@@ -246,11 +283,6 @@ class RemoteAuditFieldTests(unittest.TestCase):
         self.assertEqual("拒绝", rec["result"])
         self.assertEqual("8.8.4.4", rec["operator_ip"])
 
-        st = self.make_storage()
-        # 重复建表/补列不应报错（旧库升级场景）
-        with st._connect() as conn:
-            st._create_tables(conn)
-        with st._connect() as conn:
 
 class WebStaticTests(unittest.TestCase):
     """web.py / _conf_schema.json / 前端静态结构检查。"""
@@ -294,36 +326,3 @@ class WebStaticTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-            cols = {r["name"] for r in conn.execute("PRAGMA table_info(web_audit_logs)").fetchall()}
-        self.assertTrue({"operator_ip", "before_value", "after_value"} <= cols)
-
-
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
-    except RuntimeError:
-        return asyncio.run(coro)
-
-
-storage_mod = None
-
-
-class ApprovalStorageTests(unittest.TestCase):
-    """真实 SQLiteStorage 的审批表与审计字段落库测试。"""
-
-    @classmethod
-    def setUpClass(cls):
-        global storage_mod
-        storage_mod = _load_storage()
-        cls.SQLiteStorage = storage_mod.SQLiteStorage
-
-    def make_storage(self):
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        st = self.SQLiteStorage(Path(tmp.name), str(_ROOT))
-        with st._connect() as conn:
-            st._create_tables(conn)  # 只建表，跳过 seed 导入，保持测试轻量
-        return st

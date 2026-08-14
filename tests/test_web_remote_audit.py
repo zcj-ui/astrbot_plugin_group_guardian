@@ -161,10 +161,12 @@ class WebRemoteAuditTests(unittest.TestCase):
         h = self.make(bindings="admin:10001,zhangsan:10002")
         self.assertEqual(("zhangsan", "10002"), h._resolve_operator_from_bindings("zhangsan", ""))
 
-    def test_bindings_explicit_qq_wins(self):
+    def test_bindings_explicit_qq_ignored(self):
+        # v2.21.0 安全加固：请求体自报 QQ 一律忽略，操作者身份只来自服务端绑定
         h = self.make(bindings="admin:10001")
-        # 显式传入 QQ 时直接采用（仍会在 _check_remote_operator 做授权校验）
-        self.assertEqual(("", "99999"), h._resolve_operator_from_bindings("", "99999"))
+        self.assertEqual(("", ""), h._resolve_operator_from_bindings("", "99999"))
+        # 绑定用户名解析不受请求体显式 QQ 影响
+        self.assertEqual(("admin", "10001"), h._resolve_operator_from_bindings("admin", "99999"))
 
     def test_bindings_unmapped_username(self):
         h = self.make(bindings="admin:10001")

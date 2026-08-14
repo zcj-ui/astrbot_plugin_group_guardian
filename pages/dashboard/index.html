@@ -1185,15 +1185,15 @@ function isHighRiskConfirmRequired() {
   var v = CONFIG.web_remote_confirm_required;
   return v === undefined || v === true || v === 'true' || v === 1 || v === '1';
 }
-// 操作者身份：Dashboard 用户绑定的 QQ（本地记忆，用于远程操作授权校验与审计）
+// 操作者身份：AstrBot Dashboard 登录用户名（本地记忆，服务端按 web_operator_bindings 绑定到 QQ）
+// v2.21.0 安全加固：前端不再携带/自报 QQ，身份只由服务端绑定解析，防止伪造管理员身份
 function getOperatorIdentity() {
-  var qq = (localStorage.getItem('gg_operator_qq') || '').trim();
   var name = (localStorage.getItem('gg_operator_name') || '').trim();
-  if (!qq) {
-    var input = prompt('请输入操作者QQ（用于远程操作的授权校验与审计，仅保存在本浏览器）');
-    if (input && input.trim()) { qq = input.trim(); localStorage.setItem('gg_operator_qq', qq); }
+  if (!name) {
+    var input = prompt('请输入操作者用户名（AstrBot Dashboard 登录用户名）。该用户名需在 WebUI 配置 web_operator_bindings 绑定到您的 QQ，仅保存在本浏览器');
+    if (input && input.trim()) { name = input.trim(); localStorage.setItem('gg_operator_name', name); }
   }
-  return { qq: qq, name: name };
+  return { name: name, qq: '' };
 }
 
 // 通用输入弹窗：返回 Promise<string|null>（取消返回 null）。用于“添加 QQ 号/群号”等录入。
@@ -1802,7 +1802,7 @@ function renderMembers(members) {
         if (!okCk) return;
       }
       var op = ensureOperator();
-      var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_qq: op.qq, operator_name: op.name });
+      var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_name: op.name });
       var isErr = isApiError(r);
       var msg = (r && r.message) || (r && r.data && r.data.message) || (isErr ? '操作失败' : '已执行');
       toast(msg, isErr ? 'error' : 'success');
@@ -1839,7 +1839,7 @@ function renderMembers(members) {
       if (!okCk) return;
     }
     var op = ensureOperator();
-    var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_qq: op.qq, operator_name: op.name });
+    var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_name: op.name });
     var isErr = isApiError(r);
     toast((r && r.message) || (r && r.data && r.data.message) || '已执行', isErr ? 'error' : 'success');
     if (isErr) return;
@@ -1895,7 +1895,7 @@ async function loadApprovals() {
       });
       if (!ok) return;
       var op = getOperatorIdentity();
-      var r = await safePost('approvals/approve', { id: btn.dataset.approve, operator_qq: op.qq, operator_name: op.name });
+      var r = await safePost('approvals/approve', { id: btn.dataset.approve, operator_name: op.name });
       toast((r && r.message) || '已确认', isApiError(r) ? 'error' : 'success');
       loadApprovals(); loadAuditLogs();
     });
