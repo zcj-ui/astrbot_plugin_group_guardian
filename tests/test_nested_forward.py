@@ -311,7 +311,16 @@ class _HandleHarness(_StreamHarness):
         self.rule_penalties = 0
         self.llm_calls = 0
         self.llm_inputs = []
+        # hash/video 审核路径所需的实例状态（与 hash_audit._init_hash_audit_resources 对齐）
+        self._hash_blacklist = {"hashes": []}
+        self._ad_escalation = {}
         self._recent_media_hashes = {}
+        self._recent_video_fingerprints = {}
+        self._video_fp_cache = {}
+        self._video_download_semaphore = asyncio.Semaphore(4)
+        self._video_audit_closing = False
+        self._video_audit_tasks = set()
+        self._video_temp_dir = None
 
     @staticmethod
     def _record_activity(*_args, **_kwargs):
