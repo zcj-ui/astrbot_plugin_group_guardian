@@ -526,23 +526,38 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
     # 绝不因 LLM 失效就未经确认撤回；仅当 LLM 正常复核判违规才处理）。
     _NEVER_FAIL_CLOSED_HITS = _SEMANTIC_HIT_LABELS + ("learned_ad", "learned_swear")
 
+    def _llm_fallback_blocks(self, group_id: str = "") -> bool:
+        """LLM 审核失败时的降级策略是否为 fail-close（llm_fallback_mode=block_on_error）。"""
+        try:
+            mode = self._cfg_str("llm_fallback_mode", "pass_on_error", group_id=group_id)
+            return str(mode or "").strip().lower() == "block_on_error"
+        except Exception:
+            return False
+
     def _llm_failure_requires_rule_penalty(self, llm_result: dict,
                                            hit_types: Dict[str, bool],
                                            text: str = "", group_id: str = "") -> bool:
         """Fail closed for high-confidence or intentionally bounded local rules.
 
         默认仅对 oversized（超限未完整扫描）和高置信度脏话 fail-closed，其它类别在
-        LLM 不可用时放行以避免误封。开启 moderation_llm_fail_closed 后，只要存在任一
-        真实规则/词库命中（广告/政治/色情等），LLM 降级时也一律 fail-closed 处罚。
+        LLM 不可用时放行以避免误封。开启 moderation_llm_fail_closed 或
+        llm_fallback_mode=block_on_error 后，只要存在任一真实规则/词库命中
+        （广告/政治/色情等），LLM 降级时也一律 fail-closed 处罚。
         """
         if not isinstance(llm_result, dict) or not llm_result.get("fallback", False):
             return False
         if hit_types.get("oversized"):
             return True
         # 可选严格模式：LLM 降级时对任何真实命中都 fail-closed（默认关，避免 Provider
-        # 抖动时把广告泛词/低置信命中放大成误封）。用 getattr 兼容无 _cfg 的测试桩。
+        # 抖动时把广告泛词/低置信命中放大成误封）。llm_fallback_mode=block_on_error
+        # 视为超集：同样对真实命中 fail-closed，且无命中时在调用方拦截可疑消息。
         cfg = getattr(self, "_cfg", None)
-        if callable(cfg) and cfg("moderation_llm_fail_closed", False, group_id=group_id):
+        fail_closed = False
+        if callable(cfg):
+            fail_closed = bool(cfg("moderation_llm_fail_closed", False, group_id=group_id))
+            if not fail_closed:
+                fail_closed = self._llm_fallback_blocks(group_id)
+        if fail_closed:
             real_hit = any(
                 v for k, v in hit_types.items() if k not in self._NEVER_FAIL_CLOSED_HITS
             )
@@ -2110,6 +2125,8 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 self._set_moderation_combine_state(
                     event, group_id, user_id, extra_recall_ids, "consumed"
                 )
+                # v2.17.0: LLM 不可用告警日志 + 可选通知管理员
+                await self._notify_llm_failure(group_id, hit_summary, reason)
                 logger.warning(
                     f"[GroupMgr] LLM 审核不可用，明确规则命中按规则处罚: "
                     f"{user_name}({user_id}) in {group_id} | {hit_summary} | {reason}"
@@ -2125,6 +2142,18 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                     "",
                 )
             if llm_result.get("fallback", False):
+                # v2.17.0: LLM 不可用告警日志 + 可选通知管理员
+                await self._notify_llm_failure(group_id, hit_summary, reason)
+                if self._llm_fallback_blocks(group_id):
+                    # block_on_error fail-close：无可信规则命中也可疑消息，降级拦截
+                    self._set_moderation_combine_state(
+                        event, group_id, user_id, extra_recall_ids, "consumed"
+                    )
+                    async for item in self._handle_llm_fallback_block(
+                        event, group_id, user_id, user_name, text, reason,
+                        hit_summary, image_urls, extra_recall_ids):
+                        yield item
+                    return
                 logger.warning(
                     f"[GroupMgr] LLM审核不可用，消息降级放行: "
                     f"{user_name}({user_id}) in {group_id} | {hit_summary} | {reason}"
@@ -2576,3 +2605,82 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             event.stop_event()
         except Exception as e:
             logger.warning(f"[GroupMgr] 自动审核出错: {e}")
+
+    # ============================================================
+    # v2.17.0 LLM 不可用降级策略：fail-close（block_on_error）+ 管理员告警
+    # ============================================================
+    async def _send_group_message(self, group_id: str, text: str) -> None:
+        """向指定群发送一条普通消息（失败静默）。"""
+        try:
+            gid = self._safe_int(group_id, 0)
+            if not gid:
+                return
+            client = await self._get_client()
+            if client:
+                ok, error = await self._call_group_api(
+                    client, "send_group_msg", "发送群消息",
+                    group_id=gid, message=text,
+                )
+                if not ok:
+                    logger.debug(f"[GroupMgr] 群消息发送失败: {error}")
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 群消息发送失败: {e}")
+
+    async def _notify_llm_failure(self, group_id: str, hit_summary: str, reason: str) -> None:
+        """LLM 审核不可用告警：记录告警日志 + 可选群内通知管理员。"""
+        logger.warning(
+            f"[GroupMgr] LLM 审核服务不可用: {hit_summary} | {reason} | "
+            f"降级策略={('block_on_error' if self._llm_fallback_blocks(group_id) else 'pass_on_error')}"
+        )
+        try:
+            if not self._cfg("llm_failure_notify_enabled", False, group_id=group_id):
+                return
+            action_cn = "已拦截" if self._llm_fallback_blocks(group_id) else "已放行"
+            await self._send_group_message(
+                group_id,
+                "⚠️ LLM 审核服务暂不可用，本次可疑消息已按降级策略处理（"
+                + action_cn + "）。请管理员检查 LLM Provider 配置",
+            )
+        except Exception as e:
+            logger.debug(f"[GroupMgr] LLM 失败通知发送失败: {e}")
+
+    async def _handle_llm_fallback_block(self, event: AiocqhttpMessageEvent, group_id: str,
+                                         user_id: str, user_name: str, text: str,
+                                         reason: str, hit_summary: str, image_urls: list,
+                                         extra_recall_ids: list = None):
+        """fail-close 降级拦截：LLM 不可用且 block_on_error 时，可疑消息撤回+记录+提示。
+
+        与规则/LLM 确认违规不同：这里仅因 LLM 不可用而保守拦截，只撤回不升级禁言，
+        避免在审核能力降级时扩大误封影响。
+        """
+        logger.warning(
+            f"[GroupMgr] LLM 不可用，fail-close 拦截可疑消息: "
+            f"{user_name}({user_id}) in {group_id} | {hit_summary} | {reason}"
+        )
+        try:
+            msg_id = str(getattr(getattr(event, "message_obj", None), "message_id", ""))
+            if msg_id:
+                try:
+                    await self._recall_msg(event, msg_id)
+                except Exception as recall_err:
+                    logger.warning(f"[GroupMgr] 降级拦截撤回消息失败: {recall_err}")
+            await self._recall_extra_messages(event, extra_recall_ids)
+            if self._cfg("auto_moderate_notice", True, group_id=group_id):
+                try:
+                    notice = self._cfg_str(
+                        "ban_notice",
+                        "[群管] {name}({uid}) 的消息已被撤回（LLM审核暂不可用，降级拦截）",
+                        group_id=group_id,
+                    )
+                    yield event.plain_result(
+                        notice.replace("{name}", user_name).replace("{uid}", user_id)
+                             .replace("{group}", group_id).replace("{reason}", reason)
+                    )
+                except Exception as notice_err:
+                    logger.warning(f"[GroupMgr] 降级拦截通知失败: {notice_err}")
+            self._log_moderation(
+                group_id, user_id, user_name, text, "LLM降级拦截", reason, image_urls,
+            )
+            event.stop_event()
+        except Exception as e:
+            logger.warning(f"[GroupMgr] 降级拦截出错: {e}")

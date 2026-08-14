@@ -1480,5 +1480,47 @@ class NestedForwardTests(unittest.TestCase):
             self.assertTrue(result["fallback"])
 
 
+class LlmFallbackModeTests(unittest.TestCase):
+    """v2.17.0 llm_fallback_mode=block_on_error 的 fail-close 策略。"""
+
+    def make(self, mode):
+        class _ModeHarness(_LLMHarness):
+            @staticmethod
+            def _cfg_str(name, default="", group_id=""):
+                if name == "llm_fallback_mode":
+                    return mode
+                return default
+
+        return _ModeHarness("test-response")
+
+    def test_default_is_pass_on_error(self):
+        self.assertFalse(_LLMHarness("test-response")._llm_fallback_blocks("100"))
+
+    def test_block_on_error_mode(self):
+        self.assertTrue(self.make("block_on_error")._llm_fallback_blocks("100"))
+
+    def test_block_mode_fails_closed_on_real_hit(self):
+        # block_on_error：广告等真实词库命中 + LLM 失败 → 由规则处罚路径 fail-closed
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        self.assertTrue(h._llm_failure_requires_rule_penalty(
+            fallback, {"ad": True}, "广告", "100"))
+
+    def test_block_mode_semantic_only_not_rule_penalty(self):
+        # 仅语义候选（full_scan）无真实命中 → 规则处罚判定为 False；
+        # 拦截由 _handle_message 的 _handle_llm_fallback_block 分支完成
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        self.assertFalse(h._llm_failure_requires_rule_penalty(
+            fallback, {"full_scan": True}, "普通消息", "100"))
+
+    def test_pass_mode_real_hit_not_fail_closed_without_swear(self):
+        # pass_on_error 默认行为：广告命中 + LLM 失败 → 不 fail-closed（除非单独开
+        # moderation_llm_fail_closed），保持兼容
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        self.assertFalse(_LLMHarness("test-response")._llm_failure_requires_rule_penalty(
+            fallback, {"ad": True}, "广告", "100"))
+
+
 if __name__ == "__main__":
     unittest.main()

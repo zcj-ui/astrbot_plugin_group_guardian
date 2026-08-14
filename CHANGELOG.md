@@ -1,5 +1,26 @@
 # Changelog
 
+## v2.17.0 - 2026-08-14
+
+### LLM 审核失败降级策略：fail-close 可配置 + 管理员告警
+
+**1. 可配置 fallback 行为（`llm_fallback_mode`，默认 `pass_on_error`）**
+- `pass_on_error`（默认，兼容旧行为）：LLM 不可用时，真实规则/词库命中按规则处罚（fail-closed），无命中则降级放行；
+- `block_on_error`（fail-close）：LLM 不可用时，进入 LLM 审核的可疑消息**一律撤回拦截**（不升级禁言，避免降级期间误封扩大），真实规则命中同样按规则处罚——相当于 `moderation_llm_fail_closed` 的超集；
+- 可按群覆盖。
+
+**2. 回退到纯正则审核结果（不直接放行）**
+- 无论哪种模式，只要存在真实规则/词库命中（广告/政治/色情等，`_llm_failure_requires_rule_penalty`），LLM 失败时一律按规则处罚，杜绝"LLM 全挂导致审核开天窗"；
+- 自适应学习词（learned_ad/learned_swear）与语义候选标签保持原有策略：不因 LLM 失效未经确认就撤回。
+
+**3. 记录 LLM 不可用告警日志 + 通知管理员（`llm_failure_notify_enabled`，默认关）**
+- LLM 不可用时 `logger.warning` 记录告警（含命中类别、原因、当前降级策略）；
+- 开启 `llm_failure_notify_enabled` 后，在当前群发送"⚠️ LLM 审核服务暂不可用，本次可疑消息已按降级策略处理（已拦截/已放行）"通知管理员；
+- 新增 `_send_group_message` / `_notify_llm_failure` / `_handle_llm_fallback_block`（fail-close 拦截：撤回+记录+可选提示）。
+
+**测试**
+- `test_nested_forward.py` 新增 `LlmFallbackModeTests`：默认 pass、block_on_error 判定、真实命中 fail-closed、语义候选不触发规则处罚、pass 模式兼容回归。
+
 ## v2.16.0 - 2026-08-14
 
 ### 性能优化：同步 DB 操作线程化 + 统计结果 TTL 缓存 + 高频查询组合索引

@@ -767,6 +767,19 @@
         "default": false,
         "hint": "默认关：LLM 全部不可用时，除超长内容和高置信度脏话外的命中会放行，避免 Provider 抖动导致误封。开启后，只要命中任一规则/词库类别，LLM 降级时也一律按规则处罚"
     },
+    "llm_fallback_mode": {
+        "description": "LLM 不可用时的降级策略",
+        "type": "string",
+        "default": "pass_on_error",
+        "options": ["pass_on_error", "block_on_error"],
+        "hint": "pass_on_error=LLM失败时真实规则/词库命中按规则处罚（fail-closed），无命中则降级放行（默认，兼容旧行为）；block_on_error=LLM失败时进入 LLM 审核的可疑消息一律撤回拦截（fail-close），真实规则命中同样按规则处罚。block_on_error 相当于 moderation_llm_fail_closed 的超集。可按群覆盖"
+    },
+    "llm_failure_notify_enabled": {
+        "description": "LLM 不可用时通知管理员",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后每次 LLM 审核不可用时，在当前群发送一条告警提示（含当前降级策略），并在日志记录告警。可按群覆盖"
+    },
     "lexicon_learn_enabled": {
         "description": "自适应上下文学习总开关",
         "type": "bool",
