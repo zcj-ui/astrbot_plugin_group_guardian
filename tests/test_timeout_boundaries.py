@@ -200,11 +200,24 @@ class _HangingOcrHarness(_ModerationHarness):
 
 class _ConcurrentOcrHarness(moderation.ModerationMixin):
     def __init__(self):
+        self.config = {}
+        self._config_schema = {}
         self.release = asyncio.Event()
         self.all_started = asyncio.Event()
         self.started = []
         self.active = 0
         self.max_active = 0
+
+    def _cfg(self, name, default=True, group_id=None):
+        return default
+
+    @staticmethod
+    def _get_group_override(group_id, key):
+        return None
+
+    @staticmethod
+    def _ad_engine(group_id=None):
+        return "llm"
 
     async def _call_llm_ocr(self, image_url, **kwargs):
         self.started.append(image_url)
@@ -238,6 +251,17 @@ class _QueuedOcrHarness(moderation.ModerationMixin):
         self.started = []
         self.first_wave_started = asyncio.Event()
         self.release_first_wave = asyncio.Event()
+
+    def _cfg(self, name, default=True, group_id=None):
+        return default
+
+    @staticmethod
+    def _get_group_override(group_id, key):
+        return None
+
+    @staticmethod
+    def _ad_engine(group_id=None):
+        return "llm"
 
     async def _call_llm_ocr_impl(self, image_url, **_kwargs):
         self.started.append(image_url)
