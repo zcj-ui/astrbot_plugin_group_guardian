@@ -184,6 +184,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
 .badge-danger{background:var(--danger-light);color:var(--danger)}
 .badge-success{background:var(--success-light);color:var(--success)}
 .badge-warning{background:var(--warning-light);color:var(--warning)}
+.audit-item{padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-secondary);font-size:12.5px}
 .badge-default{background:var(--info-light);color:var(--text-muted)}
 .settings-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
 .settings-list{padding:8px 16px}
@@ -699,6 +700,20 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
             <div class="list-items" id="blockList"><p class="empty">暂无</p></div>
           </div>
         </div>
+        <div class="card">
+          <div class="card-header"><h2>待审批操作（双管理员）</h2><div class="header-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshApprovals">刷新</button></div></div>
+          <div class="list-manage">
+            <p class="rules-subtle" style="margin-bottom:8px">开启「设置-高敏感操作双管理员审批」后，高敏感操作（设置/取消管理员、全体禁言等）由第一名管理员发起后<strong>不会立即执行</strong>，须由<strong>第二名管理员</strong>在此确认后才真正执行；发起人不能自我确认，超时 10 分钟自动过期。</p>
+            <div class="log-container" id="approvalList"><p class="empty">暂无待审批操作</p></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>远程操作审计日志</h2><div class="header-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshAudit">刷新</button></div></div>
+          <div class="list-manage">
+            <p class="rules-subtle" style="margin-bottom:8px">记录 WebUI 远程群管操作（含拒绝）：操作人姓名 / QQ / IP、操作时间、目标群、操作、参数、修改前后值、结果。可查询 <code>GET /audit_logs</code> 或 SQLite <code>web_audit_logs</code> 表。</p>
+            <div class="log-container" id="auditLogList"><p class="empty">加载中...</p></div>
+          </div>
+        </div>
       </div>
 
       <div class="tab-panel" id="tab-groupcfg">
@@ -1140,6 +1155,47 @@ function confirmModal(opts) {
   });
 }
 
+// v2.19.0 高风险远程操作二次确认弹窗：带「默认勾选」的确认框，防止误点高危操作。
+// opts: { title, body(html), okText, cancelText }
+function highRiskConfirm(opts) {
+  opts = opts || {};
+  return new Promise(function(resolve) {
+    showModal(
+      opts.title || '高风险操作确认',
+      '<div style="line-height:1.7;font-size:13px;color:var(--text-secondary)">' + (opts.body || '') + '</div>' +
+      '<label style="display:flex;align-items:center;gap:6px;margin-top:12px;font-size:13px;color:var(--text-secondary);cursor:pointer">' +
+      '<input type="checkbox" id="__hrCk" checked style="accent-color:var(--primary)" /> 我确认需要执行此高风险操作</label>',
+      '<button class="btn btn-ghost btn-sm" id="__hrCancel">取消</button>' +
+      '<button class="btn btn-danger btn-sm" id="__hrOk">确认执行</button>'
+    );
+    var done = function(v) { closeModal(); resolve(v); };
+    $('#__hrCancel').addEventListener('click', function() { done(false); });
+    $('#__hrOk').addEventListener('click', function() {
+      var ck = $('#__hrCk');
+      if (ck && !ck.checked) { toast('请先勾选确认框', 'error'); return; }
+      done(true);
+    });
+  });
+}
+// 高风险远程操作集合与中文名（前端二次确认 / 双管理员审批展示共用）
+var HIGH_RISK_ACTIONS = { set_admin: 1, unset_admin: 1, whole_ban: 1, kick: 1, batch_kick: 1 };
+var HIGH_RISK_CN = { set_admin: '设置管理员', unset_admin: '取消管理员', whole_ban: '全体禁言', kick: '踢人', batch_kick: '批量踢人' };
+// 高风险操作是否需要二次确认（读取全局配置 web_remote_confirm_required，默认需要）
+function isHighRiskConfirmRequired() {
+  var v = CONFIG.web_remote_confirm_required;
+  return v === undefined || v === true || v === 'true' || v === 1 || v === '1';
+}
+// 操作者身份：Dashboard 用户绑定的 QQ（本地记忆，用于远程操作授权校验与审计）
+function getOperatorIdentity() {
+  var qq = (localStorage.getItem('gg_operator_qq') || '').trim();
+  var name = (localStorage.getItem('gg_operator_name') || '').trim();
+  if (!qq) {
+    var input = prompt('请输入操作者QQ（用于远程操作的授权校验与审计，仅保存在本浏览器）');
+    if (input && input.trim()) { qq = input.trim(); localStorage.setItem('gg_operator_qq', qq); }
+  }
+  return { qq: qq, name: name };
+}
+
 // 通用输入弹窗：返回 Promise<string|null>（取消返回 null）。用于“添加 QQ 号/群号”等录入。
 // opts: { title, label, placeholder, value, okText, multiline }
 function promptModal(opts) {
@@ -1183,6 +1239,8 @@ function switchTab(tabName) {
     CURRENT_MEMBERS = [];
     loadGroups(false);
     loadAdmins();
+    loadApprovals();
+    loadAuditLogs();
   }
   if (tabName === 'records') { loadUsers(); loadLogs(); }
   if (tabName === 'flood') loadFlood();
@@ -1722,13 +1780,7 @@ function renderMembers(members) {
   });
   // 操作者身份：Dashboard 用户绑定的 QQ（本地记忆，用于远程操作授权校验与审计）
   function ensureOperator() {
-    var qq = (localStorage.getItem('gg_operator_qq') || '').trim();
-    var name = (localStorage.getItem('gg_operator_name') || '').trim();
-    if (!qq) {
-      var input = prompt('请输入操作者QQ（用于远程操作的授权校验与审计，仅保存在本浏览器）');
-      if (input && input.trim()) { qq = input.trim(); localStorage.setItem('gg_operator_qq', qq); }
-    }
-    return { qq: qq, name: name };
+    return getOperatorIdentity();
   }
   // 单个远程操作：禁言(读取同行时长输入)/解禁/踢
   $$('[data-rm]', $('#memberList')).forEach(function(btn) {
@@ -1739,6 +1791,15 @@ function renderMembers(members) {
       if (action === 'ban') {
         var durInput = $('.rm-dur[data-uid="' + cssAttr(uid) + '"]', $('#memberList'));
         params.duration_minutes = parseInt(durInput && durInput.value) || 10;
+      }
+      // v2.19.0 二次确认：高风险操作（踢人/全体禁言等）默认需确认，可配置关闭
+      if (HIGH_RISK_ACTIONS[action] && isHighRiskConfirmRequired()) {
+        var okCk = await highRiskConfirm({
+          title: (HIGH_RISK_CN[action] || action) + ' - 高风险操作确认',
+          body: '确认对成员 <b>' + esc(uid) + '</b> 执行【' + (HIGH_RISK_CN[action] || action) + '】操作？该操作影响较大，请核对后再执行。',
+          okText: '确认执行'
+        });
+        if (!okCk) return;
       }
       var op = ensureOperator();
       var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_qq: op.qq, operator_name: op.name });
@@ -1768,6 +1829,15 @@ function renderMembers(members) {
     if (action === 'ban') params.duration_minutes = parseInt(extra) || 10;
     if (action === 'set_card') params.card = extra;
     if (action === 'set_title') params.title = extra;
+    // v2.19.0 二次确认：批量高风险操作（批量踢人/全体禁言等）默认需确认
+    if (HIGH_RISK_ACTIONS[action] && isHighRiskConfirmRequired()) {
+      var okCk = await highRiskConfirm({
+        title: (HIGH_RISK_CN[action] || action) + ' - 高风险操作确认',
+        body: '确认对 <b>' + ids.length + '</b> 名成员批量执行【' + (HIGH_RISK_CN[action] || action) + '】操作？该操作影响较大，请核对后再执行。',
+        okText: '确认执行'
+      });
+      if (!okCk) return;
+    }
     var op = ensureOperator();
     var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_qq: op.qq, operator_name: op.name });
     var isErr = isApiError(r);
@@ -1788,6 +1858,85 @@ async function loadAdmins() {
     return;
   }
   renderAdminLists(res.data || {});
+}
+
+// v2.19.0 待审批操作列表（双管理员审批）
+async function loadApprovals() {
+  var el = $('#approvalList');
+  if (!el) return;
+  var res = await safeGet('approvals/list');
+  if (isApiError(res)) { el.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
+  var list = res.data || [];
+  if (!list.length) { el.innerHTML = '<p class="empty">暂无待审批操作</p>'; return; }
+  el.innerHTML = list.map(function(it) {
+    var actionCn = HIGH_RISK_CN[it.action] || it.action;
+    var params = it.params || '';
+    try { params = JSON.stringify(JSON.parse(params)); } catch(e) {}
+    var leftSec = (it.expire_at || 0) - Date.now() / 1000;
+    var timeLeft = leftSec > 0 ? '约 ' + Math.max(1, Math.ceil(leftSec / 60)) + ' 分钟后过期' : '已过期';
+    return '<div class="audit-item">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<div style="min-width:0;flex:1">' +
+      '<div><b>' + esc(actionCn) + '</b> <span class="badge badge-danger">待审批</span> <span class="rules-subtle">群 ' + esc(it.group_id || '') + '</span></div>' +
+      '<div class="rules-subtle" style="margin-top:4px;word-break:break-all">参数：' + esc(params) + '</div>' +
+      '<div class="rules-subtle" style="margin-top:2px">发起人 ' + esc(it.operator_name || it.operator_qq || '未知') + ' · ' + esc(fmtTime(it.ts)) + ' · ' + esc(timeLeft) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-shrink:0">' +
+      '<button class="btn btn-primary btn-sm" data-approve="' + it.id + '">确认执行</button>' +
+      '<button class="btn btn-ghost btn-sm" data-reject="' + it.id + '">驳回</button>' +
+      '</div></div></div>';
+  }).join('');
+  $$('[data-approve]', el).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var ok = await highRiskConfirm({
+        title: '确认执行待审批操作',
+        body: '你将以<b>第二名管理员</b>身份确认并立即执行该操作。确认后无法撤销。',
+        okText: '确认并执行'
+      });
+      if (!ok) return;
+      var op = getOperatorIdentity();
+      var r = await safePost('approvals/approve', { id: btn.dataset.approve, operator_qq: op.qq, operator_name: op.name });
+      toast((r && r.message) || '已确认', isApiError(r) ? 'error' : 'success');
+      loadApprovals(); loadAuditLogs();
+    });
+  });
+  $$('[data-reject]', el).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var ok = await confirmModal({ title: '驳回待审批操作', body: '确认驳回该待审批操作？', okText: '驳回', danger: true });
+      if (!ok) return;
+      var r = await safePost('approvals/reject', { id: btn.dataset.reject });
+      toast((r && r.message) || '已驳回', isApiError(r) ? 'error' : 'success');
+      loadApprovals();
+    });
+  });
+}
+
+// v2.19.0 远程操作审计日志（展示 IP / 时间 / 修改前后值）
+async function loadAuditLogs() {
+  var el = $('#auditLogList');
+  if (!el) return;
+  var res = await safeGet('audit_logs?limit=50');
+  if (isApiError(res)) { el.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
+  var list = res.data || [];
+  if (!list.length) { el.innerHTML = '<p class="empty">暂无审计记录</p>'; return; }
+  el.innerHTML = list.map(function(it) {
+    var before = it.before_value ? '修改前：' + esc(String(it.before_value)) : '';
+    var after = it.after_value ? '修改后：' + esc(String(it.after_value)) : '';
+    var ipTxt = it.operator_ip ? ' · IP ' + esc(String(it.operator_ip)) : '';
+    return '<div class="audit-item">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<div style="min-width:0;flex:1">' +
+      '<div><b>' + esc(it.action || '') + '</b> ' +
+      (it.result === '成功' ? '<span class="badge" style="background:rgba(46,160,67,.15);color:#2ea043">成功</span>'
+        : '<span class="badge badge-danger">' + esc(it.result || '') + '</span>') +
+      ' <span class="rules-subtle">' + esc(it.operator_name || it.operator_qq || '未知操作者') + ipTxt + '</span></div>' +
+      '<div class="rules-subtle" style="margin-top:4px;word-break:break-all">群 ' + esc(it.group_id || '') +
+        (it.target_user ? ' · 目标 ' + esc(String(it.target_user)) : '') +
+        (it.params ? ' · 参数 ' + esc(String(it.params)) : '') + '</div>' +
+      ((before || after) ? '<div class="rules-subtle" style="margin-top:2px">' + before + (before && after ? ' → ' : '') + after + '</div>' : '') +
+      '<div class="rules-subtle" style="margin-top:2px">' + esc(it.time || fmtTime(it.ts)) + ' · ' + esc(it.message || '') + '</div>' +
+      '</div></div></div>';
+  }).join('');
 }
 
 function renderAdmins() {
@@ -3458,7 +3607,9 @@ async function init() {
   bindClick('btnSaveSettings', saveSettings);
   bindClick('btnRefreshJoin', loadJoinRules);
   bindClick('btnSaveJoinRule', saveJoinRule);
-  bindClick('btnRefreshPerms', function() { loadSuperAdmins(); loadGrants(); loadBlocks(); });
+  bindClick('btnRefreshPerms', function() { loadSuperAdmins(); loadGrants(); loadBlocks(); loadApprovals(); loadAuditLogs(); });
+  bindClick('btnRefreshApprovals', loadApprovals);
+  bindClick('btnRefreshAudit', loadAuditLogs);
   bindClick('btnAddSuperAdmin', async function() {
     var gids = ($('#saGroup').value || '').split(/[\s,，]+/).filter(Boolean);
     var uids = ($('#saUser').value || '').split(/[\s,，]+/).filter(Boolean);
@@ -3687,6 +3838,8 @@ async function init() {
 
   loadOverview();
   loadAdmins();
+  loadApprovals();
+  loadAuditLogs();
 }
 
 (async function() {

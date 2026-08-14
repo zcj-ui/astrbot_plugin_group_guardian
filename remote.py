@@ -136,13 +136,17 @@ class RemoteMixin:
 
     def _record_web_audit(self, operator_name: str, operator_qq: str, group_id: str,
                           action: str, target_user: str, params: str,
-                          result: str, message: str) -> None:
-        """记录 WebUI 远程操作审计日志（失败静默）。"""
+                          result: str, message: str,
+                          operator_ip: str = "", before_value: str = "",
+                          after_value: str = "") -> None:
+        """记录 WebUI 远程操作审计日志（失败静默）。v2.19.0 增加操作人IP与修改前后值。"""
         try:
             self._storage.record_web_audit(
                 operator_name=operator_name, operator_qq=operator_qq,
                 group_id=group_id, action=action, target_user=target_user,
                 params=params, result=result, message=message,
+                operator_ip=operator_ip, before_value=before_value,
+                after_value=after_value,
             )
         except Exception as e:
             logger.debug(f"[GroupMgr] 审计记录失败: {e}")
@@ -188,7 +192,8 @@ class RemoteMixin:
                                  "无法远程操作该群")
 
     async def _remote_execute(self, group_id: str, action: str, params: dict,
-                              operator_qq: str = "", operator_name: str = "") -> dict:
+                              operator_qq: str = "", operator_name: str = "",
+                              operator_ip: str = "") -> dict:
         """WebUI 远程执行统一入口。
 
         params 约定：
@@ -221,7 +226,8 @@ class RemoteMixin:
             op_ok, op_role, op_err = await self._check_remote_operator(gid_str, operator_qq)
             if not op_ok:
                 self._record_web_audit(operator_name, operator_qq, gid_str, action,
-                                       "", str(params)[:200], "拒绝", op_err)
+                                       "", str(params)[:200], "拒绝", op_err,
+                                       operator_ip=operator_ip)
                 return {"ok": False, "message": op_err}
         client = await self._get_client(None)
         if not client:
@@ -243,6 +249,18 @@ class RemoteMixin:
         else:
             targets = [""]  # 无目标操作占位执行一次
 
+        # v2.19.0 审计：记录修改前后值（对设/取消管理员尽量取目标当前角色作为 before）
+        before_value = ""
+        after_value = ""
+        try:
+            if action in ("set_admin", "unset_admin") and targets:
+                probe = await self._get_client(None)
+                if probe:
+                    before_value = str(await self._get_role_by_id(probe, gid, targets[0]) or "")
+            after_value = f"{cn_name} 目标={','.join(t for t in targets[:5] if t) or '(无目标)'} 参数={str(params)[:120]}"
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 构造审计前后值失败: {e}")
+
         results = []
         success = 0
         for uid in targets:
@@ -259,7 +277,9 @@ class RemoteMixin:
         # 审计日志（v2.15.0）：记录操作者身份、目标群、操作与结果
         self._record_web_audit(operator_name, operator_qq, gid_str, action,
                                ",".join(targets[:50]), str(params)[:200],
-                               "成功" if success > 0 else "失败", f"{cn_name} 成功 {success}/{len(targets)}")
+                               "成功" if success > 0 else "失败", f"{cn_name} 成功 {success}/{len(targets)}",
+                               operator_ip=operator_ip, before_value=before_value,
+                               after_value=after_value)
         # 兼容旧 moderation_logs 记录（附带操作者身份便于追溯）
         try:
             self._log_moderation(str(gid), targets[0] if targets else "", "",

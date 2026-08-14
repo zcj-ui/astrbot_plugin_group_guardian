@@ -381,6 +381,32 @@ class SQLiteStorage(GroupStorageMixin):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_group_ts_user ON group_activity(group_id, ts, user_id)")
         # 按群倒序查 Web 审计日志（WHERE group_id=? ORDER BY ts DESC）
         conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_group_ts ON web_audit_logs(group_id, ts)")
+        # v2.19.0 WebUI 远程操作安全增强：
+        # 1) 审计日志补充「操作人IP / 修改前值 / 修改后值」（旧库自动补列，幂等）
+        SQLiteStorage._ensure_column(conn, "web_audit_logs", "operator_ip", "TEXT DEFAULT ''")
+        SQLiteStorage._ensure_column(conn, "web_audit_logs", "before_value", "TEXT DEFAULT ''")
+        SQLiteStorage._ensure_column(conn, "web_audit_logs", "after_value", "TEXT DEFAULT ''")
+        # 2) 双管理员审批：高敏感远程操作先落 pending，由第二名管理员确认后执行
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pending_web_operations ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "expire_at INTEGER NOT NULL, "
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / approved / rejected / expired
+            "operator_name TEXT DEFAULT '', "           # 发起人（第一名管理员）
+            "operator_qq TEXT DEFAULT '', "
+            "operator_ip TEXT DEFAULT '', "
+            "group_id TEXT DEFAULT '', "
+            "action TEXT DEFAULT '', "
+            "params TEXT DEFAULT '', "
+            "approver_name TEXT DEFAULT '', "           # 确认人（第二名管理员）
+            "approver_qq TEXT DEFAULT '', "
+            "approver_ip TEXT DEFAULT '', "
+            "executed INTEGER NOT NULL DEFAULT 0"        # 确认后是否已执行
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_status ON pending_web_operations(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_ts ON pending_web_operations(ts)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -1167,18 +1193,25 @@ class SQLiteStorage(GroupStorageMixin):
 
     def record_web_audit(self, operator_name: str = "", operator_qq: str = "",
                          group_id: str = "", action: str = "", target_user: str = "",
-                         params: str = "", result: str = "", message: str = "") -> None:
-        """记录一条 WebUI 远程操作审计日志（失败静默）。"""
+                         params: str = "", result: str = "", message: str = "",
+                         operator_ip: str = "", before_value: str = "",
+                         after_value: str = "") -> None:
+        """记录一条 WebUI 远程操作审计日志（失败静默）。
+
+        v2.19.0 增加 operator_ip（操作人IP）、before_value/after_value（修改前后值）。
+        """
         try:
             now = int(time.time())
             with self._connect() as conn:
                 conn.execute(
                     "INSERT INTO web_audit_logs(ts, time, operator_name, operator_qq, group_id, "
-                    "action, target_user, params, result, message) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    "action, target_user, params, result, message, operator_ip, before_value, after_value) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (now, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
                      str(operator_name or ""), str(operator_qq or ""), str(group_id or ""),
                      str(action or ""), str(target_user or ""), str(params or ""),
-                     str(result or ""), str(message or "")),
+                     str(result or ""), str(message or ""),
+                     str(operator_ip or ""), str(before_value or ""), str(after_value or "")),
                 )
         except Exception as e:
             logger.debug(f"[GroupMgr] 记录 Web 审计日志失败: {e}")
@@ -1200,6 +1233,106 @@ class SQLiteStorage(GroupStorageMixin):
             return [dict(r) for r in rows]
         except Exception:
             return []
+
+    # ============================================================
+    # v2.19.0 双管理员审批：高敏感远程操作的待审批存储
+    # ============================================================
+    _PENDING_OP_TTL_SECONDS = 600  # 默认 10 分钟未确认自动过期
+
+    def create_pending_web_operation(self, operator_name: str = "", operator_qq: str = "",
+                                     operator_ip: str = "", group_id: str = "",
+                                     action: str = "", params: str = "",
+                                     ttl_seconds: int = None) -> int:
+        """创建一条待审批的高敏感远程操作，返回 id；失败返回 0。"""
+        try:
+            now = int(time.time())
+            ttl = max(60, int(ttl_seconds or self._PENDING_OP_TTL_SECONDS))
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO pending_web_operations(ts, expire_at, status, operator_name, "
+                    "operator_qq, operator_ip, group_id, action, params) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (now, now + ttl, "pending", str(operator_name or ""), str(operator_qq or ""),
+                     str(operator_ip or ""), str(group_id or ""), str(action or ""),
+                     str(params or "")),
+                )
+                conn.commit()
+                return int(cur.lastrowid or 0)
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 创建待审批操作失败: {e}")
+            return 0
+
+    def list_pending_web_operations(self, limit: int = 20) -> List[dict]:
+        """列出未过期且待审批的高敏感操作（按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM pending_web_operations WHERE status='pending' AND expire_at>=? "
+                    "ORDER BY ts DESC LIMIT ?", (int(time.time()), max(1, int(limit))),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_pending_web_operation(self, op_id: int) -> Optional[dict]:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM pending_web_operations WHERE id=?", (int(op_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def approve_pending_web_operation(self, op_id: int, approver_name: str = "",
+                                      approver_qq: str = "", approver_ip: str = "") -> bool:
+        """第二名管理员确认：仅 pending 且未过期可确认成功（CAS 防并发）。"""
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE pending_web_operations SET status='approved', approver_name=?, "
+                    "approver_qq=?, approver_ip=? WHERE id=? AND status='pending' AND expire_at>=?",
+                    (str(approver_name or ""), str(approver_qq or ""), str(approver_ip or ""),
+                     int(op_id), int(time.time())),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    def reject_pending_web_operation(self, op_id: int) -> bool:
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE pending_web_operations SET status='rejected' WHERE id=? AND status='pending'",
+                    (int(op_id),),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    def expire_pending_web_operations(self) -> None:
+        """把超时未审批的操作标记为 expired（幂等）。"""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE pending_web_operations SET status='expired' "
+                    "WHERE status='pending' AND expire_at<?", (int(time.time()),),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def mark_pending_web_executed(self, op_id: int) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE pending_web_operations SET executed=1 WHERE id=?",
+                    (int(op_id),),
+                )
+                conn.commit()
+        except Exception:
+            pass
 
     # ============================================================
     # v2.4.0 新增：F1 入群审核规则

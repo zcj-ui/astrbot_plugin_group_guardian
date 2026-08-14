@@ -8,7 +8,7 @@
 
 AstrBot 综合群管理插件，集 **28项群管功能**、**AI智能审核**、**违禁词热更新** 与 **WebUI 管理面板** 于一体，让机器人成为真正的群聊守护者。
 
-> 当前版本：**v2.7.6** | 最低 AstrBot 版本：**>=4.24.2**
+> 当前版本：**v2.19.0** | 最低 AstrBot 版本：**>=4.24.2**
 
 ***
 
@@ -55,10 +55,27 @@ WebUI 面板的**远程群管操作**（禁言/踢人/设名片等）遵循以�
 - 无论开关状态，远程操作**始终记录审计日志**（操作者、目标群、操作、目标、结果、时间），
   可在 `GET /audit_logs`（WebUI 接口）或 SQLite `web_audit_logs` 表查询。
 
-**4. 安全提示**
+**4. 高风险操作二次确认（`web_remote_confirm_required`，默认开启）**
+- 踢人 / 批量踢人 / 全体禁言等高危远程操作执行前弹「高风险操作确认」对话框，默认勾选确认框，防止误点；
+- 关闭后直接执行，不弹确认。
+
+**5. 高敏感操作双管理员审批（`web_remote_dual_approval_enabled`，默认关闭）**
+- 开启后，`web_remote_approval_actions`（默认 `set_admin,unset_admin,whole_ban`）指定的高敏感操作
+  由第一名管理员发起后**不立即执行**，进入待审批队列；
+- 需由**第二名管理员**在 WebUI「权限管理 → 待审批操作」确认后才真正执行；发起人不能自我确认，
+  确认人需具备目标群授权，超时 10 分钟自动过期；
+- 接口：`GET /approvals/list`、`POST /approvals/approve`、`POST /approvals/reject`。
+
+**6. 详细审计（v2.19.0）**
+- 每条审计日志记录**操作人姓名 / QQ / IP**、操作时间、目标群、操作、参数、**修改前后值**（before/after）与结果；
+- 操作人 IP 优先取 `X-Forwarded-For` 头，其次 `remote_addr`；
+- WebUI「权限管理」页提供「远程操作审计日志」区块可视化查看。
+
+**7. 安全提示**
 - 请勿将 AstrBot Dashboard 端口直接暴露公网或关闭其登录验证；
 - 强烈建议开启 `web_remote_require_operator` 并为每个 Dashboard 用户配置 `web_operator_bindings`，
-  确保所有远程写操作均可追溯到具体操作者。
+  确保所有远程写操作均可追溯到具体操作者；
+- 高风险环境（多人共用面板）建议同时开启 `web_remote_dual_approval_enabled` 双管理员审批。
 
 ### 群管工具集（28项）
 
