@@ -280,8 +280,39 @@ class HashAuditMixin:
     # ============================================================
 
     def _check_video_fp_cache(self, fingerprint: str) -> bool:
-        """广告视频指纹缓存命中判断。"""
-        return bool(fingerprint) and fingerprint in self._video_fp_cache
+        """广告视频指纹缓存命中判断。
+
+        v2.20.0 支持多帧鲁棒指纹（``h1_h2_h3_bucket``）与旧格式（``phash_total``）：
+        - 整串精确命中（旧缓存直接兼容）；
+        - 多帧格式：任一帧感知哈希（64 位 01 串）与缓存中的帧哈希相同即命中，
+          容忍同一广告被裁剪、拼接或改时长导致的指纹变化。
+        """
+        if not fingerprint:
+            return False
+        if fingerprint in self._video_fp_cache:
+            return True
+        parts = fingerprint.split("_")
+        if len(parts) < 4:
+            return False
+        try:
+            cache_items = list(self._video_fp_cache.items())
+        except Exception:
+            return False
+        try:
+            for cached, _ts in cache_items:
+                cparts = str(cached).split("_")
+                if not cparts:
+                    continue
+                for a in parts[:3]:
+                    if not a:
+                        continue
+                    for b in cparts[:3]:
+                        # 只对比长度 >= 32 的哈希段（排除旧格式中的帧数字段）
+                        if b and len(b) >= 32 and a == b:
+                            return True
+        except Exception:
+            pass
+        return False
 
     def _learn_video_fingerprint(self, fingerprint: str) -> None:
         """把确认广告的视频指纹写入缓存（LRU 上限裁剪）。"""

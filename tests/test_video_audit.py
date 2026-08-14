@@ -65,6 +65,15 @@ def _load_video_audit():
     return module
 
 
+def _load_hash_audit():
+    _stub_astrbot()
+    path = Path(__file__).resolve().parents[1] / "hash_audit.py"
+    spec = importlib.util.spec_from_file_location("group_guardian_hash_audit", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 video_audit = _load_video_audit()
 
 
@@ -141,7 +150,7 @@ class _Harness(video_audit.VideoAuditMixin):
     def _bounded_audit_text(text, max_chars):
         return str(text or "")[:max_chars]
 
-    async def _call_llm_ocr(self, image_url, is_gif=False, is_sticker=False, group_id=""):
+    async def _call_llm_ocr(self, image_url, is_gif=False, is_sticker=False, group_id="", video_ad_mode=False):
         return ""
 
     async def _run_qr_decoder(self, data, decoder):
@@ -397,9 +406,122 @@ class QuickPrecheckAndFingerprintTests(unittest.TestCase):
             h._phash_from_gray = lambda gray, hash_size=8: "1" * 64
             fp = h._video_fingerprint(path)
             self.assertTrue(fp)
-            self.assertIn("_", fp)
+            # v2.20.0 多帧鲁棒指纹：h1_h2_h3_bucket 四段
+            parts = fp.split("_")
+            self.assertEqual(4, len(parts))
+            self.assertEqual("1" * 64, parts[0])
+            self.assertEqual("1" * 64, parts[1])
+            self.assertEqual("1" * 64, parts[2])
+            self.assertTrue(parts[3].isdigit())
         finally:
             os.remove(path)
+
+    def test_extract_frames_spans_mode(self):
+        cv2 = video_audit.cv2
+        if cv2 is None:
+            self.skipTest("opencv-python-headless not installed")
+        import numpy as np
+        path = os.path.join(tempfile.gettempdir(), "gg_spans_video.mp4")
+        writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64))
+        try:
+            for i in range(90):
+                writer.write(np.full((64, 64, 3), i % 255, np.uint8))
+        finally:
+            writer.release()
+        try:
+            h = _Harness()
+            frames = h._extract_video_frames(path, max_frames=3, interval_sec=5.0, mode="spans")
+            self.assertTrue(frames)
+            self.assertLessEqual(len(frames), 3)
+            self.assertTrue(all(f.startswith(b"\xff\xd8") for f in frames))
+        finally:
+            os.remove(path)
+
+    def test_subtitle_band_boost_returns_jpeg(self):
+        cv2 = video_audit.cv2
+        if cv2 is None:
+            self.skipTest("opencv-python-headless not installed")
+        import numpy as np
+        frame = np.zeros((120, 200, 3), np.uint8)
+        ok, buf = cv2.imencode(".jpg", frame)
+        self.assertTrue(ok)
+        boosted = video_audit.VideoAuditMixin._subtitle_band_boost(buf.tobytes())
+        self.assertIsNotNone(boosted)
+        self.assertTrue(boosted.startswith(b"\xff\xd8"))
+
+    def test_subtitle_band_boost_bad_bytes(self):
+        boosted = video_audit.VideoAuditMixin._subtitle_band_boost(b"not-a-jpeg")
+        self.assertIsNone(boosted)
+
+
+class VideoFingerprintCacheTests(unittest.TestCase):
+    """v2.20.0 多帧鲁棒指纹缓存匹配（含旧格式兼容）。"""
+
+    def setUp(self):
+        self.hash_audit = _load_hash_audit()
+
+        class _H(self.hash_audit.HashAuditMixin):
+            def __init__(self):
+                self._video_fp_cache = {}
+
+        self.h = _H()
+
+    def test_exact_match(self):
+        self.h._video_fp_cache = {f"{'1'*64}_{'0'*64}_{'1'*64}_3": 1}
+        self.assertTrue(self.h._check_video_fp_cache(f"{'1'*64}_{'0'*64}_{'1'*64}_3"))
+
+    def test_any_frame_match_after_crop(self):
+        # 被裁剪：首帧哈希不同，但中间/尾帧哈希相同 → 应命中
+        self.h._video_fp_cache = {f"{'1'*64}_{'0'*64}_{'1'*64}_3": 1}
+        self.assertTrue(self.h._check_video_fp_cache(f"{'0'*64}_{'0'*64}_{'1'*64}_4"))
+
+    def test_legacy_format_compat(self):
+        # 旧缓存 phash_total（2 段），新指纹首段相同 → 命中
+        self.h._video_fp_cache = {f"{'1'*64}_300": 1}
+        self.assertTrue(self.h._check_video_fp_cache(f"{'1'*64}_{'0'*64}_{'1'*64}_3"))
+
+    def test_no_match(self):
+        a, b, c = "0" * 64, "1" * 64, "01" * 32
+        d, e, f = "10" * 32, "0" * 32 + "1" * 32, "1" * 32 + "0" * 32
+        self.h._video_fp_cache = {f"{a}_{b}_{c}_3": 1}
+        # 三个帧哈希全部不同 → 不命中
+        self.assertFalse(self.h._check_video_fp_cache(f"{d}_{e}_{f}_3"))
+
+    def test_short_fingerprint_returns_false(self):
+        self.h._video_fp_cache = {f"{'0'*64}_500": 1}
+        # 旧版 2 段格式指纹（无多帧信息）不在缓存时不做部分匹配
+        self.assertFalse(self.h._check_video_fp_cache(f"{'1'*64}_300"))
+
+
+class V220StaticChecks(unittest.TestCase):
+    """v2.20.0 新能力与配置项的静态结构检查。"""
+
+    def test_video_audit_has_new_capabilities(self):
+        src = (Path(__file__).resolve().parents[1] / "video_audit.py").read_text(encoding="utf-8")
+        self.assertIn("_spans_extract_frames", src)
+        self.assertIn("_subtitle_band_boost", src)
+        self.assertIn("video_ad_visual_enabled", src)
+        self.assertIn("video_subtitle_boost", src)
+
+    def test_image_audit_has_ad_prompt(self):
+        src = (Path(__file__).resolve().parents[1] / "image_audit.py").read_text(encoding="utf-8")
+        self.assertIn("_VIDEO_AD_SYSTEM_PROMPT", src)
+        self.assertIn("video_ad_mode", src)
+
+    def test_hash_audit_supports_multi_frame(self):
+        src = (Path(__file__).resolve().parents[1] / "hash_audit.py").read_text(encoding="utf-8")
+        self.assertIn("_check_video_fp_cache", src)
+        self.assertIn("len(b) >= 32", src)
+
+    def test_schema_has_new_configs(self):
+        import json as _json
+        schema = _json.loads(
+            (Path(__file__).resolve().parents[1] / "_conf_schema.json").read_text(encoding="utf-8")
+        )
+        self.assertFalse(schema["video_ad_visual_enabled"]["default"])
+        self.assertFalse(schema["video_subtitle_boost"]["default"])
+        self.assertIn("spans", schema["video_frame_mode"]["hint"])
+
 
 if __name__ == "__main__":
     unittest.main()

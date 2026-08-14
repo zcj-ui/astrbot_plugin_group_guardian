@@ -337,6 +337,7 @@ class AdBackendMixin:
             keys = [
                 "video_audit_enabled", "video_max_frames", "video_frame_mode",
                 "video_quick_precheck", "video_fingerprint_cache",
+                "video_ad_visual_enabled", "video_subtitle_boost",
                 "ad_hash_blacklist_enabled", "ad_hash_distance", "ad_hash_auto_learn",
                 "ad_escalation_enabled", "ad_escalation_warn_at",
                 "ad_escalation_ban_at", "ad_escalation_kick_at",

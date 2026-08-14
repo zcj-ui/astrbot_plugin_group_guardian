@@ -1,0 +1,42 @@
+﻿curl.exe : * Added uploads.github.com:443:140.82.112.3 to DNS cache
+所在位置 行:1 字符: 1
++ curl.exe -sv --connect-timeout 8 --max-time 20 --resolve uploads.gith ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (* Added uploads....3 to DNS cache:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+* Hostname uploads.github.com was found in DNS cache
+*   Trying 140.82.112.3:443...
+* schannel: disabled automatic use of client certificate
+* ALPN: curl offers http/1.1
+* ALPN: server accepted http/1.1
+* Established connection to uploads.github.com (140.82.112.3 port 443) from 192.168.1.7 port 60616 
+* using HTTP/1.x
+> GET / HTTP/1.1
+
+> Host: uploads.github.com
+
+> User-Agent: curl/8.16.0
+
+> Accept: */*
+
+> 
+
+* Request completely sent off
+* schannel: remote party requests renegotiation
+* schannel: renegotiating SSL/TLS connection
+* schannel: SSL/TLS connection renegotiated
+* schannel: remote party requests renegotiation
+* schannel: renegotiating SSL/TLS connection
+* schannel: SSL/TLS connection renegotiated
+< HTTP/1.1 301 Moved Permanently
+
+< Content-Length: 0
+
+< Location: https://github.com/
+
+< Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+
+< 
+
+* Connection #0 to host uploads.github.com:443 left intact

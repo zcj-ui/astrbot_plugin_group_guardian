@@ -941,7 +941,19 @@
         "description": "视频抽帧模式",
         "type": "string",
         "default": "interval",
-        "hint": "interval=等间隔抽帧（默认）；scene=场景切换抽帧，仅在画面明显变化时保留帧，广告信息多在关键画面，可减少无效帧与视觉调用。可按群覆盖"
+        "hint": "interval=等间隔抽帧（默认）；scene=场景切换抽帧，仅在画面明显变化时保留帧，广告信息多在关键画面，可减少无效帧与视觉调用；spans=首/中/尾三段分段采样（v2.20.0），保证品牌露出（开头）与促销信息（结尾）不遗漏。可按群覆盖"
+    },
+    "video_ad_visual_enabled": {
+        "description": "视频帧广告专用视觉判定",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，LLM 视觉识别视频帧时改用广告专用判定 prompt：不只 OCR 文字，还判断画面是否含广告元素（品牌Logo/产品图/促销横幅/联系方式/引流话术），无文字广告视频也能识别。默认关闭（沿用普通 OCR prompt）。可按群覆盖"
+    },
+    "video_subtitle_boost": {
+        "description": "视频字幕带放大增强",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，对每帧画面下方 1/3 的字幕带裁剪放大 1.5 倍后补做一次识别，小字号硬字幕（价格/联系方式滚动字幕）不易漏。默认关闭。可按群覆盖"
     },
     "video_scene_threshold": {
         "description": "场景切换抽帧阈值",

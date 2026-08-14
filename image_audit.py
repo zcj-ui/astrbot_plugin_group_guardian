@@ -109,6 +109,18 @@ class ImageAuditMixin:
         },
     }
 
+    # v2.20.0 视频广告专用视觉判定：不只看文字，还判断画面是否含广告元素（无文字广告也能识别）
+    _VIDEO_AD_SYSTEM_PROMPT = (
+        "你是一个视频广告识别助手。观察这帧视频画面，判断它是否包含广告/营销内容。请重点识别："
+        "1.品牌Logo、产品图、促销横幅、商品陈列 2.营销话术、价格信息、优惠活动、宣传标语 "
+        "3.联系方式（电话/微信号/QQ号/二维码/网址/加群引导）4.引流导流话术（关注、下单、点击链接）。"
+        "输出要求：画面明显是广告时输出「广告：」+ 简要理由（并转录画面中的文字）；"
+        "疑似广告输出「疑似广告：」+ 理由；正常画面输出「正常画面」。不要输出其他内容。"
+    )
+    _VIDEO_AD_USER_PROMPT = (
+        "请判断这帧视频画面是否属于广告/营销内容，并说明理由；若画面中有文字请一并转录。"
+    )
+
     def _init_image_audit_resources(self, llm_concurrency: int) -> None:
         """初始化插件实例级并发闸门和可复用 HTTP 会话槽位。"""
         concurrency = max(1, int(llm_concurrency))
@@ -352,6 +364,7 @@ class ImageAuditMixin:
         is_gif: bool = False,
         is_sticker: bool = False,
         group_id: str = "",
+        video_ad_mode: bool = False,
     ) -> str:
         """限制 OCR 实际并发；峰值排队等待，长期过载有明确边界。"""
         semaphore = getattr(self, "_ocr_semaphore", None)
@@ -368,6 +381,7 @@ class ImageAuditMixin:
                     is_gif=is_gif,
                     is_sticker=is_sticker,
                     group_id=group_id,
+                    video_ad_mode=video_ad_mode,
                 ),
                 timeout=LLM_CALL_TIMEOUT,
             )
@@ -387,6 +401,7 @@ class ImageAuditMixin:
         is_gif: bool = False,
         is_sticker: bool = False,
         group_id: str = "",
+        video_ad_mode: bool = False,
     ) -> str:
         configured_id = str(
             self.config.get("ocr_provider_id", "")
@@ -403,7 +418,11 @@ class ImageAuditMixin:
             "ocr_custom_user_prompt", "", group_id=group_id
         ).strip()
 
-        if custom_system and custom_user:
+        # v2.20.0 视频广告判定：覆盖为广告识别专用 prompt（画面级判断，无文字广告也能识别）
+        if video_ad_mode:
+            system_prompt = self._VIDEO_AD_SYSTEM_PROMPT
+            prompt = self._VIDEO_AD_USER_PROMPT
+        elif custom_system and custom_user:
             system_prompt = custom_system
             prompt = custom_user
         else:

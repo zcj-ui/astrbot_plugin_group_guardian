@@ -1,0 +1,47 @@
+=== fix 2026-08-14T11:26:12.8716708+08:00 ===
+PAT_OBTAINED len=40
+PATCH: {
+PATCH:   "url": "https://api.github.com/repos/lango578/astrbot_plugin_group_guardian_enhanced/releases/370328469",
+PATCH:   "assets_url": "https://api.github.com/repos/lango578/astrbot_plugin_group_guardian_enhanced/releases/370328469/assets",
+PATCH:   "upload_url": "https://uploads.github.com/repos/lango578/astrbot_plugin_group_guardian_enhanced/releases/370328469/assets{?name,label}",
+PATCH:   "html_url": "https://github.com/lango578/astrbot_plugin_group_guardian_enhanced/releases/tag/v2.19.0",
+PATCH:   "id": 370328469,
+PATCH:   "author": {
+PATCH:     "login": "lango578",
+PATCH:     "id": 201558713,
+PATCH:     "node_id": "U_kgDODAOKuQ",
+PATCH:     "avatar_url": "https://avatars.githubusercontent.com/u/201558713?v=4",
+PATCH:     "gravatar_id": "",
+PATCH:     "url": "https://api.github.com/users/lango578",
+PATCH:     "html_url": "https://github.com/lango578",
+PATCH:     "followers_url": "https://api.github.com/users/lango578/followers",
+PATCH:     "following_url": "https://api.github.com/users/lango578/following{/other_user}",
+PATCH:     "gists_url": "https://api.github.com/users/lango578/gists{/gist_id}",
+PATCH:     "starred_url": "https://api.github.com/users/lango578/starred{/owner}{/repo}",
+PATCH:     "subscriptions_url": "https://api.github.com/users/lango578/subscriptions",
+PATCH:     "organizations_url": "https://api.github.com/users/lango578/orgs",
+PATCH:     "repos_url": "https://api.github.com/users/lango578/repos",
+PATCH:     "events_url": "https://api.github.com/users/lango578/events{/privacy}",
+PATCH:     "received_events_url": "https://api.github.com/users/lango578/received_events",
+PATCH:     "type": "User",
+PATCH:     "user_view_type": "public",
+PATCH:     "site_admin": false
+PATCH:   },
+PATCH:   "node_id": "RE_kwDOT23fDs4WEsOV",
+PATCH:   "tag_name": "v2.19.0",
+PATCH:   "target_commitish": "main",
+PATCH:   "name": "v2.19.0",
+PATCH:   "draft": false,
+PATCH:   "immutable": false,
+PATCH:   "prerelease": false,
+PATCH:   "created_at": "2026-08-14T03:12:49Z",
+PATCH:   "updated_at": "2026-08-14T03:21:07Z",
+PATCH:   "published_at": "2026-08-14T03:20:31Z",
+PATCH:   "assets": [
+PATCH: 
+PATCH:   ],
+PATCH:   "tarball_url": "https://api.github.com/repos/lango578/astrbot_plugin_group_guardian_enhanced/tarball/v2.19.0",
+PATCH:   "zipball_url": "https://api.github.com/repos/lango578/astrbot_plugin_group_guardian_enhanced/zipball/v2.19.0",
+PATCH:   "body": "## v2.19.0 - 2026-08-14\n\n### WebUI 远程操作安全增强：二次确�?+ 详细审计 + 双管理员审批\n\n**1. 高风险操作二次确认弹窗（前端�?*\n- 远程操作（踢�?批量踢人/全体禁言等高风险 action）执行前弹「高风险操作确认」对话框，默认勾选「我确认需要执行此高风险操作」，未勾选无法确认，防止误点；\n- 新增 `web_remote_confirm_required`（bool，默�?`true`）：关闭后高风险操作直接执行（不弹确认）。\n\n**2. 更详细的操作审计日志**\n- `web_audit_logs` 表自动补列（旧库幂等迁移）：`operator_ip`（操作人 IP，优�?`X-Forwarded-For` 再取 `remote_addr`）、`before_value`（修改前值，�?取消管理员时取目标当前角色）、`after_value`（修改后�?操作摘要）；\n- 拒绝路径同样记录 IP；新�?`_request_ip()` 工具方法；\n- WebUI「权限管理」页新增「远程操作审计日志」区块，展示操作�?QQ/IP、操作时间、目标群、操作、参数、修改前后值、结果。\n\n**3. 高敏感操作双管理员审批（`web_remote_dual_approval_enabled`，默认关闭）**\n- 开启后，`web_remote_approval_actions`（默�?`set_admin,unset_admin,whole_ban`）指定的高敏感操作在 WebUI 远程执行�?*先落待审批队列、不立即执行**；\n- 新增 `pending_web_operations` �?+ 三个接口：`GET /approvals/list`（待审批列表）、`POST /approvals/approve`（第二名管理员确认并执行）、`POST /approvals/reject`（驳回）；\n- 安全约束�?*发起人不能自我确�?*（须第二名管理员）、确认人需具备目标群远程操作授权、CAS 并发保护（仅一人可确认成功）�?*10 分钟超时自动过期**；\n- WebUI「权限管理」页新增「待审批操作（双管理员）」区块：确认执行 / 驳回按钮，确认前同样二次确认弹窗。\n\n**测试**\n- 新增 `tests/test_web_approvals.py`：storage 审批 CRUD（创�?列出/确认/驳回/过期/执行标记）、审批规则（发起人不可自确认、状态互斥、过期拒绝）、审计新字段落库（IP/前后值）、schema 新配置、路由注册静态检查�?
+PATCH: }
+UPLOAD_MAYBE_FAILED

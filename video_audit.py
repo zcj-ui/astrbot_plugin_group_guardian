@@ -13,6 +13,7 @@
 
 import asyncio
 import base64
+import math
 import os
 import tempfile
 import time
@@ -348,7 +349,9 @@ class VideoAuditMixin:
         mode:
           - "interval": 等间隔抽帧（默认，兼容旧行为）；
           - "scene": 场景切换抽帧，仅在画面明显变化时保留帧
-            （广告信息通常集中在关键画面，可减少无效帧与视觉调用）。
+            （广告信息通常集中在关键画面，可减少无效帧与视觉调用）；
+          - "spans": 首/中/尾三段分段采样（v2.20.0），保证品牌露出（开头）
+            与促销信息（结尾）不遗漏，适合无字幕口播广告。
         """
         if cv2 is None:
             logger.warning(
@@ -362,6 +365,9 @@ class VideoAuditMixin:
             if not cap.isOpened():
                 cap.release()
                 return []
+            if str(mode).strip().lower() == "spans":
+                frames = self._spans_extract_frames(cap, max_frames)
+                return frames
             if str(mode).strip().lower() == "scene":
                 frames = self._scene_extract_frames(cap, max_frames, scene_threshold)
                 if len(frames) < 3:
@@ -423,6 +429,58 @@ class VideoAuditMixin:
         except Exception:
             pass
         return frames
+
+    def _spans_extract_frames(self, cap, max_frames: int) -> list:
+        """首/中/尾三段分段采样：开头/中间/结尾各取约 1/3 帧数。
+
+        广告视频的信息通常集中在开头（品牌露出/引流字幕）与结尾（联系方式/下单提示），
+        等间隔采样可能漏掉这些关键画面。帧位置先收集去重再统一 seek，保证编码顺序。
+        """
+        try:
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            if total <= 1:
+                # 极短视频：退化为顺序读前几帧
+                frames = []
+                for _ in range(max_frames):
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    ok, buf = cv2.imencode(
+                        ".jpg",
+                        frame,
+                        [int(cv2.IMWRITE_JPEG_QUALITY), VIDEO_JPEG_QUALITY],
+                    )
+                    if ok:
+                        frames.append(buf.tobytes())
+                return frames
+            per = max(1, int(math.ceil(max_frames / 3)))
+            third = total // 3
+            positions = set()
+            for seg, start in enumerate((0, third, total - third)):
+                seg_count = max(1, min(per, max_frames - len(positions)))
+                step = max(1, third // seg_count) if seg > 0 and seg_count else 1
+                for k in range(seg_count):
+                    positions.add(min(total - 1, start + k * step))
+                if len(positions) >= max_frames:
+                    break
+            frames = []
+            for pos in sorted(positions):
+                if len(frames) >= max_frames:
+                    break
+                cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                ok, buf = cv2.imencode(
+                    ".jpg",
+                    frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), VIDEO_JPEG_QUALITY],
+                )
+                if ok:
+                    frames.append(buf.tobytes())
+            return frames
+        except Exception:
+            return []
 
     def _scene_backup_frames(self, video_path: str, max_frames: int, existing: list) -> list:
         """场景抽帧不足 3 帧时，重开视频取前几帧补足，避免空结果。"""
@@ -490,22 +548,75 @@ class VideoAuditMixin:
         except Exception:
             return 1.0
 
+    @staticmethod
+    def _subtitle_band_boost(frame_bytes: bytes):
+        """字幕带增强：把画面下方 1/3 的字幕区裁剪并放大 1.5 倍后返回 JPEG。
+
+        硬字幕广告（价格/联系方式滚动字幕）字号小，全帧 OCR 易漏；
+        放大字幕带可显著提升小字识别率。失败返回 None（不阻断主流程）。
+        """
+        if cv2 is None:
+            return None
+        try:
+            import numpy as np
+
+            arr = np.frombuffer(frame_bytes, np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if frame is None:
+                return None
+            h, w = frame.shape[:2]
+            y0, y1 = int(h * 0.72), int(h * 0.97)
+            if y1 - y0 < 8 or w < 8:
+                return None
+            band = frame[y0:y1, :]
+            scaled = cv2.resize(
+                band,
+                (int(band.shape[1] * 1.5), int(band.shape[0] * 1.5)),
+                interpolation=cv2.INTER_CUBIC,
+            )
+            ok, buf = cv2.imencode(
+                ".jpg",
+                scaled,
+                [int(cv2.IMWRITE_JPEG_QUALITY), VIDEO_JPEG_QUALITY],
+            )
+            return buf.tobytes() if ok else None
+        except Exception:
+            return None
+
     def _video_fingerprint(self, video_path: str) -> str:
-        """视频指纹：首帧感知哈希 + 总帧数。失败返回空串。"""
+        """视频指纹：首/中/尾三帧感知哈希 + 时长分段桶（v2.20.0 多帧鲁棒版）。
+
+        旧版（v2.9~v2.19）只取首帧哈希 + 总帧数，同一广告被裁剪/改时长就会漏命中；
+        新版取三帧哈希 + 30 帧时长桶，缓存命中走「任一帧哈希相同」匹配，容忍裁剪。
+        失败返回空串。
+        """
         if cv2 is None:
             return ""
         try:
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 return ""
-            ret, first = cap.read()
             total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            cap.release()
-            if not ret:
+            if total <= 0:
+                cap.release()
                 return ""
-            gray = cv2.cvtColor(first, cv2.COLOR_BGR2GRAY)
-            phash = self._phash_from_gray(gray)
-            return f"{phash}_{total}" if phash else ""
+            positions = sorted({0, max(0, total // 2), max(0, total - 1)})
+            hashes = []
+            for pos in positions:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, pos)
+                ret, frame = cap.read()
+                if ret:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    phash = self._phash_from_gray(gray)
+                    if phash:
+                        hashes.append(phash)
+            cap.release()
+            if not hashes:
+                return ""
+            bucket = total // 30  # 30 帧时长桶：容忍裁剪/拼接导致的时长变化
+            h2 = hashes[1] if len(hashes) > 1 else ""
+            h3 = hashes[2] if len(hashes) > 2 else ""
+            return f"{hashes[0]}_{h2}_{h3}_{bucket}"
         except Exception:
             return ""
 
@@ -683,13 +794,26 @@ class VideoAuditMixin:
                         tag = "[本地OCR] " if engine in ("local", "auto") else ""
                         if engine == "cloud":
                             tag = "[云API] "
+                        # v2.20.0 字幕带放大增强（可选）：小字硬字幕全帧识别易漏
+                        if self._cfg("video_subtitle_boost", False, group_id=group_id):
+                            boosted = self._subtitle_band_boost(frame_bytes)
+                            if boosted:
+                                btext = await self._detect_media_text(boosted, group_id) or ""
+                                btext = str(btext or "").strip()
+                                if btext and btext not in local_lines:
+                                    local_lines.append(f"[字幕增强] {btext}")
                         return f"[视频第{index}帧] {tag}" + "\n".join(local_lines)
                     if engine in ("local", "umi", "cloud"):
                         return ""
                 # llm 引擎，或 auto 本地无结果时回退 LLM 视觉
-
+                # v2.20.0：video_ad_visual_enabled 时用广告专用视觉判定 prompt（无文字广告也能判）
+                video_ad_visual = bool(
+                    self._cfg("video_ad_visual_enabled", False, group_id=group_id)
+                )
                 data_url = self._frame_to_data_url(frame_bytes)
-                ocr_text = await self._call_llm_ocr(data_url, group_id=group_id)
+                ocr_text = await self._call_llm_ocr(
+                    data_url, group_id=group_id, video_ad_mode=video_ad_visual
+                )
                 ocr_text = str(ocr_text or "").strip()
                 qr_values = []
                 decoder = _probe_qr_decoder()
@@ -701,6 +825,17 @@ class VideoAuditMixin:
                 cleaned_qr = [str(v).strip() for v in qr_values if str(v).strip()]
                 if cleaned_qr:
                     lines.append("二维码: " + " | ".join(cleaned_qr))
+                # v2.20.0 字幕带放大增强（可选）：对小字硬字幕区裁剪放大后补识别
+                if self._cfg("video_subtitle_boost", False, group_id=group_id):
+                    boosted = self._subtitle_band_boost(frame_bytes)
+                    if boosted:
+                        btext = await self._call_llm_ocr(
+                            self._frame_to_data_url(boosted),
+                            group_id=group_id, video_ad_mode=video_ad_visual,
+                        ) or ""
+                        btext = str(btext or "").strip()
+                        if btext and btext not in lines:
+                            lines.append(f"[字幕增强] {btext}")
                 text = "\n".join(lines).strip()
                 if text:
                     return f"[视频第{index}帧] {text}"
