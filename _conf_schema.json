@@ -124,6 +124,12 @@
         "default": false,
         "hint": "开启后所有可审核消息均送 LLM，并拉取群聊历史和同一发送者分段上下文；图片/表情包会自动尝试 OCR 与二维码解析。会显著增加调用量，可按群覆盖"
     },
+    "base_decode_enabled": {
+        "description": "Base 系列编码内容解码审核",
+        "type": "bool",
+        "default": true,
+        "hint": "自动识别并受限解码 Base16/32/58/62/64/Base64URL/85（含双层编码），把可读结果送入现有规则、上下文和 LLM 审核。随机字符串不会因仅能解码而直接处罚；可按群覆盖"
+    },
     "llm_max_concurrency": {
         "description": "LLM 全局最大并发",
         "type": "int",
@@ -184,6 +190,30 @@
         "type": "text",
         "default": "",
         "hint": "填写后替换内置的审核标准段落（如嫌默认标准太激进可自行放宽）。JSON 输出格式约束由框架自动追加，无需自己写。可按群覆盖（Issue #39）"
+    },
+    "moderation_review_enabled": {
+        "description": "误判样本定期复盘",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后定期用 LLM 复盘管理员标记的误判样本，只生成待确认的修正规则候选，不会自动修改审核提示词"
+    },
+    "moderation_review_interval": {
+        "description": "误判复盘间隔（秒）",
+        "type": "int",
+        "default": 86400,
+        "hint": "自动复盘间隔，范围 300-604800 秒；也可在违规记录页手动立即复盘"
+    },
+    "moderation_review_min_samples": {
+        "description": "自动复盘最少误判样本数",
+        "type": "int",
+        "default": 3,
+        "hint": "待复盘误判达到该数量才自动调用 LLM，范围 1-20；手动复盘只需 1 条"
+    },
+    "llm_moderation_review_guidance": {
+        "description": "已应用的误判修正规则",
+        "type": "text",
+        "default": "",
+        "hint": "由误判复盘候选经管理员确认后写入，作为内置或自定义审核标准的补充；可在复盘记录中回滚"
     },
     "member_action_require_group_role": {
         "description": "严格模式：群管指令仅群主/群管理员可用",

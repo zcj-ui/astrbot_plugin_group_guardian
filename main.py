@@ -22,6 +22,7 @@ from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .llm_tools import LlmToolsMixin
 from .membership import MembershipMixin
 from .moderation import ModerationMixin
+from .moderation_review import ModerationReviewMixin
 from .onebot import OneBotMixin
 from .platform_ops import PlatformOpsMixin
 from .platforms import DEFAULT_LIMITED_PLATFORMS, get_platform_name, is_aiocqhttp, log_startup_support
@@ -36,7 +37,7 @@ from .advanced_audit import AdvancedAuditMixin
 
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
-class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, Star):
+class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, Star):
     """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -94,6 +95,7 @@ class Main(ModerationMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMo
         self._init_video_audit_resources(llm_concurrency)
         self._init_hash_audit_resources()
         self._init_local_ocr()
+        self._init_moderation_review()
         # 防刷屏追踪数据结构
         self._init_anti_flood()
         # 自适应上下文学习：初始化按群缓冲/匹配器，并从 DB 载入已审批学习词

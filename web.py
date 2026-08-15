@@ -132,6 +132,8 @@ class WebMixin:
             "ad_escalation_kick_at": (1, 100),
             "ad_escalation_window_seconds": (60, 31536000),
             "ad_backend_port": (1, 65535),
+            "moderation_review_interval": (300, 604800),
+            "moderation_review_min_samples": (1, 20),
         }
 
     def _normalize_int_config_value(self, key: str, value) -> int:
@@ -149,16 +151,6 @@ class WebMixin:
         if hi is not None:
             val = min(hi, val)
         return val
-
-    async def _read_required_json_value(self, key: str) -> Tuple[str, object]:
-        data = await quart_request.get_json(force=True, silent=True) or {}
-        value = str(data.get(key, "")).strip()
-        if not value:
-            return "", jsonify({"status": "error", "message": f"缺少 {key}"})
-        return value, None
-
-    def _managed_list_payload(self, id_key: str, value: str, response_key: str, values: list) -> dict:
-        return {"status": "success", id_key: value, response_key: values}
 
     async def _call_onebot_web(self, client, action: str, timeout: float = 8.0, **kwargs):
         return await asyncio.wait_for(client.call_action(action, **kwargs), timeout=timeout)
@@ -268,6 +260,14 @@ class WebMixin:
                 ("/log_detail", self._web_log_detail, ["GET"], "获取单条日志详情"),
                 ("/log_chunk", self._web_log_chunk, ["GET"], "获取日志文本分片"),
                 ("/log_raw_text", self._web_log_raw_text, ["GET"], "获取日志原始文本"),
+                ("/moderation_review/feedback", self._web_review_feedback, ["GET"], "获取审核误判反馈"),
+                ("/moderation_review/feedback/mark", self._web_review_mark_feedback, ["POST"], "标记审核误判或确认违规"),
+                ("/moderation_review/run", self._web_review_run, ["POST"], "立即执行误判复盘"),
+                ("/moderation_review/suggestions", self._web_review_suggestions, ["GET"], "获取提示词修正候选"),
+                ("/moderation_review/suggestions/apply", self._web_review_apply, ["POST"], "应用提示词修正候选"),
+                ("/moderation_review/suggestions/reject", self._web_review_reject, ["POST"], "拒绝提示词修正候选"),
+                ("/moderation_review/suggestions/rollback", self._web_review_rollback, ["POST"], "回滚提示词修正候选"),
+                ("/moderation_review/audit", self._web_review_audit, ["GET"], "获取误判复盘审计记录"),
                 ("/groups", self._web_get_groups, ["GET"], "获取群列表"),
                 ("/group_members", self._web_get_group_members, ["GET"], "获取群成员列表"),
                 ("/whitelist/add", self._web_whitelist_add, ["POST"], "添加群白名单"),
@@ -376,10 +376,18 @@ class WebMixin:
         rc = getattr(self, "_rule_count_cache", None)
         now = time.time()
         if not rc or now - rc.get("ts", 0) > 30:
+            swear_count, ad_count = await asyncio.gather(
+                self._run_in_thread(
+                    self._storage.count_moderation_rules_filtered, "swear", 1
+                ),
+                self._run_in_thread(
+                    self._storage.count_moderation_rules_filtered, "ad", 1
+                ),
+            )
             rc = {
                 "ts": now,
-                "swear": self._storage.count_moderation_rules_filtered("swear", 1),
-                "ad": self._storage.count_moderation_rules_filtered("ad", 1),
+                "swear": swear_count,
+                "ad": ad_count,
             }
             self._rule_count_cache = rc
         swear_count = rc["swear"]
@@ -447,6 +455,11 @@ class WebMixin:
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             schema = self._config_schema
+            missing = object()
+            old_values = {
+                key: self.config[key] if key in self.config else missing
+                for key in data
+            }
             old_config = {k: self.config.get(k) for k in data if k.startswith("lexicon_")}
             old_enabled = self.config.get("anti_flood_enabled", True)
             # 单群管理类名单（群白/群黑/用户黑/用户白/管理员）v2.4.0 起改由专用 API + DB 管理，
@@ -480,6 +493,17 @@ class WebMixin:
                         continue
                     self.config[key] = str_value
                     updated.append(key)
+            if updated and not self._save_config_safe():
+                for key in updated:
+                    previous = old_values.get(key, missing)
+                    if previous is missing:
+                        self.config.pop(key, None)
+                    else:
+                        self.config[key] = previous
+                return jsonify({
+                    "status": "error",
+                    "message": "配置持久化失败，本次修改未生效",
+                })
             if "auto_moderate_enabled" in updated:
                 self.auto_moderate_enabled = self._parse_bool(self.config.get("auto_moderate_enabled", True), True)
             # 仅在 lexicon_* 开关值实际变更时按分类增量重建，并后台做一次全量校验重建
@@ -517,9 +541,14 @@ class WebMixin:
             if "enabled" in updated:
                 self.config["enabled"] = self._parse_bool(self.config.get("enabled", True), True)
             if updated:
-                self._save_config_safe()
                 # 全局值变化会影响未覆盖群的实际生效值，清空群配置缓存保证一致（扫描#38 S6）
                 self._invalidate_group_cfg_cache()
+                if any(key in updated for key in (
+                    "moderation_review_enabled", "moderation_review_interval"
+                )):
+                    wakeup = getattr(self, "_moderation_review_wakeup", None)
+                    if wakeup is not None:
+                        wakeup.set()
             return jsonify({"status": "success", "updated": updated})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -845,10 +874,155 @@ class WebMixin:
         group_id = quart_request.args.get("group_id", "").strip()
         user_id = quart_request.args.get("user_id", "").strip()
         action = quart_request.args.get("action", "").strip()
-        logs = self._storage.list_logs(limit=limit, offset=offset,
-                                       group_id=group_id, user_id=user_id, action=action)
-        total = self._storage.count_logs_filtered(group_id=group_id, user_id=user_id, action=action)
+        logs, total = await asyncio.gather(
+            self._run_in_thread(
+                self._storage.list_logs, limit, offset,
+                group_id, user_id, action,
+            ),
+            self._run_in_thread(
+                self._storage.count_logs_filtered, group_id, user_id, action
+            ),
+        )
+        feedback = await self._run_in_thread(
+            self._storage.feedback_for_log_ids,
+            [item.get("id", 0) for item in logs]
+        )
+        for item in logs:
+            marked = feedback.get(int(item.get("id", 0) or 0), {})
+            item["review_verdict"] = marked.get("verdict", "")
+            item["review_note"] = marked.get("note", "")
+            item["review_status"] = marked.get("review_status", "")
         return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
+
+    async def _web_review_feedback(self):
+        try:
+            verdict = str(quart_request.args.get("verdict", "")).strip()
+            limit = min(max(self._safe_int(
+                quart_request.args.get("limit", 100), 100
+            ), 1), 500)
+            offset = max(0, self._safe_int(
+                quart_request.args.get("offset", 0), 0
+            ))
+            items = await self._run_in_thread(
+                self._storage.list_moderation_feedback,
+                verdict, limit, offset,
+            )
+            return jsonify({"status": "success", "data": items})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_review_mark_feedback(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            log_id = self._safe_int(data.get("log_id"), 0)
+            verdict = str(data.get("verdict", "")).strip()
+            note = str(data.get("note", "") or "")[:1000]
+            if log_id <= 0:
+                return jsonify({"status": "error", "message": "缺少日志 ID"})
+            if verdict == "clear":
+                removed = await self._run_in_thread(
+                    self._storage.clear_moderation_feedback, log_id
+                )
+                return jsonify({"status": "success", "removed": removed})
+            persisted_log = await self._run_in_thread(
+                self._storage.get_log, log_id
+            )
+            log = persisted_log
+            if not log:
+                log = next(
+                    (
+                        item for item in self._moderation_logs
+                        if self._safe_int(item.get("id"), 0) == log_id
+                    ),
+                    None,
+                )
+            if not log:
+                return jsonify({"status": "error", "message": "未找到审核日志"})
+            action = str(log.get("action", "") or "")
+            if not any(word in action for word in ("撤回", "禁言", "踢出", "拒绝")):
+                return jsonify({
+                    "status": "error", "message": "只有已处罚日志可以参与误判复盘"
+                })
+            if not persisted_log:
+                # 日志写库曾短暂失败时，内存面板仍可能保留完整记录。先补写持久层，
+                # 再创建带快照的反馈，避免用户能看到记录却无法标记误判。
+                await self._run_in_thread(self._storage.add_log, log)
+            feedback_id = await self._run_in_thread(
+                self._storage.mark_moderation_feedback,
+                log_id, verdict, note, "dashboard",
+            )
+            if feedback_id <= 0:
+                return jsonify({"status": "error", "message": "保存反馈失败"})
+            return jsonify({
+                "status": "success", "feedback_id": feedback_id,
+                "verdict": verdict,
+            })
+        except ValueError as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_review_run(self):
+        try:
+            result = await self._run_moderation_feedback_review(
+                manual=True, actor="dashboard"
+            )
+            status = "success" if result.get("status") == "created" else "error"
+            return jsonify({"status": status, **result})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_review_suggestions(self):
+        try:
+            limit = min(max(self._safe_int(
+                quart_request.args.get("limit", 50), 50
+            ), 1), 200)
+            items = await self._run_in_thread(
+                self._storage.list_prompt_suggestions, limit
+            )
+            return jsonify({"status": "success", "data": items})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_review_apply(self):
+        data = await quart_request.get_json(force=True, silent=True) or {}
+        result = self._apply_moderation_prompt_suggestion(
+            self._safe_int(data.get("id"), 0), "dashboard"
+        )
+        return jsonify({
+            "status": "success" if result.get("ok") else "error", **result
+        })
+
+    async def _web_review_reject(self):
+        data = await quart_request.get_json(force=True, silent=True) or {}
+        result = self._reject_moderation_prompt_suggestion(
+            self._safe_int(data.get("id"), 0), "dashboard",
+            str(data.get("note", "") or ""),
+        )
+        return jsonify({
+            "status": "success" if result.get("ok") else "error", **result
+        })
+
+    async def _web_review_rollback(self):
+        data = await quart_request.get_json(force=True, silent=True) or {}
+        result = self._rollback_moderation_prompt_suggestion(
+            self._safe_int(data.get("id"), 0), "dashboard"
+        )
+        return jsonify({
+            "status": "success" if result.get("ok") else "error", **result
+        })
+
+    async def _web_review_audit(self):
+        try:
+            suggestion_id = self._safe_int(
+                quart_request.args.get("suggestion_id", 0), 0
+            )
+            items = await self._run_in_thread(
+                self._storage.list_review_audit, suggestion_id, 200
+            )
+            return jsonify({"status": "success", "data": items})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
 
     def _get_log_by_id(self, target_id: int):
         # 辅助方法：先查 SQLite，找不到再回退到内存缓存 _moderation_logs。
@@ -856,7 +1030,7 @@ class WebMixin:
         if log:
             return log
         for item in self._moderation_logs:
-            if item.get("id") == target_id:
+            if self._safe_int(item.get("id"), 0) == target_id:
                 return item
         return None
 
@@ -1792,6 +1966,8 @@ class WebMixin:
         "join_accept_keywords", "join_reject_keywords",
         "auto_unban_scan_interval", "card_sync_interval",
         "group_admin_grant_enabled", "legacy_role_admin_enabled",
+        "moderation_review_enabled", "moderation_review_interval",
+        "moderation_review_min_samples", "llm_moderation_review_guidance",
         "group_white_list", "group_black_list", "user_black_list", "user_white_list", "admin_list",
     }
 
@@ -1816,6 +1992,7 @@ class WebMixin:
         "enabled": "基础开关", "auto_moderate_enabled": "基础开关", "auto_moderate_notice": "基础开关",
         "scan_swear": "审核规则", "scan_ad": "审核规则", "llm_moderation_enabled": "审核规则",
         "llm_moderation_always": "审核规则",
+        "base_decode_enabled": "审核规则",
         "llm_max_concurrency": "审核规则",
         "llm_moderation_ban": "审核规则", "moderation_ban_duration": "审核规则", "ban_notice": "审核规则",
         "scan_forward_msg": "审核规则", "recall_qq_favorite_enabled": "审核规则",
@@ -1825,6 +2002,10 @@ class WebMixin:
         "member_action_require_group_role": "基础开关",
         "set_admin_require_owner": "基础开关",
         "llm_moderation_custom_prompt": "审核规则",
+        "moderation_review_enabled": "审核复盘",
+        "moderation_review_interval": "审核复盘",
+        "moderation_review_min_samples": "审核复盘",
+        "llm_moderation_review_guidance": "审核复盘",
         "kick_recall_enabled": "审核规则", "kick_recall_count": "审核规则",
         "combine_detect_enabled": "重复检测", "combine_detect_count": "重复检测",
         "combine_detect_window_seconds": "重复检测",

@@ -43,7 +43,7 @@ class CommandsMixin:
         days = max(1, min(days, 90))
         try:
             # need_admin=False：字数统计允许普通成员使用
-            ok, err, client, gid = await self._prepare_group_action(event, "word_count_enabled", "字数统计", need_admin=False)
+            ok, err, _, gid = await self._prepare_group_action(event, "word_count_enabled", "字数统计", need_admin=False)
             if not ok:
                 yield event.plain_result(err)
                 return

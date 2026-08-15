@@ -401,7 +401,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="logo-icon">G</div>
         <div class="logo-text">
           <span class="logo-title">Group Guardian</span>
-          <span class="logo-ver" id="logoVer">v2.3.4</span>
+          <span class="logo-ver" id="logoVer">v2.8.2</span>
         </div>
       </div>
       <nav class="sidebar-nav">
@@ -604,6 +604,18 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="card">
           <div class="card-header"><h2>审核日志</h2><button class="btn btn-ghost btn-sm" id="btnRefreshLogs">刷新</button></div>
           <div class="log-container" id="logContainer"><p class="empty">暂无日志</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>AI 误判复盘</h2><div class="header-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshReview">刷新</button><button class="btn btn-primary btn-sm" id="btnRunReview">立即复盘</button></div></div>
+          <div class="settings-list">
+            <div class="setting-item"><div class="setting-info"><div class="setting-label">定期自动生成候选</div><div class="setting-desc">只生成候选，仍需管理员明确应用</div></div><input type="checkbox" id="reviewAutoEnabled" style="accent-color:var(--primary)" /></div>
+            <div class="setting-item"><div class="setting-info"><div class="setting-label">复盘间隔</div><div class="setting-desc">300-604800 秒</div></div><input type="number" class="input-sm" id="reviewInterval" min="300" max="604800" style="width:120px" /></div>
+            <div class="setting-item"><div class="setting-info"><div class="setting-label">自动复盘样本门槛</div><div class="setting-desc">手动复盘只需一条误判</div></div><input type="number" class="input-sm" id="reviewMinSamples" min="1" max="20" style="width:90px" /></div>
+            <div style="padding:10px 18px;border-bottom:1px solid var(--border)"><button class="btn btn-primary btn-sm" id="btnSaveReviewConfig">保存复盘设置</button></div>
+          </div>
+          <div id="reviewSummary" style="padding:12px 18px;color:var(--text-secondary);font-size:12px;border-top:1px solid var(--border)">加载中...</div>
+          <div id="reviewSuggestions" class="settings-list"><p class="empty">暂无候选</p></div>
+          <div id="reviewAudit" style="padding:12px 18px;border-top:1px solid var(--border)"></div>
         </div>
       </div>
 
@@ -1098,10 +1110,10 @@ async function safeGet(path, params) {
     return { status: 'error', message: String(e) };
   }
 }
-async function safePost(path, body) {
+async function safePost(path, body, timeoutMs) {
   try {
     if (!apiPost) return { status: 'error', message: 'API 不可用' };
-    var r = await withTimeout(apiPost(path, body), 'POST ' + path);
+    var r = await withTimeout(apiPost(path, body), 'POST ' + path, timeoutMs || API_TIMEOUT_MS);
     if (typeof r === 'string') { try { r = JSON.parse(r); } catch(e2) {} }
     return unwrapApiResponse(r);
   } catch(e) {
@@ -1267,7 +1279,7 @@ function switchTab(tabName) {
     loadApprovals();
     loadAuditLogs();
   }
-  if (tabName === 'records') { loadUsers(); loadLogs(); }
+  if (tabName === 'records') { loadUsers(); loadLogs(); loadModerationReview(); }
   if (tabName === 'flood') loadFlood();
   if (tabName === 'rules') { renderRuleCenterShell(); loadRuleCenter(); }
   if (tabName === 'join') loadJoinRules();
@@ -1493,7 +1505,7 @@ async function loadOverview() {
     $('#statUserBlackCount').textContent = d.user_black_list_count != null ? d.user_black_list_count : '--';
     $('#statAdminCount').textContent = d.admin_list_count != null ? d.admin_list_count : '--';
     $('#statTotalLogs').textContent = d.total_logs != null ? d.total_logs : '--';
-    $('#logoVer').textContent = d.version || 'v2.3.4';
+    $('#logoVer').textContent = d.version || 'v2.8.2';
     var banner = $('#disclaimerBanner');
     if (banner) banner.style.display = d.disclaimer_agreed ? 'none' : 'block';
   }
@@ -2195,9 +2207,35 @@ async function loadLogs() {
     var msgHtml = (l.msg_preview && l.msg_preview.length > 28) ?
       '<span class="lin-msg-truncated">' + esc(l.msg_preview.slice(0, 28)) + '</span><a href="javascript:void(0)" class="lin-msg-action" data-log-id="' + escAttr(String(l.id)) + '"><svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg><span class="lin-msg-action-text">查看</span></a>' :
       esc(l.msg_preview || '');
-    return '<tr><td>' + fmtTime(l.ts) + '</td><td>' + esc(l.group_id) + '</td><td>' + esc(l.user_name) + '<br><span style="font-size:10px;color:var(--text-muted)">' + esc(l.user_id) + '</span></td><td>' + msgHtml + '</td><td><span class="badge ' + cls + '">' + esc(a) + '</span></td><td class="reason-cell" title="' + escAttr(l.reason) + '">' + esc((l.reason || '').slice(0, 30)) + '</td></tr>';
+    var punished = ['撤回', '禁言', '踢出', '拒绝'].some(function(word) { return a.indexOf(word) !== -1; });
+    var verdict = l.review_verdict || '';
+    var reviewHtml = '<span style="color:var(--text-muted)">--</span>';
+    if (punished) {
+      var verdictBadge = verdict === 'false_positive'
+        ? '<span class="badge badge-warning">已标记误判</span>'
+        : verdict === 'confirmed_violation'
+          ? '<span class="badge badge-success">已确认违规</span>' : '';
+      reviewHtml = verdictBadge + '<div style="display:flex;gap:4px;flex-wrap:wrap;margin-top:4px">' +
+        '<button class="btn btn-ghost btn-sm" data-review-log="' + escAttr(String(l.id)) + '" data-review-verdict="false_positive">标记误判</button>' +
+        '<button class="btn btn-ghost btn-sm" data-review-log="' + escAttr(String(l.id)) + '" data-review-verdict="confirmed_violation">确认违规</button>' +
+        (verdict ? '<button class="btn btn-ghost btn-sm" data-review-log="' + escAttr(String(l.id)) + '" data-review-verdict="clear">清除</button>' : '') +
+        '</div>';
+    }
+    return '<tr><td>' + fmtTime(l.ts) + '</td><td>' + esc(l.group_id) + '</td><td>' + esc(l.user_name) + '<br><span style="font-size:10px;color:var(--text-muted)">' + esc(l.user_id) + '</span></td><td>' + msgHtml + '</td><td><span class="badge ' + cls + '">' + esc(a) + '</span></td><td class="reason-cell" title="' + escAttr(l.reason) + '">' + esc((l.reason || '').slice(0, 30)) + '</td><td>' + reviewHtml + '</td></tr>';
   }).join('');
-  c.innerHTML = '<table class="log-table"><thead><tr><th>时间</th><th>群号</th><th>用户</th><th>消息</th><th>操作</th><th>原因</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  c.innerHTML = '<table class="log-table"><thead><tr><th>时间</th><th>群号</th><th>用户</th><th>消息</th><th>操作</th><th>原因</th><th>人工复核</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  $$('[data-review-log]', c).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var verdict = btn.getAttribute('data-review-verdict');
+      var result = await safePost('moderation_review/feedback/mark', {
+        log_id: btn.getAttribute('data-review-log'), verdict: verdict
+      });
+      if (apiCallFailed(result)) { toast('保存反馈失败: ' + apiErrMsg(result, ''), 'error'); return; }
+      toast(verdict === 'false_positive' ? '已加入误判复盘样本' : (verdict === 'clear' ? '已清除标记' : '已确认本次处罚'), 'success');
+      loadLogs();
+      loadModerationReview();
+    });
+  });
   c.querySelectorAll('.lin-msg-action').forEach(function(action) {
     action.addEventListener('click', async function(e) {
       e.stopPropagation();
@@ -2221,6 +2259,110 @@ async function loadLogs() {
   });
 }
 
+async function loadModerationReview() {
+  var summary = $('#reviewSummary');
+  var box = $('#reviewSuggestions');
+  var auditBox = $('#reviewAudit');
+  if (!summary || !box || !auditBox) return;
+  summary.textContent = '加载中...';
+  var results = await Promise.all([
+    loadConfigCached(true),
+    safeGet('moderation_review/feedback', { verdict: 'false_positive', limit: 200 }),
+    safeGet('moderation_review/suggestions', { limit: 50 }),
+    safeGet('moderation_review/audit', {})
+  ]);
+  var feedback = isApiError(results[1]) ? [] : (results[1] || []);
+  var suggestions = isApiError(results[2]) ? [] : (results[2] || []);
+  var audits = isApiError(results[3]) ? [] : (results[3] || []);
+  var pendingCount = feedback.filter(function(item) { return item.review_status === 'pending'; }).length;
+  var guidance = CONFIG.llm_moderation_review_guidance || '';
+  summary.innerHTML = '<strong>待复盘误判：</strong>' + pendingCount + ' 条　<strong>历史候选：</strong>' + suggestions.length + ' 条' +
+    '<div style="margin-top:8px"><strong>当前已应用修正规则：</strong><pre style="white-space:pre-wrap;word-break:break-word;margin:6px 0 0;color:var(--text-primary)">' + esc(guidance || '无') + '</pre></div>';
+
+  var autoEl = $('#reviewAutoEnabled');
+  var intervalEl = $('#reviewInterval');
+  var minEl = $('#reviewMinSamples');
+  if (autoEl) autoEl.checked = !!CONFIG.moderation_review_enabled;
+  if (intervalEl) intervalEl.value = CONFIG.moderation_review_interval || 86400;
+  if (minEl) minEl.value = CONFIG.moderation_review_min_samples || 3;
+
+  if (!suggestions.length) {
+    box.innerHTML = '<p class="empty">暂无复盘候选</p>';
+  } else {
+    var statusLabels = { pending: '待确认', applied: '已应用', rejected: '已拒绝', rolled_back: '已回滚' };
+    box.innerHTML = suggestions.map(function(item) {
+      var actions = '';
+      if (item.status === 'pending') {
+        actions = '<button class="btn btn-primary btn-sm" data-review-apply="' + item.id + '">应用</button>' +
+          '<button class="btn btn-ghost btn-sm" data-review-reject="' + item.id + '">拒绝</button>';
+      } else if (item.status === 'applied') {
+        actions = '<button class="btn btn-ghost btn-sm" data-review-rollback="' + item.id + '">回滚</button>';
+      }
+      return '<div class="setting-item" style="align-items:flex-start"><div class="setting-info" style="max-width:none">' +
+        '<div class="setting-label">候选 #' + item.id + ' · ' + esc(statusLabels[item.status] || item.status) + ' · ' + item.sample_count + ' 条样本</div>' +
+        '<div class="setting-desc" style="margin-top:5px">' + esc(item.summary || '') + '</div>' +
+        '<pre style="white-space:pre-wrap;word-break:break-word;margin:8px 0 0;color:var(--text-primary);font-size:12px">' + esc(item.suggested_guidance || '') + '</pre></div>' +
+        '<div style="display:flex;gap:6px;flex-shrink:0">' + actions + '</div></div>';
+    }).join('');
+  }
+
+  $$('[data-review-apply]', box).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      if (!await confirmModal({ title: '应用修正规则', body: '应用后会立即参与消息审核，并保留回滚记录。', okText: '应用' })) return;
+      var out = await safePost('moderation_review/suggestions/apply', { id: btn.getAttribute('data-review-apply') });
+      var failed = apiCallFailed(out);
+      toast(failed ? apiErrMsg(out, '应用失败') : '修正规则已应用', failed ? 'error' : 'success');
+      loadModerationReview();
+    });
+  });
+  $$('[data-review-reject]', box).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var out = await safePost('moderation_review/suggestions/reject', { id: btn.getAttribute('data-review-reject') });
+      var failed = apiCallFailed(out);
+      toast(failed ? apiErrMsg(out, '拒绝失败') : '候选已拒绝', failed ? 'error' : 'success');
+      loadModerationReview();
+    });
+  });
+  $$('[data-review-rollback]', box).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      if (!await confirmModal({ title: '回滚修正规则', body: '恢复到应用该候选之前的修正规则。', okText: '回滚', danger: true })) return;
+      var out = await safePost('moderation_review/suggestions/rollback', { id: btn.getAttribute('data-review-rollback') });
+      var failed = apiCallFailed(out);
+      toast(failed ? apiErrMsg(out, '回滚失败') : '修正规则已回滚', failed ? 'error' : 'success');
+      loadModerationReview();
+    });
+  });
+
+  auditBox.innerHTML = '<div style="font-size:12px;font-weight:600;margin-bottom:6px">最近审计记录</div>' +
+    (audits.length ? audits.slice(0, 10).map(function(item) {
+      return '<div style="font-size:12px;color:var(--text-secondary);padding:3px 0">' + fmtTime(item.created_at) + ' · #' + esc(item.suggestion_id || '') + ' · ' + esc(item.action) + ' · ' + esc(item.detail || '') + '</div>';
+    }).join('') : '<span style="font-size:12px;color:var(--text-muted)">暂无</span>');
+
+  var refreshBtn = $('#btnRefreshReview');
+  if (refreshBtn) refreshBtn.onclick = loadModerationReview;
+  var saveBtn = $('#btnSaveReviewConfig');
+  if (saveBtn) saveBtn.onclick = async function() {
+    var out = await safePost('config', {
+      moderation_review_enabled: !!($('#reviewAutoEnabled') && $('#reviewAutoEnabled').checked),
+      moderation_review_interval: parseIntOrDefault($('#reviewInterval').value, 86400),
+      moderation_review_min_samples: parseIntOrDefault($('#reviewMinSamples').value, 3)
+    });
+    if (apiCallFailed(out)) { toast('保存复盘设置失败: ' + apiErrMsg(out, ''), 'error'); return; }
+    CONFIG_PROMISE = null;
+    toast('复盘设置已保存', 'success');
+    loadModerationReview();
+  };
+  var runBtn = $('#btnRunReview');
+  if (runBtn) runBtn.onclick = async function() {
+    runBtn.disabled = true;
+    var out = await safePost('moderation_review/run', {}, 120000);
+    runBtn.disabled = false;
+    if (apiCallFailed(out)) { toast('复盘失败: ' + apiErrMsg(out, ''), 'error'); return; }
+    toast('已生成待确认的修正规则', 'success');
+    loadModerationReview();
+  };
+}
+
 var CORE_TOGGLES = [
   { key: 'enabled', label: '插件总开关', desc: '启用/禁用整个插件' },
   { key: 'auto_moderate_enabled', label: '自动审核', desc: '开启后自动审核群消息' },
@@ -2231,6 +2373,7 @@ var AUDIT_TOGGLES = [
   { key: 'scan_ad', label: '广告检测', desc: '使用正则检测广告' },
   { key: 'llm_moderation_enabled', label: 'AI审核', desc: '使用LLM进行深度审核' },
   { key: 'llm_moderation_always', label: '全量 AI 审核', desc: '所有消息带上下文送 LLM，并自动尝试识图和二维码解析' },
+  { key: 'base_decode_enabled', label: 'Base 解码审核', desc: '解码 Base16/32/58/62/64/85 及双层编码后进入规则与 AI 审核' },
   { key: 'llm_moderation_ban', label: 'AI审核后禁言', desc: 'AI判定违规后自动禁言' },
   { key: 'prompt_injection_enabled', label: '群管提示词注入', desc: '向LLM追加本轮群管权限规则' },
   { key: 'scan_forward_msg', label: '合并转发审核', desc: '解析合并转发消息内容进行审核' },
@@ -2346,6 +2489,7 @@ var MANUAL_SETTING_KEYS = {
   scan_ad: true,
   llm_moderation_enabled: true,
   llm_moderation_always: true,
+  base_decode_enabled: true,
   llm_moderation_ban: true,
   prompt_injection_enabled: true,
   scan_forward_msg: true,

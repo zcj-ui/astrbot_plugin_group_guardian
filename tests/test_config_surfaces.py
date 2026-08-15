@@ -22,6 +22,7 @@ class ConfigSurfaceTests(unittest.TestCase):
         cls.dashboard = (
             ROOT / "pages" / "dashboard" / "index.html"
         ).read_text(encoding="utf-8")
+        cls.web_source = (ROOT / "web.py").read_text(encoding="utf-8")
 
     @classmethod
     def _class_literal(cls, name):
@@ -77,6 +78,66 @@ class ConfigSurfaceTests(unittest.TestCase):
         self.assertIn("card_audit_admin_exempt", keys)
         self.assertNotIn("card_audit_admin_exempt", excluded)
         self.assertIn("'card_audit_admin_exempt'", self.dashboard)
+
+    def test_base_decode_audit_is_enabled_and_group_overridable(self):
+        setting = self.schema["base_decode_enabled"]
+        self.assertEqual("bool", setting["type"])
+        self.assertTrue(setting["default"])
+
+        categories = self._class_literal("_CONFIG_CATEGORIES")
+        excluded = self._class_literal("_GROUP_CONFIG_EXCLUDE")
+        self.assertEqual("审核规则", categories["base_decode_enabled"])
+        self.assertNotIn("base_decode_enabled", excluded)
+        self.assertIn("key: 'base_decode_enabled'", self.dashboard)
+        self.assertIn("base_decode_enabled: true", self.dashboard)
+
+    def test_moderation_review_is_global_and_exposed_in_builtin_dashboard(self):
+        expected = {
+            "moderation_review_enabled": ("bool", False),
+            "moderation_review_interval": ("int", 86400),
+            "moderation_review_min_samples": ("int", 3),
+            "llm_moderation_review_guidance": ("text", ""),
+        }
+        categories = self._class_literal("_CONFIG_CATEGORIES")
+        excluded = self._class_literal("_GROUP_CONFIG_EXCLUDE")
+        for key, (type_name, default) in expected.items():
+            with self.subTest(key=key):
+                self.assertEqual(type_name, self.schema[key]["type"])
+                self.assertEqual(default, self.schema[key]["default"])
+                self.assertEqual("审核复盘", categories[key])
+                self.assertIn(key, excluded)
+
+        self.assertIn("AI 误判复盘", self.dashboard)
+        self.assertIn('id="btnRunReview"', self.dashboard)
+        self.assertIn('id="btnSaveReviewConfig"', self.dashboard)
+        for route in (
+            "/moderation_review/feedback",
+            "/moderation_review/feedback/mark",
+            "/moderation_review/run",
+            "/moderation_review/suggestions",
+            "/moderation_review/suggestions/apply",
+            "/moderation_review/suggestions/reject",
+            "/moderation_review/suggestions/rollback",
+            "/moderation_review/audit",
+        ):
+            self.assertIn(f'("{route}"', self.web_source)
+        self.assertIn("self.context.register_web_api(", self.web_source)
+
+    def test_plugin_has_no_standalone_web_listener(self):
+        production = "\n".join(
+            path.read_text(encoding="utf-8", errors="replace")
+            for path in list(ROOT.glob("*.py"))
+            + list((ROOT / "pages").rglob("*.html"))
+        )
+        for marker in (
+            "0.0.0.0",
+            "web.run_app",
+            "TCPSite(",
+            "HTTPServer(",
+            "uvicorn.run",
+        ):
+            with self.subTest(marker=marker):
+                self.assertNotIn(marker, production)
 
 
 if __name__ == "__main__":

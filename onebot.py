@@ -730,7 +730,18 @@ class OneBotMixin:
         if not client:
             return False
         try:
-            await asyncio.wait_for(client.call_action('set_group_ban', group_id=gid, user_id=uid, duration=0), timeout=ONEBOT_CALL_TIMEOUT)
+            result = await asyncio.wait_for(
+                client.call_action(
+                    'set_group_ban', group_id=gid, user_id=uid, duration=0
+                ),
+                timeout=ONEBOT_CALL_TIMEOUT,
+            )
+            ok, error = self._check_api_result(result, "解禁")
+            if not ok:
+                logger.warning(
+                    f"[GroupMgr] 解禁失败({group_id}/{user_id}): {error}"
+                )
+                return False
             return True
         except Exception as e:
             logger.warning(f"[GroupMgr] 解禁失败({group_id}/{user_id}): {e}")

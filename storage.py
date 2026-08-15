@@ -5,7 +5,7 @@ import os
 import shutil
 import sqlite3
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
@@ -13,13 +13,15 @@ from astrbot.api import logger
 
 try:
     from .lexicon_migration import ensure_swear_expansion
+    from .moderation_review_storage import ModerationReviewStorageMixin
     from .storage_group import GroupStorageMixin
 except ImportError:  # 允许直接运行 storage.py 的离线迁移/测试脚本
     from lexicon_migration import ensure_swear_expansion
+    from moderation_review_storage import ModerationReviewStorageMixin
     from storage_group import GroupStorageMixin
 
 
-class SQLiteStorage(GroupStorageMixin):
+class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
     # 持久化层统一使用 SQLite。_connect() 是 contextmanager，进入时创建连接并开启 WAL，退出时自动关闭。
     # 审核日志按 message_id + group_id + user_id + time 组合键去重。
     # seed_lexicon_db 是发布时打包进插件的内置词库，只在首次初始化时复制到 data 目录。
@@ -179,6 +181,7 @@ class SQLiteStorage(GroupStorageMixin):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_group ON moderation_logs(group_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_user ON moderation_logs(user_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_action ON moderation_logs(action)")
+        ModerationReviewStorageMixin._create_moderation_review_tables(conn)
         conn.execute(
             "CREATE TABLE IF NOT EXISTS lexicon_categories ("
             "name TEXT PRIMARY KEY, "
@@ -248,10 +251,25 @@ class SQLiteStorage(GroupStorageMixin):
             "user_id TEXT NOT NULL, "
             "unban_at INTEGER NOT NULL, "
             "created_at INTEGER NOT NULL, "
+            "retry_count INTEGER NOT NULL DEFAULT 0, "
+            "next_retry_at INTEGER NOT NULL DEFAULT 0, "
+            "last_error TEXT DEFAULT '', "
             "UNIQUE(group_id, user_id)"
             ")"
         )
+        SQLiteStorage._ensure_column(
+            conn, "scheduled_unbans", "retry_count", "INTEGER NOT NULL DEFAULT 0"
+        )
+        SQLiteStorage._ensure_column(
+            conn, "scheduled_unbans", "next_retry_at", "INTEGER NOT NULL DEFAULT 0"
+        )
+        SQLiteStorage._ensure_column(
+            conn, "scheduled_unbans", "last_error", "TEXT DEFAULT ''"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_unban_at ON scheduled_unbans(unban_at)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_unban_retry ON scheduled_unbans(next_retry_at, unban_at)"
+        )
         # F5 群管理员动态授权（按群）
         conn.execute(
             "CREATE TABLE IF NOT EXISTS group_admin_grant ("
@@ -430,12 +448,11 @@ class SQLiteStorage(GroupStorageMixin):
         if not self.seed_lexicon_db_path.exists():
             return
         try:
-            seed = sqlite3.connect(str(self.seed_lexicon_db_path))
-            seed.row_factory = sqlite3.Row
-            rows = seed.execute(
-                "SELECT category, pattern FROM moderation_rules ORDER BY id"
-            ).fetchall()
-            seed.close()
+            with closing(sqlite3.connect(str(self.seed_lexicon_db_path))) as seed:
+                seed.row_factory = sqlite3.Row
+                rows = seed.execute(
+                    "SELECT category, pattern FROM moderation_rules ORDER BY id"
+                ).fetchall()
             if not rows:
                 return
             rules: Dict[str, List[str]] = {}
@@ -699,16 +716,20 @@ class SQLiteStorage(GroupStorageMixin):
             cats = conn.execute(
                 "SELECT name, description FROM lexicon_categories ORDER BY name"
             ).fetchall()
-            result = {}
-            for cat in cats:
-                rows = conn.execute(
-                    "SELECT keyword FROM lexicon_keywords WHERE category=? ORDER BY id",
-                    (cat["name"],),
-                ).fetchall()
-                result[cat["name"]] = {
+            keyword_rows = conn.execute(
+                "SELECT category, keyword FROM lexicon_keywords ORDER BY category, id"
+            ).fetchall()
+            result = {
+                cat["name"]: {
                     "description": cat["description"] or "",
-                    "keywords": [r["keyword"] for r in rows],
+                    "keywords": [],
                 }
+                for cat in cats
+            }
+            for row in keyword_rows:
+                category = row["category"]
+                if category in result:
+                    result[category]["keywords"].append(row["keyword"])
         return result
 
     def list_lexicon_categories(self) -> List[dict]:
@@ -1539,26 +1560,47 @@ class SQLiteStorage(GroupStorageMixin):
         # 登记/更新一条定时解禁计划（同群同人唯一，新计划覆盖旧的）。
         with self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO scheduled_unbans(group_id, user_id, unban_at, created_at) "
-                "VALUES(?, ?, ?, ?)",
-                (str(group_id), str(user_id), int(unban_at), int(created_at)),
+                "INSERT OR REPLACE INTO scheduled_unbans("
+                "group_id, user_id, unban_at, created_at, retry_count, next_retry_at, last_error"
+                ") VALUES(?, ?, ?, ?, 0, ?, '')",
+                (
+                    str(group_id), str(user_id), int(unban_at), int(created_at),
+                    int(unban_at),
+                ),
             )
             conn.commit()
 
     def list_due_unbans(self, now_ts: int) -> List[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, group_id, user_id, unban_at FROM scheduled_unbans WHERE unban_at <= ? ORDER BY unban_at",
+                "SELECT id, group_id, user_id, unban_at, retry_count, next_retry_at, last_error "
+                "FROM scheduled_unbans "
+                "WHERE CASE WHEN next_retry_at > 0 THEN next_retry_at ELSE unban_at END <= ? "
+                "ORDER BY CASE WHEN next_retry_at > 0 THEN next_retry_at ELSE unban_at END",
                 (int(now_ts),),
             ).fetchall()
-        return [{"id": r["id"], "group_id": r["group_id"], "user_id": r["user_id"], "unban_at": r["unban_at"]} for r in rows]
+        return [dict(r) for r in rows]
 
     def list_all_scheduled_unbans(self) -> List[dict]:
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, group_id, user_id, unban_at FROM scheduled_unbans ORDER BY unban_at"
+                "SELECT id, group_id, user_id, unban_at, retry_count, next_retry_at, last_error "
+                "FROM scheduled_unbans ORDER BY unban_at"
             ).fetchall()
-        return [{"id": r["id"], "group_id": r["group_id"], "user_id": r["user_id"], "unban_at": r["unban_at"]} for r in rows]
+        return [dict(r) for r in rows]
+
+    def mark_scheduled_unban_retry(
+        self, unban_id: int, next_retry_at: int, last_error: str = ""
+    ) -> bool:
+        """记录一次解禁失败并安排下次重试，不丢失原任务。"""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE scheduled_unbans SET retry_count=retry_count+1, "
+                "next_retry_at=?, last_error=? WHERE id=?",
+                (int(next_retry_at), str(last_error or "")[:500], int(unban_id)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
 
     def delete_scheduled_unban(self, unban_id: int) -> bool:
         with self._connect() as conn:

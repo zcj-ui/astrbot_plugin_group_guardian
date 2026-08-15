@@ -1,4 +1,6 @@
 # -*- coding: utf-8 -*-
+import asyncio
+import functools
 import json
 import os
 import time
@@ -10,6 +12,12 @@ from .automaton import KeywordAutomaton
 
 
 class UtilitiesMixin:
+
+    @staticmethod
+    async def _run_in_thread(func, *args, **kwargs):
+        """在线程池执行阻塞函数，兼容没有 asyncio.to_thread 的 Python。"""
+        call = functools.partial(func, *args, **kwargs)
+        return await asyncio.get_running_loop().run_in_executor(None, call)
 
     def _extract_at_targets(self, event) -> list:
         targets = []
@@ -87,15 +95,17 @@ class UtilitiesMixin:
         except Exception as _e:
             logger.debug(f"[GroupMgr] 同步AstrBot管理员失败: {_e}")
 
-    def _save_config_safe(self) -> None:
+    def _save_config_safe(self) -> bool:
         # 安全保存配置：调用 AstrBotConfig.save_config()，失败时记录异常但不抛错。
         if not hasattr(self.config, "save_config"):
             logger.warning("[GroupMgr] 当前配置对象不支持 save_config()，本次修改仅保留在内存中")
-            return
+            return False
         try:
             self.config.save_config()
+            return True
         except Exception:
             logger.exception("save_config failed")
+            return False
 
     # 单群管理类名单的统一映射：DB list_type -> (config key, 内存 list 属性, 内存 set 属性)
     # v2.4.0 起这些名单以 SQLite(managed_lists) 为准，config 旧值仅作首次迁移与回退兜底。
@@ -133,7 +143,7 @@ class UtilitiesMixin:
 
     def _managed_list_add(self, list_type: str, value: str) -> bool:
         """向 DB 名单添加一项并同步内存 list/set。返回是否实际新增。"""
-        cfg_key, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
+        _, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
         value = str(value).strip()
         if not value:
             return False
@@ -147,7 +157,7 @@ class UtilitiesMixin:
 
     def _managed_list_remove(self, list_type: str, value: str) -> bool:
         """从 DB 名单移除一项并同步内存 list/set。返回是否实际移除。"""
-        cfg_key, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
+        _, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
         value = str(value).strip()
         removed = self._storage.remove_managed_list_value(list_type, value)
         lst = getattr(self, list_attr, None)

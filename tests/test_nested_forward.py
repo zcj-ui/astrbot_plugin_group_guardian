@@ -412,6 +412,13 @@ class _ScreenshotHandleHarness(_ContextHandleHarness):
         return f"{text}\n{ocr_text}".strip()
 
 
+class _BaseDisabledHandleHarness(_ContextHandleHarness):
+    def _cfg(self, name, default=None, group_id=""):
+        if name == "base_decode_enabled":
+            return False
+        return super()._cfg(name, default, group_id)
+
+
 class _OrderedImageHandleHarness(_ContextHandleHarness):
     def __init__(self):
         super().__init__(full_scan=True, llm_enabled=True)
@@ -1304,6 +1311,75 @@ class NestedForwardTests(unittest.TestCase):
         audit_text, hit_types = harness.llm_inputs[0]
         self.assertIn("日抛plus /xxxxxx", audit_text)
         self.assertTrue(hit_types["image_scan"])
+
+    def test_normal_ai_mode_reviews_base64_decoded_content(self):
+        import base64
+
+        harness = _ContextHandleHarness(full_scan=False, llm_enabled=True)
+        encoded = base64.b64encode(
+            "日抛plus /xxxxxx 加我微信".encode("utf-8")
+        ).decode("ascii")
+        event = _Event(
+            [Plain(encoded)], message_id="74", message_seq=74, timestamp=174
+        )
+
+        async def consume():
+            return [item async for item in harness._handle_message(event)]
+
+        asyncio.run(consume())
+
+        self.assertEqual(1, harness.llm_calls)
+        audit_text, hit_types = harness.llm_inputs[0]
+        self.assertIn("日抛plus /xxxxxx 加我微信", audit_text)
+        self.assertTrue(hit_types["encoded_scan"])
+
+    def test_disabled_base_decode_does_not_trigger_semantic_review(self):
+        import base64
+
+        harness = _BaseDisabledHandleHarness(full_scan=False, llm_enabled=True)
+        encoded = base64.b64encode(
+            "日抛plus /xxxxxx 加我微信".encode("utf-8")
+        ).decode("ascii")
+        event = _Event(
+            [Plain(encoded)], message_id="741", message_seq=741, timestamp=1741
+        )
+
+        async def consume():
+            return [item async for item in harness._handle_message(event)]
+
+        asyncio.run(consume())
+
+        self.assertEqual(0, harness.llm_calls)
+
+    def test_split_base64_is_reassembled_then_decoded(self):
+        import base64
+
+        harness = _ContextHandleHarness(full_scan=False, llm_enabled=True)
+        encoded = base64.b64encode(
+            "日抛plus /xxxxxx 加我微信".encode("utf-8")
+        ).decode("ascii")
+        # 选在一个两侧单独都不能形成可信解码证据的位置，确保本用例真正验证
+        # “跨消息重组后才命中”，而不是首段已可读导致的两次独立审核。
+        split_at = 21
+        self.assertFalse(moderation.decode_base_evidence(encoded[:split_at]))
+        self.assertFalse(moderation.decode_base_evidence(encoded[split_at:]))
+
+        async def consume(event):
+            return [item async for item in harness._handle_message(event)]
+
+        asyncio.run(consume(_Event(
+            [Plain(encoded[:split_at])],
+            message_id="75", message_seq=75, timestamp=175,
+        )))
+        asyncio.run(consume(_Event(
+            [Plain(encoded[split_at:])],
+            message_id="76", message_seq=76, timestamp=176,
+        )))
+
+        self.assertEqual(1, harness.llm_calls)
+        audit_text, hit_types = harness.llm_inputs[0]
+        self.assertIn("日抛plus /xxxxxx 加我微信", audit_text)
+        self.assertTrue(hit_types["encoded_scan"])
 
     def test_llm_prompt_keeps_local_sender_fragments_when_history_is_unavailable(self):
         harness = _ContextLLMHarness(

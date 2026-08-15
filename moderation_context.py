@@ -682,10 +682,13 @@ class ModerationContextMixin:
         signature_parts = []
         for entry in entries:
             raw_text = str(entry.get("text", "") or "").strip()
-            normalized = re.sub(r"\s+", " ", raw_text).strip().lower()
-            if not normalized:
+            compacted = re.sub(r"\s+", " ", raw_text).strip()
+            if not compacted:
                 continue
-            parts.append(normalized)
+            # 审核正文必须保留大小写，Base16/32/58/62/64 等编码对大小写
+            # 敏感；去重签名再单独做小写归一化即可。
+            parts.append(compacted)
+            normalized = compacted.lower()
             message_id = str(entry.get("message_id", "") or "")
             if message_id and message_id != current_id:
                 message_ids.append(message_id)

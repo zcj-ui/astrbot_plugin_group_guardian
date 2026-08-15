@@ -221,7 +221,7 @@ class AntiFloodMixin:
         repeat_ids: List[str] = []
 
         for entry in reversed(dq):
-            t, mid, norm_text, msg_len = self._unpack_entry(entry)
+            t, mid, norm_text, _ = self._unpack_entry(entry)
             dt = now - t
             if dt >= 3600:
                 break

@@ -171,10 +171,10 @@ class _ModerationHarness(moderation.ModerationMixin, utilities.UtilitiesMixin):
         return self.client
 
     def _cfg(self, name, default=True, group_id=None):
-        return default
+        return self.config.get(name, default)
 
     def _cfg_str(self, name, default="", group_id=None):
-        return default
+        return str(self.config.get(name, default) or "")
 
     async def _call_llm_safe(self, system_prompt, prompt):
         self.llm_calls += 1
@@ -508,6 +508,35 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all("[审核分片 " in prompt for prompt in harness.prompts)
         )
+
+    async def test_review_guidance_is_appended_to_default_moderation_prompt(self):
+        harness = _ModerationHarness(semaphore=asyncio.Semaphore(1))
+        harness.config["llm_moderation_review_guidance"] = "需要结合推广意图，不按单个普通词处罚"
+
+        result = await harness._call_llm_for_moderation(
+            _ModerationEvent(), "日抛plus", {"full_scan": True}, group_id="1"
+        )
+
+        self.assertFalse(result["violation"])
+        self.assertIn("管理员确认误判后的补充修正规则", harness.last_prompt)
+        self.assertIn("需要结合推广意图，不按单个普通词处罚", harness.last_prompt)
+        self.assertIn('{"violation": true/false, "reason": "判断原因"}', harness.last_prompt)
+
+    async def test_review_guidance_is_appended_to_custom_moderation_prompt(self):
+        harness = _ModerationHarness(semaphore=asyncio.Semaphore(1))
+        harness.config.update({
+            "llm_moderation_custom_prompt": "只拦截存在明确招揽行为的广告",
+            "llm_moderation_review_guidance": "正常商品名讨论需要放行",
+        })
+
+        result = await harness._call_llm_for_moderation(
+            _ModerationEvent(), "日抛plus", {"full_scan": True}, group_id="1"
+        )
+
+        self.assertFalse(result["violation"])
+        self.assertIn("只拦截存在明确招揽行为的广告", harness.last_prompt)
+        self.assertIn("正常商品名讨论需要放行", harness.last_prompt)
+        self.assertIn('{"violation": true/false, "reason": "判断原因"}', harness.last_prompt)
 
     async def test_group_history_hanging_api_is_cancelled_and_degrades_to_empty(self):
         client = _HangingClient()
@@ -1093,6 +1122,66 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
         finally:
             release.set()
 
+    def test_connection_resolver_rejects_private_dns_result(self):
+        addrinfo = [
+            (
+                image_audit.socket.AF_INET,
+                image_audit.socket.SOCK_STREAM,
+                6,
+                "",
+                ("127.0.0.1", 443),
+            )
+        ]
+
+        with self.assertRaises(OSError):
+            image_audit._validated_resolver_records("example.com", 443, addrinfo)
+
+    def test_connection_resolver_rejects_mixed_public_private_results(self):
+        addrinfo = [
+            (
+                image_audit.socket.AF_INET,
+                image_audit.socket.SOCK_STREAM,
+                6,
+                "",
+                ("8.8.8.8", 443),
+            ),
+            (
+                image_audit.socket.AF_INET,
+                image_audit.socket.SOCK_STREAM,
+                6,
+                "",
+                ("10.0.0.1", 443),
+            ),
+        ]
+
+        with self.assertRaises(OSError):
+            image_audit._validated_resolver_records("example.com", 443, addrinfo)
+
+    def test_connection_resolver_returns_only_deduplicated_public_results(self):
+        addrinfo = [
+            (
+                image_audit.socket.AF_INET,
+                image_audit.socket.SOCK_STREAM,
+                6,
+                "",
+                ("8.8.8.8", 443),
+            ),
+            (
+                image_audit.socket.AF_INET,
+                image_audit.socket.SOCK_STREAM,
+                6,
+                "",
+                ("8.8.8.8", 443),
+            ),
+        ]
+
+        records = image_audit._validated_resolver_records(
+            "example.com", 443, addrinfo
+        )
+
+        self.assertEqual(1, len(records))
+        self.assertEqual("8.8.8.8", records[0]["host"])
+
     async def test_appeal_hanging_llm_is_cancelled_with_bounded_runner(self):
         harness = _AppealHarness()
         appeal_data = {"penalty": "mute", "reason": "original reason"}
@@ -1179,6 +1268,26 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
         )
 
         succeeded = await harness._mute_member(event, 300)
+
+        self.assertTrue(succeeded)
+
+    async def test_unban_member_reports_protocol_failure(self):
+        client = _StaticClient({
+            "status": "failed", "retcode": 100, "message": "denied",
+        })
+        harness = _OneBotHarness(client)
+
+        succeeded = await harness._unban_member("123", "456")
+
+        self.assertFalse(succeeded)
+        self.assertEqual(client.calls[0][0], "set_group_ban")
+        self.assertEqual(0, client.calls[0][1]["duration"])
+
+    async def test_unban_member_reports_success(self):
+        client = _StaticClient({"status": "ok", "retcode": 0})
+        harness = _OneBotHarness(client)
+
+        succeeded = await harness._unban_member("123", "456")
 
         self.assertTrue(succeeded)
 
