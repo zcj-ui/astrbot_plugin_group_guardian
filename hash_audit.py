@@ -15,7 +15,6 @@
    - 阈值与窗口均可按群覆盖，默认关闭（保持原有直接处罚行为）。
 """
 
-import asyncio
 import json
 import os
 import time
@@ -115,18 +114,31 @@ class HashAuditMixin:
 
     @staticmethod
     def _phash_from_gray(gray_image, hash_size: int = PHASH_SIZE) -> str:
-        """pHash 核心：缩放 → DCT → 取低频 hash_size×hash_size → 与中值比较 → 01 串。"""
+        """感知哈希（v2.21.0 重构）：前 16 位亮度阈值编码 + 后 48 位 dHash 结构编码。
+
+        修复（原 DCT-pHash 缺陷）：
+        - 纯色图（亮度 30 vs 220）DCT 只有 DC 非零、哈希完全相同 → '不同图片远离' 失败；
+        - JPEG 有损会把单像素亮点扩散成整块亮度变化，DCT 低频哈希大量翻转 → '相似图片接近' 失败。
+
+        新方案：亮度用 16 个阈值(0/16/.../240)绝对编码（纯色图亮度不同则距离大），
+        结构用 dHash 相邻像素比较（resize 9×8，对单像素/JPEG 噪声鲁棒）。
+        返回 64 位 01 串，长度与历史一致。
+        """
         try:
             import numpy as np
 
             img = cv2.resize(
-                gray_image, (PHASH_RESIZE, PHASH_RESIZE), interpolation=cv2.INTER_AREA
-            )
-            img = img.astype(np.float32)
-            dct = cv2.dct(img)
-            low_freq = dct[:hash_size, :hash_size].flatten()
-            median = float(np.median(low_freq))
-            return "".join("1" if v > median else "0" for v in low_freq)
+                gray_image, (9, 8), interpolation=cv2.INTER_AREA
+            ).astype(np.float32)
+            # 亮度阈值编码：mean(0-255) 与 16 个阈值比较
+            mean8 = int(round(float(img.mean())))
+            mean_bits = "".join(
+                "1" if mean8 > t else "0" for t in range(0, 256, 16)
+            )  # 16 位
+            # dHash：行内相邻像素比较（9×8 → 8×8 = 64 位，取前 48 位）
+            diff = img[:, 1:] > img[:, :-1]
+            ac_bits = "".join("1" if x else "0" for x in diff.flatten())[:48]
+            return mean_bits + ac_bits
         except Exception:
             return ""
 
@@ -233,7 +245,7 @@ class HashAuditMixin:
 
         处理完成后结束；可选地通过 async generator 产出群内提示。
         """
-        warn_at = max(1, self._cfg_int("ad_escalation_warn_at", 1, group_id=group_id))
+        _ = max(1, self._cfg_int("ad_escalation_warn_at", 1, group_id=group_id))
         ban_at = max(1, self._cfg_int("ad_escalation_ban_at", 2, group_id=group_id))
         kick_at = max(1, self._cfg_int("ad_escalation_kick_at", 3, group_id=group_id))
         window = max(60, self._cfg_int("ad_escalation_window_seconds", 604800, group_id=group_id))

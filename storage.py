@@ -114,8 +114,13 @@ class SQLiteStorage(GroupStorageMixin):
             self._query_cache.clear()
 
     async def run_in_thread(self, func, *args, **kwargs):
-        """在事件循环外的线程中执行同步 DB 操作，避免阻塞插件事件循环。"""
-        return await asyncio.to_thread(func, *args, **kwargs)
+        """在事件循环外的线程中执行同步 DB 操作，避免阻塞插件事件循环。
+
+        v2.21.0：改用 ``loop.run_in_executor`` 实现（Python 3.8 兼容，
+        ``asyncio.to_thread`` 为 3.9+，在 3.8 环境会 AttributeError）。
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
     @contextmanager
     def _connect(self):
@@ -1213,6 +1218,8 @@ class SQLiteStorage(GroupStorageMixin):
                      str(result or ""), str(message or ""),
                      str(operator_ip or ""), str(before_value or ""), str(after_value or "")),
                 )
+                # _connect() 退出时不隐式 commit，必须显式提交否则写入在连接关闭时回滚
+                conn.commit()
         except Exception as e:
             logger.debug(f"[GroupMgr] 记录 Web 审计日志失败: {e}")
 

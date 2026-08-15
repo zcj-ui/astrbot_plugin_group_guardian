@@ -24,7 +24,6 @@
 """
 import asyncio
 import re
-import time
 from urllib.parse import urlparse
 
 from astrbot.api import logger

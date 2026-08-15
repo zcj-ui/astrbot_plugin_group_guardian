@@ -29,13 +29,11 @@ except ImportError:  # pragma: no cover
 try:
     from .image_audit import (
         IMAGE_WORKER_CONCURRENCY,
-        _decode_qr_from_bytes,
         _probe_qr_decoder,
     )
 except ImportError:  # 独立加载 video_audit.py 的单元测试兼容路径
     from image_audit import (
         IMAGE_WORKER_CONCURRENCY,
-        _decode_qr_from_bytes,
         _probe_qr_decoder,
     )
 
@@ -64,10 +62,21 @@ class VideoAuditMixin:
     # 资源生命周期
     # ============================================================
 
+    @staticmethod
+    async def _run_sync_in_thread(func, *args, **kwargs):
+        """在线程中执行同步函数（v2.21.0，Python 3.8 兼容的 asyncio.to_thread）。"""
+        import asyncio as _asyncio
+
+        loop = _asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
+
     def _init_video_audit_resources(self, llm_concurrency: int = 4) -> None:
         """初始化视频审核资源：下载并发闸门、任务追踪、临时目录槽位。"""
         concurrency = max(1, int(llm_concurrency))
-        self._video_download_semaphore = asyncio.Semaphore(min(4, concurrency))
+        # v2.21.0：Semaphore 惰性创建——在无运行事件循环的同步初始化路径直接
+        # asyncio.Semaphore() 会报 "There is no current event loop"（Python 3.8 尤其明显）。
+        self._video_download_semaphore = None
+        self._video_download_concurrency = min(4, concurrency)
         self._video_audit_closing = False
         self._video_audit_tasks = set()
         self._video_temp_dir = None
@@ -84,7 +93,7 @@ class VideoAuditMixin:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         try:
-            await asyncio.to_thread(self._cleanup_video_temp_dir)
+            await self._run_sync_in_thread(self._cleanup_video_temp_dir)
         except Exception as exc:
             logger.debug(f"[GroupMgr] 清理视频临时目录失败: {exc}")
 
@@ -316,22 +325,25 @@ class VideoAuditMixin:
         复用 ``_download_bytes`` 的 SSRF 防护（逐跳校验重定向地址、拒绝内网）与
         插件级 I/O 并发许可；仅把体积上限放宽到视频配置值。
         """
-        semaphore = getattr(self, "_video_download_semaphore", None)
+        # v2.21.0：Semaphore 惰性创建（首次在 async 上下文使用时才创建）
+        semaphore = self._video_download_semaphore
+        if semaphore is None:
+            semaphore = asyncio.Semaphore(self._video_download_concurrency)
+            self._video_download_semaphore = semaphore
         acquired = False
         try:
-            if semaphore is not None:
-                await asyncio.wait_for(
-                    semaphore.acquire(), timeout=VIDEO_QUEUE_TIMEOUT
-                )
-                acquired = True
+            await asyncio.wait_for(
+                semaphore.acquire(), timeout=VIDEO_QUEUE_TIMEOUT
+            )
+            acquired = True
             data = await self._download_bytes(
                 url, max_bytes=max_bytes, timeout=timeout
             )
             if not data:
                 return ""
-            return await asyncio.to_thread(self._write_video_temp_file, data)
+            return await self._run_sync_in_thread(self._write_video_temp_file, data)
         except asyncio.TimeoutError:
-            logger.debug(f"[GroupMgr] 视频下载排队或请求超时({url[:60]})")
+            logger.debug(f"[GroupMgr] 视频下载排队或请求超时({url[:60]})\"")
             return ""
         except Exception as exc:
             logger.debug(f"[GroupMgr] 下载视频失败({url[:60]}): {exc}")
@@ -728,7 +740,7 @@ class VideoAuditMixin:
                 "video_scene_threshold", 30.0, group_id=group_id
             )
             frames = await asyncio.wait_for(
-                asyncio.to_thread(
+                self._run_sync_in_thread(
                     self._extract_video_frames,
                     video_path, max_frames, interval, mode, scene_threshold,                ),
                 timeout=VIDEO_FRAME_EXTRACT_TIMEOUT,
@@ -746,7 +758,7 @@ class VideoAuditMixin:
             return ""
         finally:
             if temp_path:
-                await asyncio.to_thread(self._remove_temp_file, temp_path)
+                await self._run_sync_in_thread(self._remove_temp_file, temp_path)
 
     async def _recognize_video_frames(
         self, event, frames: list, group_id: str

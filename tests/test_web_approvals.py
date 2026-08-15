@@ -200,9 +200,10 @@ class RemoteAuditFieldTests(unittest.TestCase):
                 return False
 
         class _Harness:
-            def __init__(self, cfg=None, roles=None):
+            def __init__(self, cfg=None, roles=None, admin_ids=()):
                 self._cfg_values = cfg or {}
                 self._roles = roles or {}
+                self._admin_ids = set(str(x) for x in admin_ids)
                 self._storage = _AuditStorage()
                 self._client = types.SimpleNamespace()
                 self._group_black_set = set()
@@ -218,7 +219,7 @@ class RemoteAuditFieldTests(unittest.TestCase):
                 return True, ""
 
             def _get_all_admin_ids(self):
-                return set()
+                return set(self._admin_ids)
 
             async def _get_client(self, _platform=None):
                 return self._client
@@ -257,7 +258,7 @@ class RemoteAuditFieldTests(unittest.TestCase):
         return self.Harness(**kw)
 
     def test_audit_records_operator_ip(self):
-        h = self.make()
+        h = self.make(admin_ids=["10001"])
         r = _run(h._remote_execute("100", "kick", {"user_id": "5"}, operator_qq="10001",
                                    operator_name="管理员", operator_ip="203.0.113.7"))
         self.assertTrue(r.get("ok"))
@@ -266,7 +267,7 @@ class RemoteAuditFieldTests(unittest.TestCase):
         self.assertEqual("管理员", rec["operator_name"])
 
     def test_audit_records_before_after_for_set_admin(self):
-        h = self.make(roles={"123": "owner"})
+        h = self.make(admin_ids=["10001"], roles={"123": "owner"})
         r = _run(h._remote_execute("100", "set_admin", {"user_id": "123"},
                                    operator_qq="10001", operator_ip="10.0.0.1"))
         self.assertTrue(r.get("ok"))
