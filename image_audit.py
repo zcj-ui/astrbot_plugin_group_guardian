@@ -2,7 +2,6 @@
 """图片 OCR、二维码解码及受控下载。"""
 
 import asyncio
-import importlib
 import ipaddress
 import socket
 import time

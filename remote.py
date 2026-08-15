@@ -13,6 +13,8 @@
 """
 import asyncio
 
+from astrbot.api import logger
+
 # 远程操作注册表：action -> (功能开关配置key, 中文名, 是否需要 user_id)
 # 功能开关沿用插件已有的 *_enabled 配置，保证 WebUI 与聊天指令权限一致。
 _REMOTE_ACTIONS = {
