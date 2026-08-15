@@ -331,6 +331,16 @@ class WebMixin:
                 ("/lexicon_learn/reject", self._web_learn_reject, ["POST"], "拒绝学习候选词"),
                 ("/lexicon_learn/delete", self._web_learn_delete, ["POST"], "删除学习候选词"),
                 ("/lexicon_learn/run", self._web_learn_run_now, ["POST"], "立即执行一次学习挖掘"),
+                # v2.21.0 广告后台接入 Dashboard（原独立 Quart 服务移除，鉴权由 Dashboard JWT 统一执行）
+                ("/ad_backend/stats", self._ad_backend_stats, ["GET"], "广告后台-总览统计"),
+                ("/ad_backend/logs", self._ad_backend_logs, ["GET"], "广告后台-违规记录"),
+                ("/ad_backend/blacklist", self._ad_backend_blacklist, ["GET"], "广告后台-广告黑名单"),
+                ("/ad_backend/blacklist/remove", self._ad_backend_blacklist_remove, ["POST"], "广告后台-删除黑名单"),
+                ("/ad_backend/fingerprints", self._ad_backend_fingerprints, ["GET"], "广告后台-视频指纹"),
+                ("/ad_backend/fingerprints/clear", self._ad_backend_fingerprints_clear, ["POST"], "广告后台-清空指纹"),
+                ("/ad_backend/escalation", self._ad_backend_escalation, ["GET"], "广告后台-分级处置"),
+                ("/ad_backend/escalation/reset", self._ad_backend_escalation_reset, ["POST"], "广告后台-重置分级"),
+                ("/ad_backend/config", self._ad_backend_config, ["GET"], "广告后台-配置状态"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(

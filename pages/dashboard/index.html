@@ -449,6 +449,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg>
           <span>词库学习</span>
         </a>
+        <a class="nav-item" data-tab="adbackend">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M21 6h-2v2h-2V6h-2V4h2V2h2v2h2v2zm-10 3c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm0 4c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm7 1.5V17h4v-2h-2c0-1.5-.83-2.77-2.13-3.55.35.37.67.79.13 2.05z"/></svg>
+          <span>广告后台</span>
+        </a>
         <a class="nav-item" data-tab="settings">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
           <span>设置</span>
@@ -803,6 +807,27 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
             </div>
           </div>
           <div class="log-container" id="learnList"><p class="empty">加载中...</p></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-adbackend">
+        <div class="page-header"><h1>广告后台</h1><button class="btn btn-ghost btn-sm" id="btnRefreshAdBackend">刷新</button></div>
+        <p class="rules-subtle" style="margin:0 0 12px">v2.21.0 起广告后台接入 AstrBot Dashboard（原独立端口服务已移除，鉴权由 Dashboard 登录统一执行）。展示广告检测统计、违规记录、感知哈希黑名单、视频指纹缓存与分级处置。</p>
+        <div class="settings-grid">
+          <div class="card" data-adstats="total"><div class="card-header"><h2>总览统计</h2></div><div class="list-manage" id="adStats"><p class="empty">加载中...</p></div></div>
+          <div class="card" data-adstats="blacklist"><div class="card-header"><h2>感知哈希广告黑名单</h2></div><div class="list-manage" id="adBlacklist"><p class="empty">加载中...</p></div></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>视频指纹缓存</h2></div>
+          <div class="list-manage" id="adFingerprints"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>分级处置记录</h2></div>
+          <div class="list-manage" id="adEscalation"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>配置状态</h2></div>
+          <div class="settings-list" id="adConfig" style="padding:8px 16px"><p class="empty">加载中...</p></div>
         </div>
       </div>
 
@@ -1246,7 +1271,8 @@ function switchTab(tabName) {
   if (tabName === 'flood') loadFlood();
   if (tabName === 'rules') { renderRuleCenterShell(); loadRuleCenter(); }
   if (tabName === 'join') loadJoinRules();
-  if (tabName === 'perms') { loadSuperAdmins(); loadGrants(); loadBlocks(); }
+  if (tabName === 'perms') { loadSuperAdmins(); loadGrants(); loadBlocks(); loadApprovals(); loadAuditLogs(); }
+  if (tabName === 'adbackend') loadAdBackend();
   if (tabName === 'groupcfg') loadGroupCfgGroups();
   if (tabName === 'tasks') { loadAppeals(); loadUnbans(); }
   if (tabName === 'cardmon') loadCardMonitor();
@@ -1911,7 +1937,90 @@ async function loadApprovals() {
   });
 }
 
-// v2.19.0 远程操作审计日志（展示 IP / 时间 / 修改前后值）
+// v2.21.0 广告后台（接入 Dashboard，原独立端口服务已移除）
+async function loadAdBackend() {
+  var statsEl = $('#adStats'), blEl = $('#adBlacklist'), fpEl = $('#adFingerprints'),
+      esEl = $('#adEscalation'), cfgEl = $('#adConfig');
+  if (!statsEl) return;
+  // 总览统计
+  var s = await safeGet('ad_backend/stats');
+  if (!isApiError(s) && s.data) {
+    var d = s.data;
+    statsEl.innerHTML =
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:12px 16px">' +
+      '<div><div class="rules-subtle">今日拦截</div><b style="font-size:20px">' + esc(d.today_blocked) + '</b></div>' +
+      '<div><div class="rules-subtle">累计拦截</div><b style="font-size:20px">' + esc(d.total_blocked) + '</b></div>' +
+      '<div><div class="rules-subtle">今日图片</div><b style="font-size:20px">' + esc(d.today_img) + '</b></div>' +
+      '<div><div class="rules-subtle">今日视频</div><b style="font-size:20px">' + esc(d.today_video) + '</b></div>' +
+      '<div><div class="rules-subtle">累计记录</div><b style="font-size:20px">' + esc(d.total_logs) + '</b></div></div>';
+  } else { statsEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 黑名单
+  var b = await safeGet('ad_backend/blacklist');
+  if (!isApiError(b) && b.data) {
+    var hs = b.data.hashes || [];
+    blEl.innerHTML = hs.length
+      ? '<div class="log-container" style="padding:8px">' + hs.slice(0, 20).map(function(h) {
+          return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+            '<span style="font-family:monospace;font-size:11px;word-break:break-all;flex:1">' + esc(h.h || '') + '</span>' +
+            '<span class="rules-subtle">x' + esc(h.count) + '</span>' +
+            '<button class="btn btn-ghost btn-sm" data-adbl-del="' + escAttr(h.h || '') + '">删除</button></div>';
+        }).join('') + '</div>'
+      : '<p class="empty">暂无（可开启 ad_hash_auto_learn 自动学习）</p>';
+    $$('[data-adbl-del]', blEl).forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var r = await safePost('ad_backend/blacklist/remove', { h: btn.dataset.adblDel });
+        toast((r && r.message) || '已删除', isApiError(r) ? 'error' : 'success');
+        loadAdBackend();
+      });
+    });
+  } else { blEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 视频指纹
+  var f = await safeGet('ad_backend/fingerprints');
+  if (!isApiError(f) && f.data) {
+    var fps = f.data.fingerprints || [];
+    fpEl.innerHTML = '<div style="padding:8px 16px">' +
+      '<span class="rules-subtle">共 ' + fps.length + ' 条</span> ' +
+      (fps.length ? '<button class="btn btn-danger btn-sm" id="btnAdFpClear">清空</button>' : '') + '</div>' +
+      (fps.length ? '<div class="log-container" style="padding:8px">' + fps.slice(0, 10).map(function(x) {
+        return '<div class="audit-item"><span style="font-family:monospace;font-size:11px;word-break:break-all">' + esc(x.f) + '</span></div>';
+      }).join('') + '</div>' : '');
+    var clearBtn = $('#btnAdFpClear');
+    if (clearBtn) clearBtn.addEventListener('click', async function() {
+      var ok = await confirmModal({ title: '清空视频指纹缓存', body: '确认清空全部视频指纹缓存？', okText: '清空', danger: true });
+      if (!ok) return;
+      var r = await safePost('ad_backend/fingerprints/clear');
+      toast((r && r.message) || '已清空', isApiError(r) ? 'error' : 'success');
+      loadAdBackend();
+    });
+  } else { fpEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 分级处置
+  var e = await safeGet('ad_backend/escalation');
+  if (!isApiError(e) && e.data) {
+    var rows = e.data || [];
+    esEl.innerHTML = rows.length
+      ? '<div class="log-container" style="padding:8px">' + rows.slice(0, 20).map(function(r) {
+          return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+            '<span>群 ' + esc(r.group_id) + ' · ' + esc(r.user_id) + ' · 第 <b>' + esc(r.count) + '</b> 次</span>' +
+            '<button class="btn btn-ghost btn-sm" data-ades-reset="' + escAttr(r.user_id) + '" data-ades-g="' + escAttr(r.group_id) + '">重置</button></div>';
+        }).join('') + '</div>'
+      : '<p class="empty">暂无分级处置记录</p>';
+    $$('[data-ades-reset]', esEl).forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var r = await safePost('ad_backend/escalation/reset', { group_id: btn.dataset.adesG, user_id: btn.dataset.adesReset });
+        toast((r && r.message) || '已重置', isApiError(r) ? 'error' : 'success');
+        loadAdBackend();
+      });
+    });
+  } else { esEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 配置状态
+  var c = await safeGet('ad_backend/config');
+  if (!isApiError(c) && c.data) {
+    cfgEl.innerHTML = Object.keys(c.data).map(function(k) {
+      return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">' +
+        '<span class="rules-subtle">' + esc(k) + '</span><b>' + esc(String(c.data[k])) + '</b></div>';
+    }).join('');
+  } else { cfgEl.innerHTML = '<p class="empty">加载失败</p>'; }
+}
 async function loadAuditLogs() {
   var el = $('#auditLogList');
   if (!el) return;
@@ -3610,6 +3719,7 @@ async function init() {
   bindClick('btnRefreshPerms', function() { loadSuperAdmins(); loadGrants(); loadBlocks(); loadApprovals(); loadAuditLogs(); });
   bindClick('btnRefreshApprovals', loadApprovals);
   bindClick('btnRefreshAudit', loadAuditLogs);
+  bindClick('btnRefreshAdBackend', loadAdBackend);
   bindClick('btnAddSuperAdmin', async function() {
     var gids = ($('#saGroup').value || '').split(/[\s,，]+/).filter(Boolean);
     var uids = ($('#saUser').value || '').split(/[\s,，]+/).filter(Boolean);

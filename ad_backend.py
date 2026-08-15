@@ -1,25 +1,19 @@
 # -*- coding: utf-8 -*-
-"""独立 Web 管理后台：机器人插件接入，服务端浏览器直接访问。
+"""广告 Web 管理后台（v2.21.0 起接入 AstrBot Dashboard）。
 
-- 插件内置一个独立的 Quart HTTP 服务（独立端口），不依赖 AstrBot 管理面板；
+- 页面与接口统一注册到 AstrBot Dashboard（web.py register_web_api → /api/plug/ 下），
+  鉴权由 Dashboard JWT 统一执行，不再有独立端口监听服务；
 - 展示广告检测核心数据：今日/累计拦截统计、违规记录（含图片/视频证据）、
-  感知哈希广告黑名单、视频指纹缓存、广告分级处置记录、关键配置状态；
-- 鉴权：可选 Token（ad_backend_token），留空仅建议内网访问。
+  感知哈希广告黑名单、视频指纹缓存、广告分级处置记录、关键配置状态。
 """
 
-import asyncio
 import os
-import time
-
-from astrbot.api import logger
 
 try:
-    from quart import Quart, jsonify, request as quart_request, Response as QuartResponse
+    from quart import jsonify, request as quart_request
 except ImportError:  # pragma: no cover
-    Quart = None
     jsonify = None
     quart_request = None
-    QuartResponse = None
 
 try:
     from .hash_audit import (
@@ -42,163 +36,24 @@ class AdBackendMixin:
     """独立 Web 管理后台能力，由 ``Main`` 组合使用（需 Quart 可用）。"""
 
     def _init_ad_backend(self) -> None:
-        """按配置启动独立后台服务；未开启或 Quart 不可用时静默跳过。"""
+        """广告后台初始化（v2.21.0：独立 Quart 服务已移除）。
+
+        页面与接口统一接入 AstrBot Dashboard（web.py 通过 register_web_api 注册到
+        /api/plug/ 下），鉴权由 AstrBot Dashboard JWT 统一执行，不再存在独立端口监听。
+        此处仅初始化数据缓存字段；ad_backend_enabled 保留作为旧配置兼容项。
+        """
         self._ad_backend_app = None
         self._ad_backend_task = None
         self._ad_backend_page_cache = ("", 0.0)
-        try:
-            enabled = self.config.get("ad_backend_enabled", False)
-        except Exception:
-            enabled = False
-        if not enabled:
-            return
-        if Quart is None:
-            logger.warning(
-                "[GroupMgr] 独立后台需要 Quart 框架（AstrBot 4.x+ 内置），当前不可用"
-            )
-            return
-        try:
-            port = int(self.config.get("ad_backend_port", 8765) or 8765)
-            port = max(1, min(port, 65535))
-            host = self._ad_backend_listen_host()
-            # v2.21.0 安全加固：非回环监听必须配置高强度 token，否则拒绝启动，
-            # 避免启用后台但漏配 token 时形成无认证网络管理面。
-            token = str(self.config.get("ad_backend_token", "") or "").strip()
-            if not self._ad_backend_is_loopback(host) and len(token) < 8:
-                logger.warning(
-                    "[GroupMgr] 独立后台监听非回环地址但 ad_backend_token 为空或过短(<8)，"
-                    "拒绝启动以避免无认证网络管理面；请配置 ≥8 位高强度 token，或把 "
-                    "ad_backend_host 改回 127.0.0.1"
-                )
-                return
-            app = Quart(__name__)
-            self._ad_backend_register_routes(app)
-            self._ad_backend_app = app
-            self._ad_backend_task = asyncio.create_task(
-                app.run_task(host=host, port=port, debug=False)
-            )
-            logger.info(f"[GroupMgr] 独立管理后台已启动: http://{host}:{port}")
-        except Exception as exc:
-            logger.warning(f"[GroupMgr] 启动独立后台失败: {exc}")
-
-    @staticmethod
-    def _ad_backend_is_loopback(host: str) -> bool:
-        """判断监听地址是否为回环（127.0.0.1 / ::1 / localhost）。"""
-        host = str(host or "").strip()
-        try:
-            import ipaddress
-            addr = ipaddress.ip_address(host.split("%")[0])
-            return addr.is_loopback
-        except ValueError:
-            return host in ("localhost", "127.0.0.1", "::1")
-
-    def _ad_backend_listen_host(self) -> str:
-        """后台监听地址（v2.21.0 默认仅回环 127.0.0.1，避免无认证网络管理面）。"""
-        try:
-            host = str(self.config.get("ad_backend_host", "") or "").strip()
-            if not host:
-                host = "127.0.0.1"
-            return host
-        except Exception:
-            return "127.0.0.1"
 
     async def _stop_ad_backend(self) -> None:
-        """停止独立后台服务（插件卸载/停用时调用）。"""
-        task = self._ad_backend_task
+        """停止广告后台（v2.21.0：已无独立监听服务，仅清空缓存字段）。"""
         self._ad_backend_task = None
-        if task:
-            task.cancel()
-            try:
-                await task
-            except (asyncio.CancelledError, Exception):
-                pass
         self._ad_backend_app = None
         self._ad_backend_page_cache = ("", 0.0)
 
-    def _ad_backend_auth_ok(self) -> bool:
-        """Token 鉴权（v2.21.0 安全加固）：
-        - 仅接受 X-Token 请求头，**禁用 URL query token**（避免 token 泄漏进日志/浏览器历史）；
-        - 未配置 token 时：仅回环地址监听放行（默认 127.0.0.1）；非回环监听在启动时已被强制要求 token。
-        """
-        try:
-            token = str(self.config.get("ad_backend_token", "") or "").strip()
-        except Exception:
-            token = ""
-        try:
-            header_token = str(quart_request.headers.get("X-Token", "") or "").strip()
-        except Exception:
-            header_token = ""
-        if not token:
-            return self._ad_backend_is_loopback(self._ad_backend_listen_host())
-        if not header_token:
-            return False
-        return header_token == token
-
-    def _ad_backend_register_routes(self, app) -> None:
-        """注册独立后台的全部路由（页面 + API）。"""
-
-        @app.before_request
-        async def _auth_guard():
-            if not self._ad_backend_auth_ok():
-                return jsonify({"status": "error", "message": "token 无效"}), 401
-
-        @app.route("/")
-        async def _index():
-            return await self._ad_backend_index()
-
-        @app.route("/api/stats")
-        async def _api_stats():
-            return await self._ad_backend_stats()
-
-        @app.route("/api/logs")
-        async def _api_logs():
-            return await self._ad_backend_logs()
-
-        @app.route("/api/blacklist")
-        async def _api_blacklist():
-            return await self._ad_backend_blacklist()
-
-        @app.route("/api/blacklist/remove", methods=["POST"])
-        async def _api_blacklist_remove():
-            return await self._ad_backend_blacklist_remove()
-
-        @app.route("/api/fingerprints")
-        async def _api_fingerprints():
-            return await self._ad_backend_fingerprints()
-
-        @app.route("/api/fingerprints/clear", methods=["POST"])
-        async def _api_fingerprints_clear():
-            return await self._ad_backend_fingerprints_clear()
-
-        @app.route("/api/escalation")
-        async def _api_escalation():
-            return await self._ad_backend_escalation()
-
-        @app.route("/api/escalation/reset", methods=["POST"])
-        async def _api_escalation_reset():
-            return await self._ad_backend_escalation_reset()
-
-        @app.route("/api/config")
-        async def _api_config():
-            return await self._ad_backend_config()
-
-    async def _ad_backend_index(self):
-        """返回后台首页（读取 pages/ad_backend/index.html，带短缓存）。"""
-        path = os.path.join(self._get_plugin_dir(), BACKEND_PAGE_REL)
-        now = time.time()
-        cached_html, cached_ts = self._ad_backend_page_cache
-        if not cached_html or (now - cached_ts) > BACKEND_PAGE_CACHE_TTL:
-            try:
-                with open(path, encoding="utf-8") as f:
-                    cached_html = f.read()
-                self._ad_backend_page_cache = (cached_html, now)
-            except Exception as exc:
-                logger.warning(f"[GroupMgr] 读取后台页面失败: {exc}")
-                return QuartResponse("<h1>后台页面缺失: pages/ad_backend/index.html</h1>", 500)
-        return QuartResponse(cached_html, mimetype="text/html")
-
     # ============================================================
-    # 后台 API
+    # 后台 API（v2.21.0 起由 web.py 通过 register_web_api 注册到 AstrBot Dashboard）
     # ============================================================
 
     async def _ad_backend_stats(self):
