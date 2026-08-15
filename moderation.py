@@ -2029,7 +2029,6 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             or self._cfg("qrcode_decode_enabled", False, group_id=group_id)
         )
         combined_signature = ""
-        is_combined_candidate = False
         if not any(hit_types.values()):
             # 组合消息检测：单条未命中时，聚合该用户近期多条消息合并检测，
             # 防止把违禁词拆成多条消息逐字发送来规避审核（如 外/挂/进/群）。
@@ -2041,7 +2040,6 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 if combined_text else {}
             )
             if any(combined_hits.values()):
-                is_combined_candidate = True
                 hit_types = combined_hits
                 text = f"[组合消息检测] {combined_text}"
                 extra_recall_ids = combined_ids
@@ -2055,7 +2053,6 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 # 普通 AI 模式也必须语义复核多条组合。否则“日抛plus”与
                 # “/xxxxxx”这类每条都不命中本地规则的拆分引流仍会漏过；
                 # 非全量模式只复核可疑组合，避免正常连续发言近似全量调用。
-                is_combined_candidate = True
                 hit_types[
                     "full_scan" if llm_always else "context_scan"
                 ] = True

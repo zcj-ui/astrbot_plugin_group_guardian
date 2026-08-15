@@ -2,7 +2,7 @@
 """Aho-Corasick 自动机封装。支持纯文本 AC 匹配 + 正则不可拆解部分的回退。"""
 
 import re
-from typing import Callable, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 try:
     from astrbot.api import logger

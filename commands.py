@@ -423,7 +423,7 @@ class CommandsMixin:
             result = self._extract_data_result(result)
             files = result.get("files", []) if isinstance(result, dict) else []
             folders = result.get("folders", []) if isinstance(result, dict) else []
-            lines = [f"📁 群文件列表:"]
+            lines = ["📁 群文件列表:"]
             for f in folders[:15]:
                 lines.append(f"  📁 {f.get('folder_name', '?')}")
             for f in files[:15]:

@@ -29,6 +29,9 @@ def _stub_astrbot():
         info=lambda *a, **k: None,
         exception=lambda *a, **k: None,
     )
+    event = types.ModuleType("astrbot.api.event")
+    event.AstrMessageEvent = object
+    sys.modules["astrbot.api.event"] = event
     core = types.ModuleType("astrbot.core")
     platform = types.ModuleType("astrbot.core.platform")
     sources = types.ModuleType("astrbot.core.platform.sources")

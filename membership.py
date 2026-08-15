@@ -394,7 +394,6 @@ class MembershipMixin:
         action = "通过" if approved else "拒绝"
         text = f"[入群审核] {user_id} 申请加群已{action}\n验证信息: {comment[:80] if comment else '无'}\n原因: {reason}"
         try:
-            from astrbot.api.event import MessageChain
             gid_int = self._safe_int(group_id, 0)
             if gid_int:
                 client = await self._get_client()

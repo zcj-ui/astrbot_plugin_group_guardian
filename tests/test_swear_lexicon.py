@@ -4,7 +4,6 @@ import ast
 import importlib.util
 import re
 import sqlite3
-import sys
 import unittest
 from pathlib import Path
 

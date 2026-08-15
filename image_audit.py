@@ -38,17 +38,17 @@ def _probe_qr_decoder():
         return _QR_DECODER
     _QR_PROBED = True
     try:
-        import cv2  # noqa: F401
-        import numpy  # noqa: F401
-        _QR_DECODER = "cv2"
-        return _QR_DECODER
+        import importlib.util as _ilu
+        if _ilu.find_spec("cv2") is not None:
+            _QR_DECODER = "cv2"
+            return _QR_DECODER
     except Exception:
         pass
     try:
-        from PIL import Image  # noqa: F401
-        from pyzbar import pyzbar  # noqa: F401
-        _QR_DECODER = "pyzbar"
-        return _QR_DECODER
+        import importlib.util as _ilu
+        if _ilu.find_spec("PIL") is not None and _ilu.find_spec("pyzbar") is not None:
+            _QR_DECODER = "pyzbar"
+            return _QR_DECODER
     except Exception:
         pass
     _QR_DECODER = None
