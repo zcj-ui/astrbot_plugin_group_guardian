@@ -154,16 +154,35 @@ class HashAuditMixin:
     # ============================================================
 
     def _check_hash_blacklist(self, phash: str, distance: int) -> int:
-        """返回与黑名单的最小汉明距离；未命中（或 phash 为空）返回 64。"""
+        """返回与黑名单的最小距离；未命中返回 64。
+
+        v2.21.0 重构后的哈希为「16 位亮度阈值 + 48 位 dHash 结构」。
+        录屏/加边框/不同背景截图等场景会使整体亮度明显变化（亮度段大比例
+        翻转），整串汉明距离可能超过阈值，导致「图片广告被录屏成视频」后
+        匹配不上原图的黑名单样本。因此在整串匹配之外追加「结构段匹配」：
+        亮度段差异 <= 8 且结构段（后 48 位）差异 <= max(distance-4, 2)
+        时也视为命中（命中仍走 LLM 复核兜底，不直接处罚）。
+        """
         if not phash:
             return 64
         best = 64
+        try:
+            distance = max(0, int(distance))
+        except Exception:
+            distance = 10
         for entry in self._hash_blacklist.get("hashes", []):
-            d = self._hamming_distance(phash, str(entry.get("h", "")))
+            ref = str(entry.get("h", ""))
+            d = self._hamming_distance(phash, ref)
             if d < best:
                 best = d
             if best <= distance:
                 return best
+            if len(phash) == 64 and len(ref) == 64:
+                bright_d = self._hamming_distance(phash[:16], ref[:16])
+                struct_d = self._hamming_distance(phash[16:], ref[16:])
+                struct_limit = max(distance - 4, 2)
+                if bright_d <= 8 and struct_d <= struct_limit:
+                    return max(0, min(distance, struct_d + bright_d))
         return best
 
     def _learn_hash(self, phash: str, distance: int) -> None:

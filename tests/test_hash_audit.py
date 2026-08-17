@@ -114,6 +114,26 @@ class BlacklistTests(unittest.TestCase):
         self.assertLessEqual(self.h._check_hash_blacklist("0" * 64, 10), 10)
         self.assertEqual(self.h._check_hash_blacklist("1" * 64, 10), 64)
 
+    def test_structure_match_for_recording_frame(self):
+        """图片广告被录屏成视频（v2.22.0 分段匹配）：
+        亮度段少量翻转（<=8 位）但结构段一致 → 仍命中原图黑名单。"""
+        orig = "0101010101010101" + "10" * 24
+        self.h._learn_hash(orig, 10)
+        # 录屏帧：亮度段前 6 位翻转（整体亮度轻微变化），结构段完全一致
+        bright = orig[:16]
+        flipped = "".join("1" if c == "0" else "0" for c in bright[:6]) + bright[6:]
+        rec = flipped + orig[16:]
+        self.assertEqual(self.h._hamming_distance(rec[:16], orig[:16]), 6)
+        self.assertEqual(self.h._hamming_distance(rec[16:], orig[16:]), 0)
+        self.assertLessEqual(self.h._check_hash_blacklist(rec, 10), 10)
+
+    def test_extreme_brightness_change_no_structure_fallback(self):
+        """亮度段变化过大（>8 位）不做结构段兜底，避免旧格式哈希误判。"""
+        orig = "0101010101010101" + "10" * 24
+        self.h._learn_hash(orig, 10)
+        rec = "10" * 8 + orig[16:]  # 亮度段 16 位全翻转
+        self.assertGreater(self.h._check_hash_blacklist(rec, 10), 10)
+
     def test_learn_dedup_increments_count(self):
         self.h._learn_hash("0" * 64, 10)
         self.h._learn_hash("0" * 64, 10)

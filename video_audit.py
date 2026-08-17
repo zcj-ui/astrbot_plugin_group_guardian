@@ -352,6 +352,40 @@ class VideoAuditMixin:
             if acquired:
                 semaphore.release()
 
+    @staticmethod
+    def _is_meaningful_frame(
+        frame_bytes: bytes,
+        min_mean: float = 12.0,
+    ) -> bool:
+        """轻量判断帧是否有效内容：排除纯黑/纯白帧（v2.22.0）。
+
+        录屏视频开头/结尾常有黑屏或白屏过渡帧，会浪费 `video_max_frames`
+        的名额并挤掉中间的广告画面。仅以整体灰度均值判断（纯色但有内容的
+        深色/浅色画面不会被误删）。判断失败时视为有效（不误删）。
+        """
+        if cv2 is None or not frame_bytes:
+            return False
+        try:
+            import numpy as np
+
+            arr = np.frombuffer(frame_bytes, np.uint8)
+            frame = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+            if frame is None:
+                return False
+            mean = float(frame.mean())
+            if mean < min_mean or mean > 255.0 - min_mean:
+                return False
+            return True
+        except Exception:
+            return True
+
+    def _filter_meaningful_frames(self, frames: list, max_frames: int) -> list:
+        """过滤纯黑/纯白/低对比帧，保持顺序与数量上限。"""
+        if not frames:
+            return []
+        kept = [f for f in frames if self._is_meaningful_frame(f)]
+        return kept[:max_frames]
+
     def _extract_video_frames(
         self, video_path: str, max_frames: int, interval_sec: float,
         mode: str = "interval", scene_threshold: float = 30.0,
@@ -379,12 +413,12 @@ class VideoAuditMixin:
                 return []
             if str(mode).strip().lower() == "spans":
                 frames = self._spans_extract_frames(cap, max_frames)
-                return frames
+                return self._filter_meaningful_frames(frames, max_frames)
             if str(mode).strip().lower() == "scene":
                 frames = self._scene_extract_frames(cap, max_frames, scene_threshold)
                 if len(frames) < 3:
                     frames = self._scene_backup_frames(video_path, max_frames, frames)
-                return frames
+                return self._filter_meaningful_frames(frames, max_frames)
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             if fps <= 0:
                 fps = 30.0
@@ -403,7 +437,8 @@ class VideoAuditMixin:
                         frame,
                         [int(cv2.IMWRITE_JPEG_QUALITY), VIDEO_JPEG_QUALITY],
                     )
-                    if ok:
+                    # v2.22.0：跳过纯黑/纯白/低对比帧，避免录屏首尾过渡帧占用名额
+                    if ok and self._is_meaningful_frame(buf.tobytes()):
                         frames.append(buf.tobytes())
                 idx += 1
             return frames
@@ -760,10 +795,48 @@ class VideoAuditMixin:
             if temp_path:
                 await self._run_sync_in_thread(self._remove_temp_file, temp_path)
 
+    def _dedup_video_frames(self, frames: list, distance: int = 6) -> list:
+        """相似帧去重（v2.22.0）：同一画面（结构段 dHash 距离 <= distance）
+        只保留首个代表帧。录屏静止视频尤其明显——首/中/尾帧内容几乎相同，
+        去重后可避免重复识别，并把检测预算花在唯一画面上。
+
+        依赖感知哈希 mixin 的 ``_phash_from_data``（缺失时跳过，保持原行为）。
+        """
+        if not frames or len(frames) <= 1:
+            return frames
+        phash_fn = getattr(self, "_phash_from_data", None)
+        if not callable(phash_fn):
+            return frames
+        hamming = getattr(self, "_hamming_distance", None)
+        if not callable(hamming):
+            hamming = lambda a, b: sum(
+                1 for x, y in zip(str(a or ""), str(b or "")) if x != y
+            )
+        try:
+            selected = []
+            for frame in frames:
+                ph = str(phash_fn(frame) or "")
+                struct = ph[16:] if len(ph) == 64 else ph
+                dup = False
+                for chosen in selected:
+                    ref = str(phash_fn(chosen) or "")
+                    rstruct = ref[16:] if len(ref) == 64 else ref
+                    if struct and rstruct and hamming(struct, rstruct) <= distance:
+                        dup = True
+                        break
+                if not dup:
+                    selected.append(frame)
+            return selected or frames
+        except Exception:
+            return frames
+
     async def _recognize_video_frames(
         self, event, frames: list, group_id: str
     ) -> str:
         """对每一帧做视觉模型识别 + 本地二维码解码，返回带帧序号的拼接文本。"""
+        # v2.22.0：相似帧去重——录屏静止视频（图片广告被录屏）首/中/尾帧
+        # 内容几乎相同，去重后只检测每个唯一画面。
+        frames = self._dedup_video_frames(frames)
         entries = []
         precheck_enabled = self._cfg("video_quick_precheck", False, group_id=group_id)
         precheck_threshold = self._cfg_float("video_precheck_threshold", 0.5, group_id=group_id)

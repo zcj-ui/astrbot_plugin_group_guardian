@@ -16,16 +16,21 @@ from pathlib import Path
 
 
 def _stub_astrbot():
-    if "astrbot.api" in sys.modules:
+    if "astrbot.core" in sys.modules:
         return
-    astrbot = types.ModuleType("astrbot")
-    api = types.ModuleType("astrbot.api")
-    api.logger = types.SimpleNamespace(
-        debug=lambda *a, **k: None,
-        warning=lambda *a, **k: None,
-        info=lambda *a, **k: None,
-        exception=lambda *a, **k: None,
-    )
+    if "astrbot" not in sys.modules:
+        sys.modules["astrbot"] = types.ModuleType("astrbot")
+    api = sys.modules.get("astrbot.api")
+    if api is None:
+        api = types.ModuleType("astrbot.api")
+        sys.modules["astrbot.api"] = api
+    if not hasattr(api, "logger"):
+        api.logger = types.SimpleNamespace(
+            debug=lambda *a, **k: None,
+            warning=lambda *a, **k: None,
+            info=lambda *a, **k: None,
+            exception=lambda *a, **k: None,
+        )
     core = types.ModuleType("astrbot.core")
     platform = types.ModuleType("astrbot.core.platform")
     sources = types.ModuleType("astrbot.core.platform.sources")
@@ -35,7 +40,7 @@ def _stub_astrbot():
     )
     event_module.AiocqhttpMessageEvent = object
     sys.modules.update({
-        "astrbot": astrbot,
+        "astrbot": sys.modules["astrbot"],
         "astrbot.api": api,
         "astrbot.core": core,
         "astrbot.core.platform": platform,
@@ -286,7 +291,13 @@ class FrameExtractionTests(unittest.TestCase):
             path, cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64)
         )
         try:
-            for _ in range(30):
+            for _ in range(5):  # 开头黑屏（录屏过渡帧）
+                writer.write(np.zeros((64, 64, 3), np.uint8))
+            content = np.full((64, 64, 3), 128, np.uint8)
+            content[20:44, 20:44] = (0, 0, 255)
+            for _ in range(20):  # 中间内容帧
+                writer.write(content)
+            for _ in range(5):  # 结尾黑屏
                 writer.write(np.zeros((64, 64, 3), np.uint8))
         finally:
             writer.release()
@@ -297,6 +308,11 @@ class FrameExtractionTests(unittest.TestCase):
             self.assertLessEqual(len(frames), 3)
             # JPEG magic
             self.assertTrue(all(f.startswith(b"\xff\xd8") for f in frames))
+            # v2.22.0：黑屏过渡帧已被过滤，保留的都是有效内容帧
+            self.assertTrue(all(
+                video_audit.VideoAuditMixin._is_meaningful_frame(f)
+                for f in frames
+            ))
         finally:
             os.remove(path)
 
@@ -491,6 +507,115 @@ class VideoFingerprintCacheTests(unittest.TestCase):
         self.h._video_fp_cache = {f"{'0'*64}_500": 1}
         # 旧版 2 段格式指纹（无多帧信息）不在缓存时不做部分匹配
         self.assertFalse(self.h._check_video_fp_cache(f"{'1'*64}_300"))
+
+
+class V222StillFrameAndDedupTests(unittest.TestCase):
+    """v2.22.0：图片广告被录屏成视频的检测增强——
+    无效帧过滤 + 相似帧去重 + 录屏帧命中原图黑名单。"""
+
+    def test_is_meaningful_frame_filters_black_and_white(self):
+        cv2 = video_audit.cv2
+        if cv2 is None:
+            self.skipTest("opencv-python-headless not installed")
+        import numpy as np
+
+        black = np.zeros((64, 64, 3), np.uint8)
+        ok, bb = cv2.imencode(".jpg", black)
+        self.assertTrue(ok)
+        self.assertFalse(
+            video_audit.VideoAuditMixin._is_meaningful_frame(bb.tobytes())
+        )
+
+        white = np.full((64, 64, 3), 255, np.uint8)
+        ok2, wb = cv2.imencode(".jpg", white)
+        self.assertTrue(ok2)
+        self.assertFalse(
+            video_audit.VideoAuditMixin._is_meaningful_frame(wb.tobytes())
+        )
+
+        content = np.full((64, 64, 3), 128, np.uint8)
+        content[10:50, 10:50] = (0, 0, 255)
+        ok3, cb = cv2.imencode(".jpg", content)
+        self.assertTrue(ok3)
+        self.assertTrue(
+            video_audit.VideoAuditMixin._is_meaningful_frame(cb.tobytes())
+        )
+
+    def test_filter_meaningful_frames(self):
+        cv2 = video_audit.cv2
+        if cv2 is None:
+            self.skipTest("opencv-python-headless not installed")
+        import numpy as np
+
+        black = np.zeros((64, 64, 3), np.uint8)
+        ok, bb = cv2.imencode(".jpg", black)
+        self.assertTrue(ok)
+        content = np.full((64, 64, 3), 128, np.uint8)
+        content[10:50, 10:50] = (0, 0, 255)
+        ok2, cb = cv2.imencode(".jpg", content)
+        self.assertTrue(ok2)
+        h = _Harness()
+        kept = h._filter_meaningful_frames(
+            [bb.tobytes(), cb.tobytes(), bb.tobytes()], 5
+        )
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0], cb.tobytes())
+
+    def test_dedup_video_frames_collapses_identical_frames(self):
+        import hashlib
+
+        def fake_phash(data):
+            bits = bin(int(hashlib.md5(data).hexdigest(), 16))[2:].zfill(64)
+            return bits
+
+        h = _Harness()
+        h._phash_from_data = fake_phash
+        f1 = b"frame-one-bytes"
+        f2 = b"frame-two-bytes"
+        dedup = h._dedup_video_frames([f1, f1, f2])
+        self.assertEqual(len(dedup), 2)
+        self.assertEqual(dedup[0], f1)
+        self.assertEqual(dedup[1], f2)
+
+    def test_dedup_no_phash_fallback_keeps_all(self):
+        h = _Harness()  # 无 _phash_from_data
+        frames = [b"a", b"b", b"c"]
+        self.assertEqual(h._dedup_video_frames(frames), frames)
+
+    def test_extract_frames_interval_skips_black_frames(self):
+        cv2 = video_audit.cv2
+        if cv2 is None:
+            self.skipTest("opencv-python-headless not installed")
+        import numpy as np
+
+        path = os.path.join(tempfile.gettempdir(), "gg_blacklead_video.mp4")
+        writer = cv2.VideoWriter(
+            path, cv2.VideoWriter_fourcc(*"mp4v"), 10, (64, 64)
+        )
+        try:
+            for _ in range(5):  # 前 0.5s 黑屏（录屏过渡帧）
+                writer.write(np.zeros((64, 64, 3), np.uint8))
+            content = np.full((64, 64, 3), 128, np.uint8)
+            content[20:44, 20:44] = (0, 0, 255)
+            for _ in range(10):  # 中间内容帧（图片广告画面）
+                writer.write(content)
+            for _ in range(5):  # 尾部黑屏
+                writer.write(np.zeros((64, 64, 3), np.uint8))
+        finally:
+            writer.release()
+        try:
+            h = _Harness()
+            frames = h._extract_video_frames(
+                path, max_frames=3, interval_sec=0.5, mode="interval"
+            )
+            self.assertTrue(frames)
+            self.assertLessEqual(len(frames), 3)
+            for f in frames:
+                self.assertTrue(
+                    video_audit.VideoAuditMixin._is_meaningful_frame(f)
+                )
+        finally:
+            os.remove(path)
 
 
 class V220StaticChecks(unittest.TestCase):
