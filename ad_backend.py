@@ -238,3 +238,125 @@ class AdBackendMixin:
             return jsonify({"status": "success", "data": data})
         except Exception as exc:
             return jsonify({"status": "error", "message": str(exc)})
+
+    # ============================================================
+    # v2.23.0 不确定视频广告管理员复核
+    # ============================================================
+
+    @staticmethod
+    def _video_review_id(value):
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return 0
+
+    async def _ad_backend_video_reviews(self):
+        """待复核的视频广告队列。"""
+        try:
+            try:
+                limit = min(int(quart_request.args.get("limit", 50)), 200)
+            except (ValueError, TypeError):
+                limit = 50
+            data = self._storage.list_pending_video_ad_reviews(limit)
+            enabled = bool(self.config.get("video_ad_review_enabled", False))
+            return jsonify({
+                "status": "success",
+                "data": data,
+                "count": len(data),
+                "enabled": enabled,
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _ad_backend_video_reviews_confirm(self):
+        """确认违规：学习视频指纹 + 禁言 + 记录。"""
+        try:
+            body = await quart_request.get_json(force=True, silent=True) or {}
+            review_id = self._video_review_id(body.get("review_id", 0))
+            reviewer = str(body.get("reviewer", "") or "")[:64]
+            if review_id <= 0:
+                return jsonify({"status": "error", "message": "缺少 review_id"})
+            item = self._storage.get_video_ad_review(review_id)
+            if not item:
+                return jsonify({"status": "error", "message": "未找到该复核记录"})
+            if item.get("status") != "pending":
+                return jsonify({"status": "error", "message": "该记录已处理"})
+            ok = self._storage.resolve_video_ad_review(review_id, "confirmed", reviewer)
+            if not ok:
+                return jsonify({"status": "error", "message": "处理失败（可能已被处理）"})
+            # 学习视频指纹：同一广告视频下次直接命中
+            fp = str(item.get("fingerprint", "") or "")
+            learned = False
+            if fp:
+                try:
+                    self._learn_video_fingerprint(fp)
+                    learned = True
+                except Exception:
+                    pass
+            # 禁言该用户
+            group_id = str(item.get("group_id", "") or "")
+            user_id = str(item.get("user_id", "") or "")
+            banned = False
+            try:
+                gid = self._video_review_id(group_id)
+                uid = self._video_review_id(user_id)
+                duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
+                client = await self._get_client()
+                if client and gid and uid:
+                    ok, _err = await self._call_group_api(
+                        client, "set_group_ban", "禁言",
+                        group_id=gid, user_id=uid, duration=max(60, int(duration)),
+                    )
+                    banned = ok
+            except Exception:
+                pass
+            # 记录审核日志
+            try:
+                self._log_moderation(
+                    group_id, user_id, str(item.get("user_name", "") or ""),
+                    str(item.get("msg_text", "") or ""),
+                    "管理员复核确认广告（已禁言）" if banned else "管理员复核确认广告（禁言失败）",
+                    "管理员在 WebUI 广告后台-视频复核确认违规",
+                    [],
+                )
+            except Exception:
+                pass
+            return jsonify({
+                "status": "success",
+                "banned": banned,
+                "learned_fingerprint": learned,
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _ad_backend_video_reviews_clear(self):
+        """确认正常 / 放行。"""
+        try:
+            body = await quart_request.get_json(force=True, silent=True) or {}
+            review_id = self._video_review_id(body.get("review_id", 0))
+            reviewer = str(body.get("reviewer", "") or "")[:64]
+            if review_id <= 0:
+                return jsonify({"status": "error", "message": "缺少 review_id"})
+            item = self._storage.get_video_ad_review(review_id)
+            if not item:
+                return jsonify({"status": "error", "message": "未找到该复核记录"})
+            if item.get("status") != "pending":
+                return jsonify({"status": "error", "message": "该记录已处理"})
+            ok = self._storage.resolve_video_ad_review(review_id, "cleared", reviewer)
+            if not ok:
+                return jsonify({"status": "error", "message": "处理失败（可能已被处理）"})
+            try:
+                self._log_moderation(
+                    str(item.get("group_id", "") or ""),
+                    str(item.get("user_id", "") or ""),
+                    str(item.get("user_name", "") or ""),
+                    str(item.get("msg_text", "") or ""),
+                    "管理员复核放行（非广告）",
+                    "管理员在 WebUI 广告后台-视频复核确认正常",
+                    [],
+                )
+            except Exception:
+                pass
+            return jsonify({"status": "success"})
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})

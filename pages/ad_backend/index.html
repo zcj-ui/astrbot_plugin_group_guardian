@@ -66,6 +66,8 @@ img.ev { max-width:140px; max-height:90px; border-radius:6px; cursor:zoom-in; bo
     <button class="tab" data-view="blacklist">广告黑名单</button>
     <button class="tab" data-view="fingerprints">视频指纹</button>
     <button class="tab" data-view="escalation">分级处置</button>
+<button class="tab" data-view="reviews">视频复核</button>
+
     <button class="tab" data-view="config">配置状态</button>
   </nav>
 </header>
@@ -147,6 +149,16 @@ img.ev { max-width:140px; max-height:90px; border-radius:6px; cursor:zoom-in; bo
     </div>
   </section>
 
+  <!-- 视频复核（v2.23.0：不确定视频广告管理员复核） -->
+  <section class="view" id="view-reviews">
+    <div class="panel">
+      <h2>待复核的视频广告 <span class="time" id="rv-status"></span></h2>
+      <table><thead><tr><th>编号</th><th>时间</th><th>群号</th><th>QQ</th><th>识别内容</th><th>视频指纹</th><th>操作</th></tr></thead><tbody id="rv-body"></tbody></table>
+      <div class="empty" id="rv-empty" style="display:none">暂无待复核视频广告</div>
+    </div>
+  </section>
+
+</main>
 </main>
 <div class="toast" id="toast"></div>
 <script>
@@ -182,6 +194,7 @@ document.querySelectorAll('.tab').forEach(function(btn){
     if (btn.dataset.view==='blacklist') loadBlacklist();
     if (btn.dataset.view==='fingerprints') loadFingerprints();
     if (btn.dataset.view==='escalation') loadEscalation();
+    if (btn.dataset.view==='reviews') loadVideoReviews();
     if (btn.dataset.view==='config') loadConfig();
   });
 });
@@ -334,6 +347,44 @@ function loadConfig(){
       else{ dd.textContent=v; }
       body.appendChild(dt); body.appendChild(dd);
     });
+  });
+}
+
+// ===== 视频复核（v2.23.0）=====
+function loadVideoReviews(){
+  api('/api/video_reviews').then(function(r){
+    if(r.status!=='success'){ toast('加载失败: '+r.message); return; }
+    var body=document.getElementById('rv-body'); body.innerHTML='';
+    var empty=document.getElementById('rv-empty');
+    document.getElementById('rv-status').textContent=r.enabled?'已开启（等待管理员复核）':'未开启 video_ad_review_enabled';
+    if(!r.data || !r.data.length){ empty.style.display='block'; return; }
+    empty.style.display='none';
+    r.data.forEach(function(it){
+      var tr=document.createElement('tr');
+      var preview=esc(it.msg_preview||'').slice(0,80);
+      var fp=esc(it.fingerprint||'-');
+      tr.innerHTML='<td>'+it.id+'</td><td>'+fmtTsShort(it.ts)+'</td><td>'+esc(it.group_id)+'</td>'+
+        '<td>'+esc(it.user_id)+'</td><td>'+preview+'</td><td style="word-break:break-all;max-width:180px">'+fp+'</td>'+
+        '<td><button class="btn" onclick="confirmVideoReview('+it.id+')">确认违规</button> '+
+        '<button class="btn gray" onclick="clearVideoReview('+it.id+')">放行</button></td>';
+      body.appendChild(tr);
+    });
+  });
+}
+function confirmVideoReview(id){
+  if(!confirm('确认该视频为广告？将学习视频指纹并禁言发送者。')) return;
+  api('/api/video_reviews/confirm',{method:'POST',body:JSON.stringify({review_id:id,reviewer:''})}).then(function(r){
+    if(r.status!=='success'){ toast('操作失败: '+r.message); return; }
+    toast('已确认广告（禁言'+(r.banned?'成功':'失败')+'，指纹学习'+(r.learned_fingerprint?'成功':'未学习')+'）');
+    loadVideoReviews();
+  });
+}
+function clearVideoReview(id){
+  if(!confirm('确认该视频为正常内容并放行？')) return;
+  api('/api/video_reviews/clear',{method:'POST',body:JSON.stringify({review_id:id,reviewer:''})}).then(function(r){
+    if(r.status!=='success'){ toast('操作失败: '+r.message); return; }
+    toast('已放行');
+    loadVideoReviews();
   });
 }
 

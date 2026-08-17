@@ -2008,6 +2008,16 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             text = await self._apply_video_audit(
                 text, video_components, event, group_id
             )
+        # v2.23.0：疑似视频广告 → 提交管理员复核（不直接处罚）
+        if (
+            getattr(self, "_video_ad_review_signal", False)
+            and self._cfg("video_ad_review_enabled", False, group_id=group_id)
+        ):
+            async for item in self._submit_video_ad_review(
+                event, group_id, user_id, user_name, text
+            ):
+                yield item
+            return
         # v2.13.0 高级审核（均默认关闭）：
         # 外链邀请 / 风险链接为高置信文本特征 → 直接撤回+记录，不进 LLM 审核
         link_violation = await self._detect_link_violation(text, group_id)
@@ -2533,6 +2543,59 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         except Exception as e:
             logger.debug(f"[GroupMgr] 违规积分处罚异常: {e}")
             return False, []
+
+    async def _submit_video_ad_review(
+        self,
+        event: AiocqhttpMessageEvent,
+        group_id: str,
+        user_id: str,
+        user_name: str,
+        text: str,
+    ):
+        """v2.23.0：疑似视频广告 → 落待复核队列（不直接处罚）。
+
+        - 可选先撤回消息（``video_ad_review_recall``，默认开启）；
+        - 写入 ``video_ad_reviews`` 表，管理员在 WebUI 广告后台-视频复核确认违规或放行；
+        - 可选群内通知（``video_ad_review_notice``）。
+        """
+        recalled = False
+        if self._cfg("video_ad_review_recall", True, group_id=group_id):
+            try:
+                msg_id = str(
+                    getattr(getattr(event, "message_obj", None), "message_id", "")
+                )
+                if msg_id:
+                    await self._recall_msg(event, msg_id)
+                    recalled = True
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 疑似视频广告撤回失败: {exc}")
+        fingerprint = getattr(self, "_video_ad_review_fingerprint", "")
+        source = getattr(self, "_video_ad_review_source", "")
+        review_id = 0
+        try:
+            review_id = self._storage.create_video_ad_review(
+                group_id, user_id, user_name, text, fingerprint, source
+            )
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 写入视频复核队列失败: {exc}")
+        action = "撤回+待复核" if recalled else "待复核"
+        self._log_moderation(
+            group_id, user_id, user_name, text,
+            f"{action}（疑似视频广告）", "疑似视频广告，等待管理员复核",
+            [],
+        )
+        if self._cfg("video_ad_review_notice", True, group_id=group_id):
+            try:
+                notice = (
+                    f"[群管] {user_name}({user_id}) 发送疑似视频广告，已提交管理员复核"
+                    f"{'（消息已撤回）' if recalled else ''}"
+                    f"（编号 {review_id}）。请在 WebUI 广告后台-视频复核处理。"
+                )
+                yield event.plain_result(notice)
+            except Exception as notice_err:
+                logger.warning(f"[GroupMgr] 视频复核通知失败: {notice_err}")
+        event.stop_event()
+        return
 
     async def _execute_rule_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
                                     user_id: str, user_name: str, text: str,

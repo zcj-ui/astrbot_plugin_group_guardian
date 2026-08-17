@@ -681,6 +681,10 @@ class VideoAuditMixin:
         self, text: str, videos: list, event, group_id: str
     ) -> str:
         """批量审核视频并把识别文本并入正文；开关关闭或失败时原样返回。"""
+        # v2.23.0：疑似广告信号——每次审核开始前重置
+        self._video_ad_review_signal = False
+        self._video_ad_review_source = ""
+        self._video_ad_review_fingerprint = ""
         if not videos:
             return text
         if getattr(self, "_video_audit_closing", False):
@@ -710,6 +714,17 @@ class VideoAuditMixin:
         video_text = "\n".join(r for r in results if r).strip()
         if not video_text:
             return text
+        # v2.23.0：LLM 广告专用判定输出「疑似广告」→ 标记待管理员复核信号
+        if "疑似广告" in video_text:
+            self._video_ad_review_signal = True
+            recent = getattr(self, "_recent_video_fingerprints", {})
+            self._video_ad_review_fingerprint = (
+                next(iter(recent)) if recent else ""
+            )
+            try:
+                self._video_ad_review_source = str(videos[0][2] or "")
+            except Exception:
+                self._video_ad_review_source = ""
         text = (
             text + "\n[视频审核]\n" + video_text
             if text

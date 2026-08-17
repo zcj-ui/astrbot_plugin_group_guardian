@@ -1009,6 +1009,24 @@
         "default": false,
         "hint": "广告确认过的整段视频（首帧哈希+时长指纹）下次直接命中并跳过检测，群发同一广告视频时零视觉调用。可按群覆盖"
     },
+    "video_ad_review_enabled": {
+        "description": "不确定视频广告提交管理员复核",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，视频广告检测判定为「疑似广告」（LLM 广告专用判定输出疑似、无法明确确认）时，不直接处罚，改为进入待复核队列，由管理员在 WebUI「广告后台-视频复核」确认违规或放行；需 video_ad_visual_enabled 与 video_audit_enabled 均开启。可按群覆盖"
+    },
+    "video_ad_review_recall": {
+        "description": "复核前先撤回疑似广告消息",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，疑似广告视频进入待复核队列的同时先撤回消息，防止广告继续传播；关闭则消息保留在群里，仅停止机器人响应并等待管理员复核。可按群覆盖"
+    },
+    "video_ad_review_notice": {
+        "description": "复核入队时群内通知管理员",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，疑似广告视频进入待复核队列时在群内发送一条提示，提醒管理员前往 WebUI 复核。可按群覆盖"
+    },
     "ad_backend_enabled": {
         "description": "独立Web管理后台开关",
         "type": "bool",

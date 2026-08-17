@@ -341,6 +341,10 @@ class WebMixin:
                 ("/ad_backend/escalation", self._ad_backend_escalation, ["GET"], "广告后台-分级处置"),
                 ("/ad_backend/escalation/reset", self._ad_backend_escalation_reset, ["POST"], "广告后台-重置分级"),
                 ("/ad_backend/config", self._ad_backend_config, ["GET"], "广告后台-配置状态"),
+                # v2.23.0 不确定视频广告管理员复核
+                ("/ad_backend/video_reviews", self._ad_backend_video_reviews, ["GET"], "广告后台-待复核视频广告"),
+                ("/ad_backend/video_reviews/confirm", self._ad_backend_video_reviews_confirm, ["POST"], "广告后台-确认视频广告违规"),
+                ("/ad_backend/video_reviews/clear", self._ad_backend_video_reviews_clear, ["POST"], "广告后台-放行疑似视频广告"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(

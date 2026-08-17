@@ -430,6 +430,26 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_status ON pending_web_operations(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_ts ON pending_web_operations(ts)")
+        # v2.23.0 不确定视频广告管理员复核队列：
+        # 视频广告检测判定为「疑似广告」时先落待复核，由管理员确认违规或放行。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS video_ad_reviews ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT '', "
+            "msg_text TEXT DEFAULT '', "
+            "msg_preview TEXT DEFAULT '', "
+            "fingerprint TEXT DEFAULT '', "
+            "source TEXT DEFAULT '', "
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / confirmed / cleared
+            "reviewed_by TEXT DEFAULT '', "
+            "reviewed_at INTEGER DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_video_reviews_status ON video_ad_reviews(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_video_reviews_ts ON video_ad_reviews(ts)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -1361,6 +1381,98 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                 conn.commit()
         except Exception:
             pass
+
+    # ============================================================
+    # v2.23.0 不确定视频广告管理员复核队列
+    # ============================================================
+
+    def create_video_ad_review(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str = "",
+        msg_text: str = "",
+        fingerprint: str = "",
+        source: str = "",
+    ) -> int:
+        """把一条「疑似广告视频」写入待复核队列；成功返回自增 id，失败返回 0。"""
+        if not str(group_id or "") or not str(user_id or ""):
+            return 0
+        try:
+            now = int(time.time())
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO video_ad_reviews "
+                    "(ts, group_id, user_id, user_name, msg_text, msg_preview, "
+                    " fingerprint, source, status, reviewed_by, reviewed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0)",
+                    (
+                        now,
+                        str(group_id or ""),
+                        str(user_id or ""),
+                        str(user_name or "")[:64],
+                        str(msg_text or ""),
+                        str(msg_text or "")[:200],
+                        str(fingerprint or ""),
+                        str(source or "")[:512],
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+        except Exception:
+            return 0
+
+    def list_pending_video_ad_reviews(self, limit: int = 50) -> List[dict]:
+        """列出待复核的视频广告（pending，按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, fingerprint, source, status, reviewed_by, reviewed_at "
+                    "FROM video_ad_reviews WHERE status='pending' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 200)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_video_ad_review(self, review_id: int) -> Optional[dict]:
+        """按 id 查询一条视频广告复核记录（任意状态）。"""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, fingerprint, source, status, reviewed_by, reviewed_at "
+                    "FROM video_ad_reviews WHERE id=?",
+                    (int(review_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def resolve_video_ad_review(
+        self, review_id: int, status: str, reviewer: str = ""
+    ) -> bool:
+        """确认违规（confirmed）或放行（cleared）；仅 pending 可成功（CAS 防并发）。"""
+        if status not in ("confirmed", "cleared"):
+            return False
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE video_ad_reviews SET status=?, reviewed_by=?, "
+                    "reviewed_at=? WHERE id=? AND status='pending'",
+                    (
+                        status,
+                        str(reviewer or "")[:64],
+                        int(time.time()),
+                        int(review_id),
+                    ),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
 
     # ============================================================
     # v2.4.0 新增：F1 入群审核规则

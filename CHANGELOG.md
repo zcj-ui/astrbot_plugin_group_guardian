@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.23.0 - 2026-08-17
+
+### 新功能：不确定的视频广告提交管理员复核（用户需求）
+
+背景：视频广告检测对「疑似广告」（LLM 广告专用判定输出「疑似广告：」、无法明确确认）
+仍直接按广告处罚，可能误伤正常视频；希望先由管理员人工复核再决定处置。
+
+改动：
+
+- **新增配置**（均可按群覆盖）：`video_ad_review_enabled`（总开关，默认关闭）、
+  `video_ad_review_recall`（复核前先撤回消息，默认开启）、`video_ad_review_notice`
+  （复核入队时群内通知管理员，默认开启）。
+- **检测触发**（`video_audit.py`）：`_apply_video_audit` 在识别文本含「疑似广告」
+  （`video_ad_visual_enabled` 广告专用判定输出）时设置 `_video_ad_review_signal` 信号，
+  并携带视频指纹与来源。
+- **复核流程**（`moderation.py`）：开启 `video_ad_review_enabled` 时，疑似视频广告
+  不再直接处罚，改为落 `video_ad_reviews` 待复核队列（可选先撤回消息），记录审核日志，
+  群内通知管理员前往 WebUI 处理；同时 `event.stop_event()` 阻断后续回复。
+- **存储**（`storage.py`）：新增 `video_ad_reviews` 表（group/user/识别文本/视频指纹/来源/
+  状态/复核人/复核时间），提供 `create_video_ad_review` / `list_pending_video_ad_reviews` /
+  `get_video_ad_review` / `resolve_video_ad_review`（仅 pending 可确认，CAS 防并发）。
+- **WebUI**（`ad_backend.py` + `web.py` + `pages/ad_backend/index.html`）：
+  广告后台新增「视频复核」页签与 3 个接口——列表 / 确认违规（学习视频指纹 + 禁言 +
+  记录）/ 放行；列表页展示识别内容、视频指纹、群号、QQ 与操作按钮。
+
+测试：新增 `tests/test_video_ad_review.py`（storage CRUD / 疑似信号 / 确认违规与放行
+handler / schema 默认值 / 路由注册静态断言），共 12 项。
+
 ## v2.22.0 - 2026-08-15
 
 ### 修复：图片广告被录屏成视频后无法拦截（用户反馈）
