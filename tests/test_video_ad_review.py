@@ -35,6 +35,9 @@ def _stub_astrbot():
             info=lambda *a, **k: None,
             exception=lambda *a, **k: None,
         )
+    api_event = types.ModuleType("astrbot.api.event")
+    api_event.AstrMessageEvent = object
+    sys.modules["astrbot.api.event"] = api_event
     core = types.ModuleType("astrbot.core")
     platform = types.ModuleType("astrbot.core.platform")
     sources = types.ModuleType("astrbot.core.platform.sources")
@@ -279,6 +282,7 @@ class VideoReviewStaticChecks(unittest.TestCase):
         self.assertFalse(schema["video_ad_review_enabled"]["default"])
         self.assertTrue(schema["video_ad_review_recall"]["default"])
         self.assertTrue(schema["video_ad_review_notice"]["default"])
+        self.assertEqual("", schema["video_ad_review_forward_group"]["default"])
 
     def test_web_registers_review_routes(self):
         src = (ROOT / "web.py").read_text(encoding="utf-8")
@@ -303,6 +307,113 @@ class VideoReviewStaticChecks(unittest.TestCase):
         src = (ROOT / "video_audit.py").read_text(encoding="utf-8")
         self.assertIn("_video_ad_review_signal", src)
         self.assertIn('"疑似广告"', src)
+
+    def test_main_registers_review_commands(self):
+        src = (ROOT / "main.py").read_text(encoding="utf-8")
+        self.assertIn('@filter.command("确认广告")', src)
+        self.assertIn('@filter.command("放行广告")', src)
+
+
+class ReviewCommandTests(unittest.IsolatedAsyncioTestCase):
+    """QQ 管理群内「确认广告 #N / 放行广告 #N」命令（mock 依赖）。"""
+
+    def setUp(self):
+        commands = _load("group_guardian_video_review_cmd", "commands.py")
+
+        class _Harness(commands.CommandsMixin):
+            def __init__(self):
+                self.str_values = {"video_ad_review_forward_group": "888"}
+                self._storage = _FakeCmdStorage()
+                self.replies = []
+
+            def _cfg_str(self, key, default="", group_id=None):
+                return self.str_values.get(key, default)
+
+            def _get_group_id(self, event):
+                return str(getattr(event, "group_id", "") or "")
+
+            async def _is_plugin_admin(self, event):
+                return bool(getattr(event, "admin", False))
+
+            def _try_get_sender_id(self, event):
+                return str(getattr(event, "sender_id", "") or "")
+
+        self.h = _Harness()
+        self.commands = commands
+
+        async def _fake_apply(self, item):
+            return True, True
+
+        self._orig = commands.AdBackendMixin._apply_video_ad_review_confirmed
+        commands.AdBackendMixin._apply_video_ad_review_confirmed = _fake_apply
+
+    def tearDown(self):
+        self.commands.AdBackendMixin._apply_video_ad_review_confirmed = self._orig
+
+    async def _collect(self, coro, event=None):
+        if event is not None and not hasattr(event, "plain_result"):
+            event.plain_result = lambda msg: types.SimpleNamespace(message_str=str(msg))
+        replies = []
+        async for item in coro:
+            replies.append(str(item.message_str))
+        return replies
+
+    async def test_confirm_command(self):
+        event = types.SimpleNamespace(
+            group_id="888", admin=True, sender_id="admin1",
+            message_str="确认广告 #1",
+        )
+        replies = await self._collect(self.h.cmd_review_confirm(event), event)
+        self.assertTrue(any("已确认广告" in r for r in replies))
+        self.assertEqual("confirmed", self.h._storage.reviews[1]["status"])
+
+    async def test_clear_command(self):
+        event = types.SimpleNamespace(
+            group_id="888", admin=True, sender_id="admin1",
+            message_str="放行广告 #2",
+        )
+        replies = await self._collect(self.h.cmd_review_clear(event), event)
+        self.assertTrue(any("已放行" in r for r in replies))
+        self.assertEqual("cleared", self.h._storage.reviews[2]["status"])
+
+    async def test_rejects_non_review_group(self):
+        event = types.SimpleNamespace(
+            group_id="999", admin=True, sender_id="admin1",
+            message_str="确认广告 #1",
+        )
+        replies = await self._collect(self.h.cmd_review_confirm(event), event)
+        self.assertTrue(any("管理群" in r for r in replies))
+        self.assertEqual("pending", self.h._storage.reviews[1]["status"])
+
+    async def test_rejects_non_admin(self):
+        event = types.SimpleNamespace(
+            group_id="888", admin=False, sender_id="u1",
+            message_str="确认广告 #1",
+        )
+        replies = await self._collect(self.h.cmd_review_confirm(event), event)
+        self.assertTrue(any("权限不足" in r for r in replies))
+        self.assertEqual("pending", self.h._storage.reviews[1]["status"])
+
+
+class _FakeCmdStorage:
+    def __init__(self):
+        self.reviews = {
+            1: {"id": 1, "status": "pending", "group_id": "1", "user_id": "2",
+                "user_name": "u", "msg_text": "疑似广告", "fingerprint": "fp_1"},
+            2: {"id": 2, "status": "pending", "group_id": "1", "user_id": "3",
+                "user_name": "u", "msg_text": "疑似广告2", "fingerprint": ""},
+        }
+
+    def get_video_ad_review(self, rid):
+        return self.reviews.get(int(rid))
+
+    def resolve_video_ad_review(self, rid, status, reviewer=""):
+        item = self.reviews.get(int(rid))
+        if not item or item["status"] != "pending":
+            return False
+        item["status"] = status
+        item["reviewed_by"] = reviewer
+        return True
 
 
 if __name__ == "__main__":

@@ -274,6 +274,18 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         async for item in CommandsMixin.search_member(self, event):
             yield item
 
+    @filter.command("确认广告")
+    async def cmd_review_confirm(self, event: AstrMessageEvent):
+        '''管理群内确认疑似视频广告违规。用法: /确认广告 #编号'''
+        async for item in CommandsMixin.cmd_review_confirm(self, event):
+            yield item
+
+    @filter.command("放行广告")
+    async def cmd_review_clear(self, event: AstrMessageEvent):
+        '''管理群内放行疑似视频广告。用法: /放行广告 #编号'''
+        async for item in CommandsMixin.cmd_review_clear(self, event):
+            yield item
+
     @filter.command("撤回最新消息")
     async def recall_last(self, event: AstrMessageEvent):
         '''撤回群内最新一条或多条消息'''

@@ -250,6 +250,49 @@ class AdBackendMixin:
         except (ValueError, TypeError):
             return 0
 
+    async def _apply_video_ad_review_confirmed(self, item: dict):
+        """确认违规的统一动作：学习视频指纹 + 禁言 + 记录。
+
+        供 WebUI 复核接口与 QQ 管理群命令共用。返回 ``(banned, learned)``。
+        """
+        banned = False
+        learned = False
+        fp = str(item.get("fingerprint", "") or "")
+        if fp:
+            try:
+                self._learn_video_fingerprint(fp)
+                learned = True
+            except Exception:
+                pass
+        group_id = str(item.get("group_id", "") or "")
+        user_id = str(item.get("user_id", "") or "")
+        try:
+            gid = self._video_review_id(group_id)
+            uid = self._video_review_id(user_id)
+            duration = self._cfg_int(
+                "moderation_ban_duration", 1800, group_id=group_id
+            )
+            client = await self._get_client()
+            if client and gid and uid:
+                ok, _err = await self._call_group_api(
+                    client, "set_group_ban", "禁言",
+                    group_id=gid, user_id=uid, duration=max(60, int(duration)),
+                )
+                banned = ok
+        except Exception:
+            pass
+        try:
+            self._log_moderation(
+                group_id, user_id, str(item.get("user_name", "") or ""),
+                str(item.get("msg_text", "") or ""),
+                "管理员复核确认广告（已禁言）" if banned else "管理员复核确认广告（禁言失败）",
+                "视频广告管理员复核确认违规",
+                [],
+            )
+        except Exception:
+            pass
+        return banned, learned
+
     async def _ad_backend_video_reviews(self):
         """待复核的视频广告队列。"""
         try:
@@ -284,43 +327,7 @@ class AdBackendMixin:
             ok = self._storage.resolve_video_ad_review(review_id, "confirmed", reviewer)
             if not ok:
                 return jsonify({"status": "error", "message": "处理失败（可能已被处理）"})
-            # 学习视频指纹：同一广告视频下次直接命中
-            fp = str(item.get("fingerprint", "") or "")
-            learned = False
-            if fp:
-                try:
-                    self._learn_video_fingerprint(fp)
-                    learned = True
-                except Exception:
-                    pass
-            # 禁言该用户
-            group_id = str(item.get("group_id", "") or "")
-            user_id = str(item.get("user_id", "") or "")
-            banned = False
-            try:
-                gid = self._video_review_id(group_id)
-                uid = self._video_review_id(user_id)
-                duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
-                client = await self._get_client()
-                if client and gid and uid:
-                    ok, _err = await self._call_group_api(
-                        client, "set_group_ban", "禁言",
-                        group_id=gid, user_id=uid, duration=max(60, int(duration)),
-                    )
-                    banned = ok
-            except Exception:
-                pass
-            # 记录审核日志
-            try:
-                self._log_moderation(
-                    group_id, user_id, str(item.get("user_name", "") or ""),
-                    str(item.get("msg_text", "") or ""),
-                    "管理员复核确认广告（已禁言）" if banned else "管理员复核确认广告（禁言失败）",
-                    "管理员在 WebUI 广告后台-视频复核确认违规",
-                    [],
-                )
-            except Exception:
-                pass
+            banned, learned = await self._apply_video_ad_review_confirmed(item)
             return jsonify({
                 "status": "success",
                 "banned": banned,

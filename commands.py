@@ -7,6 +7,11 @@ from typing import Tuple
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
+try:
+    from .ad_backend import AdBackendMixin
+except ImportError:  # 独立加载 commands.py 的单元测试兼容路径
+    from ad_backend import AdBackendMixin
+
 # 违禁词分类映射。定义为模块级常量，而非 CommandsMixin 类属性：
 # Main 的 MRO 不含 CommandsMixin（命令通过 CommandsMixin.xxx(self,...) 显式转发调用），
 # 若作为类属性，方法体内 self._RULE_CATEGORY_MAP 会 AttributeError（历史坑 #18/#19 同源）。
@@ -243,6 +248,65 @@ class CommandsMixin:
             yield event.plain_result(f"已禁言 {user_id}，时长 {minutes} 分钟")
         except Exception as e:
             yield event.plain_result(f"禁言失败: {e}")
+
+    async def _review_cmd_common(self, event: AstrMessageEvent, status: str):
+        """管理群内确认/放行疑似视频广告。用法: 确认广告 #编号 / 放行广告 #编号"""
+        try:
+            forward_group = self._cfg_str("video_ad_review_forward_group", "").strip()
+            group_id = self._get_group_id(event)
+            if not forward_group or str(group_id) != str(forward_group):
+                yield event.plain_result("该命令仅可在配置的视频复核管理群内使用。")
+                return
+            if not await self._is_plugin_admin(event):
+                yield event.plain_result("权限不足：仅插件管理员可确认复核。")
+                return
+            args = event.message_str.split()
+            if len(args) < 2:
+                yield event.plain_result("用法: 确认广告 #编号 或 放行广告 #编号")
+                return
+            raw = str(args[1]).strip().lstrip("#").strip()
+            try:
+                review_id = int(raw)
+            except (ValueError, TypeError):
+                yield event.plain_result("编号无效，请使用转发消息中的编号。")
+                return
+            item = self._storage.get_video_ad_review(review_id)
+            if not item:
+                yield event.plain_result(f"未找到复核记录 #{review_id}。")
+                return
+            if item.get("status") != "pending":
+                yield event.plain_result(
+                    f"复核记录 #{review_id} 已处理（{item.get('status')}）。"
+                )
+                return
+            reviewer = self._try_get_sender_id(event)
+            ok = self._storage.resolve_video_ad_review(review_id, status, reviewer)
+            if not ok:
+                yield event.plain_result("处理失败（可能已被处理）。")
+                return
+            if status == "confirmed":
+                banned, learned = await AdBackendMixin._apply_video_ad_review_confirmed(
+                    self, item
+                )
+                yield event.plain_result(
+                    f"已确认广告 #{review_id}：禁言{'成功' if banned else '失败'}，"
+                    f"指纹学习{'成功' if learned else '未学习'}。"
+                )
+            else:
+                yield event.plain_result(f"已放行 #{review_id}（标记为正常）。")
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 群内复核命令失败: {exc}")
+            yield event.plain_result("复核命令执行失败，请查看日志。")
+
+    async def cmd_review_confirm(self, event: AstrMessageEvent):
+        '''确认疑似广告违规（管理群内）。用法: 确认广告 #编号'''
+        async for item in self._review_cmd_common(event, "confirmed"):
+            yield item
+
+    async def cmd_review_clear(self, event: AstrMessageEvent):
+        '''放行疑似广告（管理群内）。用法: 放行广告 #编号'''
+        async for item in self._review_cmd_common(event, "cleared"):
+            yield item
 
     async def cmd_unban(self, event: AstrMessageEvent):
         '''解除指定群成员禁言。用法: /解禁 <QQ号或@某人>'''

@@ -2589,11 +2589,26 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 notice = (
                     f"[群管] {user_name}({user_id}) 发送疑似视频广告，已提交管理员复核"
                     f"{'（消息已撤回）' if recalled else ''}"
-                    f"（编号 {review_id}）。请在 WebUI 广告后台-视频复核处理。"
+                    f"（编号 {review_id}）。请在 WebUI 广告后台-视频复核处理"
+                    f"或在管理群回复「确认广告 #{review_id} / 放行广告 #{review_id}」。"
                 )
                 yield event.plain_result(notice)
             except Exception as notice_err:
                 logger.warning(f"[GroupMgr] 视频复核通知失败: {notice_err}")
+        # v2.24.0：转发到 QQ 管理群（可选）供管理员群内确认学习
+        forward_group = self._cfg_str("video_ad_review_forward_group", "").strip()
+        if forward_group:
+            try:
+                await self._send_group_message(
+                    forward_group,
+                    f"[视频复核] 群 {group_id} {user_name}({user_id}) 疑似视频广告"
+                    f"{'（消息已撤回）' if recalled else ''}，编号 #{review_id}。\n"
+                    f"识别内容：{(text or '')[:120]}\n"
+                    f"请回复「确认广告 #{review_id}」确认违规，"
+                    f"或「放行广告 #{review_id}」放行。",
+                )
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 转发视频复核到管理群失败: {exc}")
         event.stop_event()
         return
 
