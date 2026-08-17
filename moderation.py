@@ -2053,6 +2053,12 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         )
 
         hit_types = self._initial_screening(text, group_id)
+        # v2.25.0：短视频+引流二维码快速强信号（高置信，直接按广告处理）
+        if (
+            getattr(self, "_video_short_qr_hit", False)
+            and self._cfg("video_short_qr_fast_hit", False, group_id=group_id)
+        ):
+            hit_types["ad"] = True
         for scan in (inline_scan, forward_scan):
             for category, hit in scan.get("hits", {}).items():
                 if hit:
@@ -2432,16 +2438,48 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             return result + (scan or self._new_stream_rule_scan(),)
         return result
 
+    # v2.25.0：OCR 识别文本同音/形近字归一化规则（仅用于词库匹配）
+    # OCR 常见误读变体 → 标准词：薇信/威信/v信/VX 等；音近形近字统一。
+    _OCR_NORMALIZE_RULES = (
+        (r"薇信|威信|v信|V信|微x|微X", "微信"),
+        (r"[vV][xX]", "微信"),
+        ("薇", "微"),
+        ("威", "微"),
+        ("佰", "百"),
+        ("噺", "新"),
+        ("缐", "线"),
+        ("冋", "同"),
+    )
+
+    def _normalize_ocr_text(self, text: str) -> str:
+        """把 OCR 识别文本中的常见同音/形近变体归一化为标准词。"""
+        if not text:
+            return text
+        result = str(text)
+        for pattern, repl in self._OCR_NORMALIZE_RULES:
+            try:
+                result = re.sub(pattern, repl, result)
+            except Exception:
+                pass
+        return result
+
     def _initial_screening(self, text: str, group_id: str) -> dict:
         hit_types = {k: False for k in ("swear", "ad", "political", "porn", "violent_terror",
                      "reactionary", "weapons", "corruption", "illegal_url", "other",
                      "supplement", "livelihood", "tencent_ban")}
+        # v2.25.0：OCR 识别文本同音/形近字归一化——仅影响词库匹配，LLM 判定仍用原文
+        norm_text = text
+        if self._cfg("ocr_normalize_variants", False, group_id=group_id):
+            try:
+                norm_text = self._normalize_ocr_text(text)
+            except Exception:
+                norm_text = text
         if self._cfg("scan_swear", True, group_id=group_id) and hasattr(self, '_swear_matcher'):
-            hit_types["swear"] = self._swear_matcher.is_match(text)
+            hit_types["swear"] = self._swear_matcher.is_match(norm_text)
         if self._cfg("scan_ad", True, group_id=group_id):
-            hit_types["ad"] = self._is_ad_pattern(text)
+            hit_types["ad"] = self._is_ad_pattern(norm_text)
         switch_map = self._lexicon_switch_map(group_id=group_id)
-        for cat, hit in self._check_lexicon(text).items():
+        for cat, hit in self._check_lexicon(norm_text).items():
             if cat in hit_types and hit and switch_map.get(cat, True):
                 hit_types[cat] = True
         # 自适应学习词：按群独立、管理员审批后生效。命中记为【专用类别】learned_ad/learned_swear，

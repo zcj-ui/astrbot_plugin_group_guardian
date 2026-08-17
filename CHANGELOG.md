@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.25.0 - 2026-08-17
+
+### 新功能：短视频+引流二维码快速强信号 & OCR 同音/形近字归一化（用户需求）
+
+背景：外部同类方案（auto-withdraw-advideo 等）的「短视频二维码」与「OCR 模糊匹配」
+思路值得借鉴；本项目此前视频二维码文本需并入正文走完整审核、词库匹配为精确关键词。
+
+改动：
+
+- **短视频+引流二维码快速强信号**（`video_audit.py` + `moderation.py`）：
+  - 新增配置 `video_short_qr_fast_hit`（默认关）与 `video_short_qr_max_sec`（默认 10 秒）；
+  - `_audit_one_video` 记录视频时长，`_recognize_video_frames` 在二维码解码分支调用
+    `_maybe_set_short_qr_signal`：短视频（≤ 阈值）且解码出任一「引流二维码」
+    （网址 / 微信 / VX / QQ / 加群 / 扫码）时置位 `_video_short_qr_hit`；
+  - moderation 层检测到该强信号后直接把 `hit_types["ad"]` 置 True（高置信，跳过 LLM 复核），
+    专门打击「半夜短视频二维码引流」。
+- **OCR 识别文本同音/形近字归一化**（`moderation.py`）：
+  - 新增配置 `ocr_normalize_variants`（默认关）；
+  - 新增 `_OCR_NORMALIZE_RULES` 与 `_normalize_ocr_text`：常见 OCR 误读变体
+    （薇信/威信/v信/VX → 微信，薇→微，佰→百 等）在做词库匹配前统一归一化；
+  - `_initial_screening` 匹配时用归一化文本（`_is_ad_pattern`/`_check_lexicon`/脏话匹配），
+    **LLM 判定仍使用原文**，避免误伤正常文本。
+
+测试：`test_video_audit.py` 新增 V225ShortQrSignalTests（引流判定 / 短视频命中 / 长视频不命中 /
+非引流不命中 / 开关关闭）；`test_video_ad_review.py` 新增 OcrNormalizeTests（薇信/VX 归一化 /
+正常文本不受影响）与 schema 新配置断言。
+
 ## v2.24.0 - 2026-08-17
 
 ### 新功能：疑似视频广告转发 QQ 管理群确认（用户需求）

@@ -31,6 +31,9 @@ def _stub_astrbot():
             info=lambda *a, **k: None,
             exception=lambda *a, **k: None,
         )
+    api_event = types.ModuleType("astrbot.api.event")
+    api_event.AstrMessageEvent = object
+    sys.modules["astrbot.api.event"] = api_event
     core = types.ModuleType("astrbot.core")
     platform = types.ModuleType("astrbot.core.platform")
     sources = types.ModuleType("astrbot.core.platform.sources")
@@ -123,6 +126,9 @@ class _Harness(video_audit.VideoAuditMixin):
 
     def _cfg_int(self, key, default=0, group_id=None):
         return int(self.cfg_values.get(key, default))
+
+    def _cfg_float(self, key, default=0.0, group_id=None):
+        return float(self.cfg_values.get(key, default))
 
     def _get_group_override(self, group_id, key):
         return None
@@ -616,6 +622,53 @@ class V222StillFrameAndDedupTests(unittest.TestCase):
                 )
         finally:
             os.remove(path)
+
+
+
+class V225ShortQrSignalTests(unittest.TestCase):
+    """v2.25.0：短视频+引流二维码快速强信号。"""
+
+    def test_is_drain_qr_value(self):
+        self.assertTrue(
+            video_audit.VideoAuditMixin._is_drain_qr_value("https://t.cn/x")
+        )
+        self.assertTrue(
+            video_audit.VideoAuditMixin._is_drain_qr_value("vx: abc123")
+        )
+        self.assertTrue(
+            video_audit.VideoAuditMixin._is_drain_qr_value("加群 123456")
+        )
+        self.assertFalse(
+            video_audit.VideoAuditMixin._is_drain_qr_value("hello world")
+        )
+
+    def test_short_qr_signal_set(self):
+        h = _Harness()
+        h.cfg_values["video_short_qr_fast_hit"] = True
+        h.cfg_values["video_short_qr_max_sec"] = 10
+        h._video_audit_seconds = 5.0
+        h._maybe_set_short_qr_signal(["https://t.cn/x"], "100")
+        self.assertTrue(h._video_short_qr_hit)
+
+    def test_short_qr_signal_long_video(self):
+        h = _Harness()
+        h.cfg_values["video_short_qr_fast_hit"] = True
+        h._video_audit_seconds = 60.0
+        h._maybe_set_short_qr_signal(["https://t.cn/x"], "100")
+        self.assertFalse(h._video_short_qr_hit)
+
+    def test_short_qr_signal_non_drain(self):
+        h = _Harness()
+        h.cfg_values["video_short_qr_fast_hit"] = True
+        h._video_audit_seconds = 5.0
+        h._maybe_set_short_qr_signal(["hello"], "100")
+        self.assertFalse(h._video_short_qr_hit)
+
+    def test_short_qr_signal_disabled(self):
+        h = _Harness()
+        h._video_audit_seconds = 5.0
+        h._maybe_set_short_qr_signal(["https://t.cn/x"], "100")
+        self.assertFalse(h._video_short_qr_hit)
 
 
 class V220StaticChecks(unittest.TestCase):

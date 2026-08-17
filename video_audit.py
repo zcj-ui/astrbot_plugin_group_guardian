@@ -353,6 +353,44 @@ class VideoAuditMixin:
                 semaphore.release()
 
     @staticmethod
+    def _is_drain_qr_value(value: str) -> bool:
+        """判断二维码解码内容是否属于「引流类」（v2.25.0）。
+
+        短视频二维码广告通常指向网址 / 微信号 / QQ / 加群等引流目标。
+        """
+        v = str(value or "").lower().strip()
+        if not v:
+            return False
+        return (
+            "http://" in v
+            or "https://" in v
+            or "www." in v
+            or "微信" in v
+            or "vx" in v
+            or "wx" in v
+            or "qq" in v
+            or "加群" in v
+            or "扫码" in v
+        )
+
+    def _video_duration_seconds(self, video_path: str) -> float:
+        """返回视频时长（秒）；失败返回 0.0。"""
+        if cv2 is None or not video_path:
+            return 0.0
+        try:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return 0.0
+            total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+            fps = cap.get(cv2.CAP_PROP_FPS) or 0.0
+            cap.release()
+            if total > 0 and fps > 0:
+                return total / fps
+            return 0.0
+        except Exception:
+            return 0.0
+
+    @staticmethod
     def _is_meaningful_frame(
         frame_bytes: bytes,
         min_mean: float = 12.0,
@@ -685,6 +723,9 @@ class VideoAuditMixin:
         self._video_ad_review_signal = False
         self._video_ad_review_source = ""
         self._video_ad_review_fingerprint = ""
+        # v2.25.0：短视频+引流二维码快速强信号——每次审核开始前重置
+        self._video_short_qr_hit = False
+        self._video_audit_seconds = 0.0
         if not videos:
             return text
         if getattr(self, "_video_audit_closing", False):
@@ -789,6 +830,8 @@ class VideoAuditMixin:
             scene_threshold = self._cfg_float(
                 "video_scene_threshold", 30.0, group_id=group_id
             )
+            # v2.25.0：短视频+引流二维码快速强信号——记录视频时长（秒）
+            self._video_audit_seconds = self._video_duration_seconds(video_path)
             frames = await asyncio.wait_for(
                 self._run_sync_in_thread(
                     self._extract_video_frames,
@@ -809,6 +852,33 @@ class VideoAuditMixin:
         finally:
             if temp_path:
                 await self._run_sync_in_thread(self._remove_temp_file, temp_path)
+
+    def _maybe_set_short_qr_signal(self, clean_qr: list, group_id: str) -> None:
+        """v2.25.0：短视频+引流二维码快速强信号标记。
+
+        当 ``video_short_qr_fast_hit`` 开启、视频时长不超过阈值、且任一
+        二维码解码出引流目标（网址/微信/QQ/加群等）时置位，由 moderation
+        层直接按高置信广告处理。
+        """
+        if not hasattr(self, "_video_short_qr_hit"):
+            self._video_short_qr_hit = False
+        if getattr(self, "_video_short_qr_hit", False):
+            return
+        if not clean_qr:
+            return
+        if not self._cfg("video_short_qr_fast_hit", False, group_id=group_id):
+            return
+        try:
+            seconds = float(getattr(self, "_video_audit_seconds", 0.0) or 0.0)
+            max_sec = float(
+                self._cfg_float("video_short_qr_max_sec", 10.0, group_id=group_id)
+            )
+            if not (0 < seconds <= max_sec):
+                return
+        except Exception:
+            return
+        if any(self._is_drain_qr_value(v) for v in clean_qr):
+            self._video_short_qr_hit = True
 
     def _dedup_video_frames(self, frames: list, distance: int = 6) -> list:
         """相似帧去重（v2.22.0）：同一画面（结构段 dHash 距离 <= distance）
@@ -891,6 +961,8 @@ class VideoAuditMixin:
                             local_clean = [str(v).strip() for v in local_qr if str(v).strip()]
                             if local_clean:
                                 local_lines.append("二维码: " + " | ".join(local_clean))
+                                # v2.25.0：短视频+引流二维码快速强信号
+                                self._maybe_set_short_qr_signal(local_clean, group_id)
                         tag = "[本地OCR] " if engine in ("local", "auto") else ""
                         if engine == "cloud":
                             tag = "[云API] "
@@ -925,6 +997,8 @@ class VideoAuditMixin:
                 cleaned_qr = [str(v).strip() for v in qr_values if str(v).strip()]
                 if cleaned_qr:
                     lines.append("二维码: " + " | ".join(cleaned_qr))
+                    # v2.25.0：短视频+引流二维码快速强信号
+                    self._maybe_set_short_qr_signal(cleaned_qr, group_id)
                 # v2.20.0 字幕带放大增强（可选）：对小字硬字幕区裁剪放大后补识别
                 if self._cfg("video_subtitle_boost", False, group_id=group_id):
                     boosted = self._subtitle_band_boost(frame_bytes)

@@ -283,6 +283,10 @@ class VideoReviewStaticChecks(unittest.TestCase):
         self.assertTrue(schema["video_ad_review_recall"]["default"])
         self.assertTrue(schema["video_ad_review_notice"]["default"])
         self.assertEqual("", schema["video_ad_review_forward_group"]["default"])
+        # v2.25.0
+        self.assertFalse(schema["video_short_qr_fast_hit"]["default"])
+        self.assertEqual(10.0, schema["video_short_qr_max_sec"]["default"])
+        self.assertFalse(schema["ocr_normalize_variants"]["default"])
 
     def test_web_registers_review_routes(self):
         src = (ROOT / "web.py").read_text(encoding="utf-8")
@@ -416,6 +420,35 @@ class _FakeCmdStorage:
         return True
 
 
+
+
+class OcrNormalizeTests(unittest.TestCase):
+    """v2.25.0：OCR 识别文本同音/形近字归一化。"""
+
+    def setUp(self):
+        self.moderation = _load("group_guardian_video_review_mod", "moderation.py")
+
+        class _H(self.moderation.ModerationMixin):
+            pass
+
+        self.h = _H()
+
+    def test_normalize_wechat_variants(self):
+        self.assertEqual("加微信 xyz", self.h._normalize_ocr_text("加薇信 xyz"))
+        self.assertEqual("加微信 xyz", self.h._normalize_ocr_text("加威信 xyz"))
+        self.assertEqual("微信: abc", self.h._normalize_ocr_text("VX: abc"))
+        self.assertEqual("微信: abc", self.h._normalize_ocr_text("vx: abc"))
+
+    def test_normalize_keeps_normal_text(self):
+        self.assertEqual("正常文本", self.h._normalize_ocr_text("正常文本"))
+
+    def test_normalize_empty(self):
+        self.assertEqual("", self.h._normalize_ocr_text(""))
+        self.assertIsNone(self.h._normalize_ocr_text(None))
+
+
+if __name__ == "__main__":
+    unittest.main()
 if __name__ == "__main__":
     unittest.main()
 
