@@ -345,6 +345,10 @@ class WebMixin:
                 ("/ad_backend/video_reviews", self._ad_backend_video_reviews, ["GET"], "广告后台-待复核视频广告"),
                 ("/ad_backend/video_reviews/confirm", self._ad_backend_video_reviews_confirm, ["POST"], "广告后台-确认视频广告违规"),
                 ("/ad_backend/video_reviews/clear", self._ad_backend_video_reviews_clear, ["POST"], "广告后台-放行疑似视频广告"),
+                # v2.36.0 通用疑似广告人工复核（adguard 合并）：确认后撤回+禁言+学习
+                ("/ad_backend/ad_reviews", self._web_ad_reviews, ["GET"], "广告后台-待确认疑似广告"),
+                ("/ad_backend/ad_reviews/confirm", self._web_ad_review_confirm, ["POST"], "广告后台-确认广告违规"),
+                ("/ad_backend/ad_reviews/clear", self._web_ad_review_clear, ["POST"], "广告后台-放行疑似广告"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(
@@ -1015,6 +1019,103 @@ class WebMixin:
         return jsonify({
             "status": "success" if result.get("ok") else "error", **result
         })
+
+    # ============================================================
+    # v2.36.0 通用疑似广告人工复核（adguard 合并）WebUI 入口
+    # ============================================================
+
+    async def _web_ad_reviews(self):
+        try:
+            limit = min(max(self._safe_int(
+                quart_request.args.get("limit", 50), 50
+            ), 1), 200)
+            items = await self._run_in_thread(
+                self._storage.list_pending_ad_reviews, limit
+            )
+            return jsonify({
+                "status": "success", "data": items, "count": len(items)
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_ad_review_confirm(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            review_id = self._safe_int(data.get("review_id"), 0)
+            if review_id <= 0:
+                return jsonify({"status": "error", "message": "缺少 review_id"})
+            item = self._storage.get_ad_review(review_id)
+            if not item:
+                return jsonify({"status": "error", "message": "未找到该复核记录"})
+            if item.get("status") != "pending":
+                return jsonify({"status": "error", "message": "该记录已处理"})
+            ok = self._storage.resolve_ad_review(review_id, "confirmed", "dashboard")
+            if not ok:
+                return jsonify({"status": "error", "message": "处理失败（可能已被处理）"})
+            group_id = str(item.get("group_id", "") or "")
+            user_id = str(item.get("user_id", "") or "")
+            item_text = str(item.get("msg_text", "") or "")
+            recalled = await self._recall_ad_review_message(item)
+            banned = await self._ban_ad_review_user(group_id, user_id)
+            if self._cfg("ad_review_learn_text", True, group_id=group_id):
+                self._ad_review_learn_text(item_text, "ad", group_id)
+            try:
+                self._learn_recent_ad_hashes(group_id)
+                self._learn_recent_video_fingerprints()
+            except Exception:
+                pass
+            if str(item.get("source", "")) == "card":
+                try:
+                    restore_fn = getattr(self, "_restore_card", None)
+                    if callable(restore_fn):
+                        await restore_fn(group_id, user_id, str(item.get("msg_id", "") or ""))
+                except Exception as exc:
+                    logger.warning(f"[GroupMgr] 广告名片确认后还原失败: {exc}")
+            self._log_moderation(
+                group_id, user_id, str(item.get("user_name", "") or ""),
+                item_text,
+                "管理员确认广告（已禁言）" if banned else "管理员确认广告（禁言失败）",
+                f"WebUI 复核确认 #{review_id}（人工确认后处罚+学习）", [],
+            )
+            return jsonify({
+                "status": "success",
+                "message": (
+                    f"已确认广告 #{review_id}：撤回{'成功' if recalled else '失败'}，"
+                    f"禁言{'成功' if banned else '失败'}，已学习指纹"
+                ),
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_ad_review_clear(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            review_id = self._safe_int(data.get("review_id"), 0)
+            if review_id <= 0:
+                return jsonify({"status": "error", "message": "缺少 review_id"})
+            item = self._storage.get_ad_review(review_id)
+            if not item:
+                return jsonify({"status": "error", "message": "未找到该复核记录"})
+            if item.get("status") != "pending":
+                return jsonify({"status": "error", "message": "该记录已处理"})
+            ok = self._storage.resolve_ad_review(review_id, "released", "dashboard")
+            if not ok:
+                return jsonify({"status": "error", "message": "处理失败（可能已被处理）"})
+            group_id = str(item.get("group_id", "") or "")
+            if self._cfg("ad_review_learn_text", True, group_id=group_id):
+                self._ad_review_learn_text(str(item.get("msg_text", "") or ""), "ok", group_id)
+            self._log_moderation(
+                group_id, str(item.get("user_id", "") or ""),
+                str(item.get("user_name", "") or ""),
+                str(item.get("msg_text", "") or ""),
+                "管理员复核放行",
+                f"WebUI 复核放行 #{review_id}（人工确认正常）", [],
+            )
+            return jsonify({
+                "status": "success", "message": f"已放行 #{review_id}（标记为正常）"
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
 
     async def _web_review_audit(self):
         try:

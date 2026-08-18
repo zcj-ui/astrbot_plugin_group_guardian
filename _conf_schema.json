@@ -1063,6 +1063,42 @@
         "default": true,
         "hint": "v2.32.0。开启后，LLM 无法确认的内容进入复核队列时在群内发送一条提示。可按群覆盖"
     },
+    "ad_review_enabled": {
+        "description": "疑似广告先人工确认再处罚（学习后直接处罚）",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.36.0（与 adguard 合并）。开启后，任何疑似广告（规则命中/LLM判定/图片/视频/群名片）不再直接撤回禁言，改为先私信插件管理员确认；管理员私聊回复「确认广告 #编号」→ 撤回+禁言+学习文本指纹，下次相似内容直接撤回禁言；回复「放行广告 #编号」→ 放行并学习为正常。可按群覆盖"
+    },
+    "ad_review_admin_private": {
+        "description": "疑似广告私信插件管理员确认",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.36.0。开启后，疑似广告进入复核队列时立即私信插件管理员（admin_list 或 ad_review_admin_ids），发送「群号/发送者/内容/编号」供确认，管理员可直接私聊回复「确认广告 #编号 / 放行广告 #编号」。可按群覆盖"
+    },
+    "ad_review_admin_ids": {
+        "description": "广告复核管理员QQ（逗号分隔）",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.0。指定接收广告复核私信的插件管理员 QQ（逗号分隔，如 10001,10002）。留空则使用插件管理员名单 admin_list，仍未配置时私信该群全部管理员/群主"
+    },
+    "ad_review_forward_group": {
+        "description": "广告复核转发管理群",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.0。填写一个 QQ 群号后，疑似广告进入复核队列时把「群号/发送者/内容/编号」转发到该管理群，管理员在群里回复「确认广告 #编号 / 放行广告 #编号」确认。留空则仅私信管理员/WebUI 处理"
+    },
+    "ad_review_notice": {
+        "description": "疑似广告入队时群内通知",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.36.0。开启后，疑似广告进入复核队列时在群内发送一条提示（确认前消息保留不撤回）。可按群覆盖"
+    },
+    "ad_review_learn_text": {
+        "description": "确认后学习文本指纹（下次相似直接处罚）",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.36.0。开启后，管理员确认某内容为广告时学习其文本指纹（归一化哈希），之后相同/相似文本再次出现时直接撤回+禁言，无需再次人工确认。可按群覆盖"
+    },
     "video_short_qr_fast_hit": {
         "description": "短视频+引流二维码快速强信号",
         "type": "bool",

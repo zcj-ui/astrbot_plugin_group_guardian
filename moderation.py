@@ -574,6 +574,70 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         except Exception:
             return False
 
+    # ============================================================
+    # v2.36.0 疑似广告先人工确认再处罚 + 文本指纹学习（adguard 合并）
+    # ============================================================
+
+    @staticmethod
+    def _ad_text_fingerprint(text: str) -> str:
+        """文本指纹：归一化（去空白/标点/数字统一）后 sha256。
+
+        相同广告文本（含少量空白/标点差异）得到相同指纹，命中学习库后直接处罚。
+        """
+        import hashlib
+        raw = str(text or "")
+        norm = re.sub(r"[\s\W_]+", "", raw, flags=re.UNICODE).lower()
+        if not norm:
+            return ""
+        return hashlib.sha256(norm.encode("utf-8", "ignore")).hexdigest()
+
+    def _ad_review_text_verdict(self, text: str) -> str:
+        """查询文本指纹学习库结论；返回 ad / ok / 空串（未学习）。"""
+        try:
+            fp = self._ad_text_fingerprint(text)
+            if not fp:
+                return ""
+            verdict = self._storage.ad_text_fingerprint_hit(fp)
+            return str(verdict or "")
+        except Exception:
+            return ""
+
+    def _ad_review_learn_text(self, text: str, verdict: str, group_id: str) -> None:
+        """学习一条文本指纹结论（ad=确认广告 / ok=确认放行）。失败静默。"""
+        try:
+            fp = self._ad_text_fingerprint(text)
+            if not fp:
+                return
+            self._storage.learn_ad_text_fingerprint(fp, verdict, group_id, text)
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 广告文本指纹学习失败: {exc}")
+
+    def _ad_review_should_route(
+        self, group_id: str, hit_types: dict,
+        text: str = "", reason: str = "", hit_summary: str = "",
+    ) -> bool:
+        """是否应把本次疑似广告转入「管理员确认」流程（而非直接处罚）。
+
+        条件：ad_review_enabled 开启 + 判定属于广告类别（规则 ad 命中 / LLM 判定
+        含广告/推广/引流）+ 文本指纹学习库未判定为已确认广告（已确认则直接处罚）。
+        """
+        if not self._cfg("ad_review_enabled", False, group_id=group_id):
+            return False
+        try:
+            is_ad = self._ad_escalation_is_ad(hit_summary=hit_summary, hit_types=hit_types)
+            if not is_ad and reason:
+                lowered = str(reason)
+                if any(token in lowered for token in ("广告", "推广", "引流", "营销")):
+                    is_ad = True
+            if not is_ad:
+                return False
+            # 已学习为确认广告 → 直接处罚，不再人工确认
+            if self._ad_review_text_verdict(text) == "ad":
+                return False
+        except Exception:
+            return False
+        return True
+
     def _llm_failure_requires_rule_penalty(self, llm_result: dict,
                                            hit_types: Dict[str, bool],
                                            text: str = "", group_id: str = "") -> bool:
@@ -2263,6 +2327,17 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 group_id, user_id, combined_signature
             )
 
+        # v2.36.0：疑似广告 → 先提交管理员确认（不直接处罚），除非已学习确认广告
+        if self._ad_review_should_route(group_id, hit_types, text=text):
+            self._set_moderation_combine_state(
+                event, group_id, user_id, extra_recall_ids, "consumed"
+            )
+            async for item in self._submit_ad_review(
+                event, group_id, user_id, user_name, text, image_urls, "text",
+            ):
+                yield item
+            return
+
         if not llm_enabled:
             self._set_moderation_combine_state(
                 event, group_id, user_id, extra_recall_ids, "consumed"
@@ -2309,6 +2384,19 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                     f"[GroupMgr] LLM 审核不可用，明确规则命中按规则处罚: "
                     f"{user_name}({user_id}) in {group_id} | {hit_summary} | {reason}"
                 )
+                # v2.36.0：疑似广告 → 先提交管理员确认（不直接处罚）
+                if self._ad_review_should_route(
+                    group_id, hit_types, text=text, reason=reason, hit_summary=hit_summary
+                ):
+                    self._set_moderation_combine_state(
+                        event, group_id, user_id, extra_recall_ids, "consumed"
+                    )
+                    async for item in self._submit_ad_review(
+                        event, group_id, user_id, user_name, text, image_urls,
+                        "text", reason,
+                    ):
+                        yield item
+                    return
                 async for item in self._execute_rule_penalty(
                         event, group_id, user_id, user_name, text, hit_types,
                         image_urls, extra_recall_ids):
@@ -2341,6 +2429,21 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 logger.info(f"[GroupMgr] LLM审核通过: {user_name}({user_id}) in {group_id} | {hit_summary} | {reason}")
                 action = "LLM放行"
             self._log_moderation(group_id, user_id, user_name, text, action, reason, image_urls)
+            return
+
+        # v2.36.0：LLM 判定广告违规 → 先提交管理员确认（不直接处罚），
+        # 除非已学习确认广告（学习库命中则直接处罚）。
+        if self._ad_review_should_route(
+            group_id, hit_types, text=text, reason=reason, hit_summary=hit_summary
+        ):
+            self._set_moderation_combine_state(
+                event, group_id, user_id, extra_recall_ids, "consumed"
+            )
+            async for item in self._submit_ad_review(
+                event, group_id, user_id, user_name, text, image_urls,
+                "image" if image_semantic_scan else "text", reason,
+            ):
+                yield item
             return
 
         self._set_moderation_combine_state(
@@ -2819,6 +2922,104 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         except Exception as exc:
             logger.warning(f"[GroupMgr] 提交不确定复核失败: {exc}")
         return
+
+    async def _submit_ad_review(
+        self, event, group_id: str, user_id: str, user_name: str,
+        text: str, image_urls: list, source: str = "text",
+        reason: str = "疑似广告",
+    ):
+        """v2.36.0：疑似广告 → 不直接处罚，落复核队列 + 私信插件管理员确认。
+
+        管理员私聊/管理群回复「确认广告 #编号」→ 撤回原消息 + 禁言 + 学习；
+        回复「放行广告 #编号」→ 放行。确认前消息保留在群内（不撤回）。
+        """
+        msg_id = str(
+            getattr(getattr(event, "message_obj", None), "message_id", "")
+        )
+        review_id = 0
+        try:
+            review_id = self._storage.create_ad_review(
+                group_id, user_id, user_name, text, msg_id, image_urls, source
+            )
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 写入广告复核队列失败: {exc}")
+        self._log_moderation(
+            group_id, user_id, user_name, text,
+            "待复核（疑似广告）", f"{reason}，等待管理员确认",
+            image_urls,
+        )
+        if review_id and self._cfg("ad_review_admin_private", True, group_id=group_id):
+            try:
+                await self._notify_ad_admins_private(
+                    group_id, user_id, user_name, text, review_id, source
+                )
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 私信广告复核到管理员失败: {exc}")
+        forward_group = self._cfg_str("ad_review_forward_group", "").strip()
+        if review_id and forward_group:
+            try:
+                await self._send_group_message(
+                    forward_group,
+                    f"[广告复核] 群 {group_id} {user_name}({user_id}) 疑似广告，"
+                    f"编号 #{review_id}。\n内容：{(text or '')[:120]}\n"
+                    f"请回复「确认广告 #{review_id}」确认违规并处罚学习，"
+                    f"或「放行广告 #{review_id}」放行。",
+                )
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 转发广告复核到管理群失败: {exc}")
+        if self._cfg("ad_review_notice", True, group_id=group_id):
+            try:
+                notice = (
+                    f"[群管] {user_name}({user_id}) 的消息疑似广告，"
+                    f"已提交管理员确认（编号 {review_id}），确认后再处理。"
+                )
+                yield event.plain_result(notice)
+            except Exception as notice_err:
+                logger.warning(f"[GroupMgr] 广告复核通知失败: {notice_err}")
+        try:
+            event.stop_event()
+        except Exception:
+            pass
+        return
+
+    async def _notify_ad_admins_private(
+        self, group_id: str, user_id: str, user_name: str,
+        text: str, review_id: int, source: str = "text",
+    ) -> None:
+        """私信插件管理员（admin_list）确认疑似广告；未配置则回退该群管理员/群主。"""
+        source_label = {
+            "text": "文本", "image": "图片", "video": "视频", "card": "群名片"
+        }.get(source, source)
+        admin_ids = self._cfg_str("ad_review_admin_ids", "").strip()
+        targets = []
+        if admin_ids:
+            targets = [t.strip() for t in admin_ids.replace("，", ",").split(",") if t.strip()]
+        if not targets:
+            admin_list = getattr(self, "_admin_list", None) or []
+            targets = [str(x) for x in admin_list if x]
+        if not targets:
+            try:
+                targets = await self._fetch_group_admin_ids(group_id)
+            except Exception:
+                targets = []
+        sent = 0
+        for uid in targets:
+            try:
+                await self._send_private_message(
+                    uid,
+                    f"[群管广告复核] 群 {group_id} 中 {user_name}({user_id}) 的消息"
+                    f"疑似{source_label}广告（编号 #{review_id}）。\n"
+                    f"内容：{(text or '')[:200]}\n"
+                    f"请私聊回复「确认广告 #{review_id}」确认违规（撤回+禁言+学习），"
+                    f"或「放行广告 #{review_id}」放行。",
+                )
+                sent += 1
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 私信广告复核给 {uid} 失败: {exc}")
+        if not sent:
+            logger.warning(
+                f"[GroupMgr] 广告复核无可用管理员，编号 #{review_id} 仅入队等待 WebUI 处理"
+            )
 
     async def _execute_rule_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
                                     user_id: str, user_name: str, text: str,

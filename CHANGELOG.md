@@ -1,5 +1,42 @@
 # Changelog
 
+## v2.36.0 - 2026-08-18
+
+### 新功能：疑似广告先私聊管理员确认再处罚，确认后学习，下次相似内容直接处罚（用户需求，与 astrbot_plugin_adguard 合并思路）
+
+背景：用户要求「任何疑似广告的内容先私聊发给插件管理员审核确认再撤回禁言，机器人学习，
+在下一次相似内容直接禁言撤回，群名片也算广告」。
+
+实现（统一广告人工复核 + 文本指纹学习）：
+
+- **新配置**（均可按群覆盖）：`ad_review_enabled`（疑似广告先人工确认，默认关）、
+  `ad_review_admin_private`（入队即私信插件管理员，默认开）、`ad_review_admin_ids`
+  （指定复核管理员 QQ）、`ad_review_forward_group`（转发管理群）、`ad_review_notice`
+  （群内通知）、`ad_review_learn_text`（确认后学习文本指纹，默认开）；
+- **消息广告改道**（`moderation.py`）：`ad_review_enabled` 开启时，规则 ad 命中、
+  LLM 判定广告（含广告/推广/引流）、图片/视频广告**不再直接处罚**，改为落 `ad_reviews`
+  复核队列 + 私信插件管理员（`ad_review_admin_ids` → `admin_list` → 该群管理员/群主），
+  群内提示编号；确认前消息保留（不撤回）；
+- **管理员确认**（私聊或管理群回复「确认广告 #编号 / 放行广告 #编号」，或 WebUI
+  广告后台-待确认疑似广告）：
+  - **确认广告** → 撤回原消息（按 msg_id）+ 禁言发送者 + **学习文本指纹**；
+  - **放行广告** → 不处罚，学习为正常；
+- **学习命中直接处罚**：管理员确认广告后，文本指纹（归一化 sha256）入库，**之后相同/
+  相似文本再次出现时直接撤回+禁言**，不再人工确认；放行后相似内容自动跳过；
+- **群名片广告**（`card_monitor.py`）：`ad_review_enabled` 开启时，疑似广告名片不再
+  直接还原，落 `ad_reviews`（source=card）私信管理员，确认后还原原名片 + 禁言 + 学习；
+- **存储**（`storage.py`）：新增 `ad_reviews` 表（含 msg_id/image_urls/source，
+  提供 create/list/get/resolve CAS）与 `ad_text_fingerprints` 表（学习库，learn/hit/
+  list/clear，重复覆盖）；「确认广告/放行广告」命令优先处理通用队列、回退旧视频复核；
+- **WebUI**：广告后台新增「待确认疑似广告」列表与确认/放行入口。
+
+> 说明：本版与 `astrbot_plugin_adguard` 的「二次审核 + 学习库」思路对齐并合并进群守护者：
+> 判定（规则/LLM）→ 人工确认 → 处罚 + 学习 → 下次自动。adguard 的评分检测可作为后续
+> 增量（`adguard_score_enabled` 预留），当前复用群守护者既有 ad 判定链路。
+
+测试：新增 `tests/test_ad_review.py` 8 项——ad_reviews 表 CRUD（含 msg_id/CAS）、
+文本指纹学习库（ad/ok、覆盖、清空）、指纹归一化、路由判定（未开启/命中/已学习/非广告）。
+
 ## v2.35.0 - 2026-08-18
 
 ### 功能：广告审核与其他违规审核开关完全独立（用户需求）

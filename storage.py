@@ -469,6 +469,39 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_uncertain_reviews_status ON uncertain_reviews(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_uncertain_reviews_ts ON uncertain_reviews(ts)")
+        # v2.36.0 通用疑似广告人工复核队列（adguard 合并）：
+        # 所有疑似广告（文本/图片/视频/名片）先不处罚，私聊插件管理员确认后再
+        # 撤回+禁言+学习；msg_id 用于确认后撤回原消息，image_urls 存图片证据。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ad_reviews ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT '', "
+            "msg_text TEXT DEFAULT '', "
+            "msg_id TEXT DEFAULT '', "
+            "image_urls TEXT DEFAULT '', "
+            "source TEXT DEFAULT '', "          # text / image / video / card
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / confirmed / released
+            "reviewed_by TEXT DEFAULT '', "
+            "reviewed_at INTEGER DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_reviews_status ON ad_reviews(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_reviews_ts ON ad_reviews(ts)")
+        # v2.36.0 广告文本指纹学习库：管理员确认广告后学习文本指纹，
+        # 下次相似（归一化相同）内容直接撤回+禁言，无需再次人工确认。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ad_text_fingerprints ("
+            "fingerprint TEXT PRIMARY KEY, "
+            "verdict TEXT NOT NULL, "           # ad / ok（放行）
+            "group_id TEXT DEFAULT '', "
+            "text_preview TEXT DEFAULT '', "
+            "ts INTEGER NOT NULL"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_fp_verdict ON ad_text_fingerprints(verdict)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -1492,6 +1525,170 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                 return bool(cur.rowcount)
         except Exception:
             return False
+
+    # ============================================================
+    # v2.36.0 通用疑似广告人工复核队列 + 文本指纹学习库（adguard 合并）
+    # ============================================================
+
+    def create_ad_review(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str = "",
+        msg_text: str = "",
+        msg_id: str = "",
+        image_urls: list = None,
+        source: str = "text",
+    ) -> int:
+        """把一条「疑似广告」写入待复核队列；成功返回自增 id，失败返回 0。"""
+        if not str(group_id or "") or not str(user_id or ""):
+            return 0
+        try:
+            now = int(time.time())
+            images = []
+            for url in (image_urls or []):
+                try:
+                    images.append(str(url))
+                except Exception:
+                    pass
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO ad_reviews "
+                    "(ts, group_id, user_id, user_name, msg_text, msg_id, "
+                    " image_urls, source, status, reviewed_by, reviewed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0)",
+                    (
+                        now,
+                        str(group_id or ""),
+                        str(user_id or ""),
+                        str(user_name or "")[:64],
+                        str(msg_text or ""),
+                        str(msg_id or "")[:64],
+                        ",".join(images)[:4000],
+                        str(source or "text")[:64],
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+        except Exception:
+            return 0
+
+    def list_pending_ad_reviews(self, limit: int = 50) -> List[dict]:
+        """列出待复核的疑似广告（pending，按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
+                    "FROM ad_reviews WHERE status='pending' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 200)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_ad_review(self, review_id: int) -> Optional[dict]:
+        """按 id 查询一条疑似广告复核记录（任意状态）。"""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
+                    "FROM ad_reviews WHERE id=?",
+                    (int(review_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def resolve_ad_review(
+        self, review_id: int, status: str, reviewer: str = ""
+    ) -> bool:
+        """确认违规（confirmed）或放行（released）；仅 pending 可成功（CAS 防并发）。"""
+        if status not in ("confirmed", "released"):
+            return False
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE ad_reviews SET status=?, reviewed_by=?, "
+                    "reviewed_at=? WHERE id=? AND status='pending'",
+                    (
+                        status,
+                        str(reviewer or "")[:64],
+                        int(time.time()),
+                        int(review_id),
+                    ),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    def ad_text_fingerprint_hit(self, fingerprint: str) -> Optional[str]:
+        """按指纹查询学习结论；命中返回 verdict（ad/ok），未命中返回 None。"""
+        if not fingerprint:
+            return None
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT verdict FROM ad_text_fingerprints WHERE fingerprint=?",
+                    (str(fingerprint),),
+                ).fetchone()
+            return str(row["verdict"]) if row else None
+        except Exception:
+            return None
+
+    def learn_ad_text_fingerprint(
+        self, fingerprint: str, verdict: str, group_id: str = "", text: str = ""
+    ) -> bool:
+        """学习一条文本指纹结论（ad=确认广告 / ok=确认放行），重复覆盖为最新结论。"""
+        if not fingerprint or verdict not in ("ad", "ok"):
+            return False
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO ad_text_fingerprints "
+                    "(fingerprint, verdict, group_id, text_preview, ts) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(fingerprint) DO UPDATE SET "
+                    "verdict=excluded.verdict, group_id=excluded.group_id, "
+                    "text_preview=excluded.text_preview, ts=excluded.ts",
+                    (
+                        str(fingerprint),
+                        verdict,
+                        str(group_id or ""),
+                        str(text or "")[:200],
+                        int(time.time()),
+                    ),
+                )
+                conn.commit()
+                return True
+        except Exception:
+            return False
+
+    def list_ad_text_fingerprints(self, limit: int = 200) -> List[dict]:
+        """列出文本指纹学习库（按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT fingerprint, verdict, group_id, text_preview, ts "
+                    "FROM ad_text_fingerprints ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 1000)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def clear_ad_text_fingerprints(self) -> int:
+        """清空文本指纹学习库，返回删除条数。"""
+        try:
+            with self._connect() as conn:
+                cur = conn.execute("DELETE FROM ad_text_fingerprints")
+                conn.commit()
+                return int(cur.rowcount)
+        except Exception:
+            return 0
 
     # ============================================================
     # v2.32.0 不确定内容（文本/图片 LLM 无法确认）管理员复核队列
