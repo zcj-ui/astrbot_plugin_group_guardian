@@ -21,6 +21,7 @@ from .lexicon_learn import LexiconLearnMixin
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .llm_tools import LlmToolsMixin
 from .membership import MembershipMixin
+from .memory_guard import MemoryGuardMixin
 from .moderation import ModerationMixin
 from .moderation_review import ModerationReviewMixin
 from .onebot import OneBotMixin
@@ -37,7 +38,7 @@ from .advanced_audit import AdvancedAuditMixin
 
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
-class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, Star):
+class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, MemoryGuardMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, Star):
     """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):

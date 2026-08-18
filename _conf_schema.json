@@ -1051,6 +1051,24 @@
         "default": false,
         "hint": "开启后，图片/视频帧 OCR 识别文本中的常见同音/形近变体（如「薇信/威信/v信」→「微信」、「VX/vx」→「微信」）在做词库匹配前统一归一化，降低 OCR 误字导致的广告漏检；LLM 判定仍使用原文。可按群覆盖"
     },
+    "memory_guard_enabled": {
+        "description": "内存自动回收总开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，后台定时检查进程内存，达到阈值或每个周期主动执行一次回收：强制 gc.collect() + 清理插件内可重建缓存（审核期媒体哈希/视频指纹、DB 查询缓存、角色缓存、名片快照、统计明细等）+ 裁剪视频指纹缓存，缓解长时间运行后内存持续增长被 OOM 杀死的问题。全局配置"
+    },
+    "memory_guard_threshold_mb": {
+        "description": "内存回收触发阈值（MB，0=每周期都回收）",
+        "type": "int",
+        "default": 0,
+        "hint": "进程 RSS 内存超过该值（MB）才触发回收；填 0 表示不按阈值限制、每个检查周期都回收一次。全局配置"
+    },
+    "memory_guard_interval_sec": {
+        "description": "内存回收检查周期（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "后台每隔该秒数检查一次内存并决定是否回收，范围 30-3600。全局配置"
+    },
     "ad_backend_enabled": {
         "description": "独立Web管理后台开关",
         "type": "bool",

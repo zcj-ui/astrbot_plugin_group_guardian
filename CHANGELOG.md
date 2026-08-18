@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.26.0 - 2026-08-18
+
+### 新功能：内存自动回收机制（用户反馈：机器人因内存溢出崩溃）
+
+背景：群聊机器人长时间运行后因内存持续增长被 OOM 杀死。此前排查确认插件内所有
+缓存均有上限、无单一泄漏点，但仍缺少主动回收手段；本版新增周期性内存守护。
+
+改动：
+
+- **新增 `memory_guard.py`（MemoryGuardMixin）**：
+  - 零依赖跨平台读取进程 RSS 内存：优先 psutil（可选安装），其次 Linux
+    `/proc/self/statm`，再其次 Windows `ctypes`+`psapi`，全部失败返回 -1；
+  - `_run_memory_guard`：强制 `gc.collect()` + 清理可重建缓存 + 裁剪视频指纹缓存；
+  - 缓存清理清单：审核期媒体哈希/视频指纹缓存、DB 查询缓存、WebUI 慢接口缓存、
+    管理员角色缓存、名片快照、当日统计明细（保留 today_start 基准）；
+  - 视频指纹缓存裁剪至最近 100 条；**不清理视频临时目录**（即用即删，避免中断在途审核）。
+- **后台调度**（`scheduler.py`）：`_start_scheduler` 启动独立 `_memory_guard_loop`
+  （低频，默认 60s 检查一次），`_stop_scheduler` 安全取消；`main.py` 挂载
+  `MemoryGuardMixin`。
+- **新增配置**（全局）：`memory_guard_enabled`（默认 true）、
+  `memory_guard_threshold_mb`（默认 0=每周期都回收）、`memory_guard_interval_sec`
+  （默认 60，范围 30-3600）。
+
+测试：新增 `tests/test_memory_guard.py` 共 11 项——内存读取、缓存清理（含 today_start
+保留）、指纹裁剪（含小缓存跳过）、阈值触发/跳过/不限、schema 默认值、scheduler 集成、
+main 继承、不清理临时目录断言。
+
 ## v2.25.0 - 2026-08-17
 
 ### 新功能：短视频+引流二维码快速强信号 & OCR 同音/形近字归一化（用户需求）
