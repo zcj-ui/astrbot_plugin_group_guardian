@@ -291,6 +291,12 @@ class CardMonitorMixin:
                     protection_failed = True
                     # 快照记录应有值，使下一轮看到实际违规值时能再次尝试。
                     effective_card = str(protected or "")
+                    if self._cfg("card_monitor_notify", True, group_id=group_id):
+                        await self._notify_card_group(
+                            group_id,
+                            f"[名片监控] {user_id} 的受保护名片被改为「{card_new}」，"
+                            f"还原失败——请检查 Bot 是否有群管理权限，或手动改回。",
+                        )
 
             # C 违规名片审核。两档模式：链接直接拦，其余严格模式走初筛+LLM。
             link_only = self._cfg("card_audit_link_only", False, group_id=group_id)
@@ -339,6 +345,14 @@ class CardMonitorMixin:
                         action = "违规还原失败"
                         # 与保护还原相同，保留目标快照以便周期同步重试。
                         effective_card = str(target or "")
+                        if self._cfg("card_monitor_notify", True, group_id=group_id):
+                            shown = target if target else "(清空名片)"
+                            await self._notify_card_group(
+                                group_id,
+                                f"[名片监控] {user_id} 的广告名片「{card_new}」违规（{reason}），"
+                                f"还原为「{shown}」失败——请检查 Bot 是否有群管理权限，"
+                                f"或手动处理。",
+                            )
 
             if self._cfg("card_log_enabled", True, group_id=group_id):
                 self._log_card_change("card", group_id, user_id, user_name, card_old, card_new, action)
