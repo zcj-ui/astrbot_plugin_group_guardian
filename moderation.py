@@ -540,6 +540,32 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
     # 绝不因 LLM 失效就未经确认撤回；仅当 LLM 正常复核判违规才处理）。
     _NEVER_FAIL_CLOSED_HITS = _SEMANTIC_HIT_LABELS + ("learned_ad", "learned_swear")
 
+    # v2.34.0：广告泛词的「强证据」判定。ad 词库包含大量校园/日常泛词（微信、支付宝、
+    # 校园网、交资料、优惠、绑定、机器人、计算机网络等），LLM 抖动时按泛词 fail-closed
+    # 会把正常聊天反复禁言/踢出（生产日志 13 例直判误报）。广告判定高度依赖上下文，
+    # 只有同时包含明确联系方式/链接/群号/引流引导词等强证据，才允许在 LLM 不可用时
+    # fail-closed 处罚；否则宁可降级放行。
+    _AD_STRONG_EVIDENCE_RE = (
+        r"https?://|www\.|mqqapi://|qm\.qq\.com|qun\.qq\.com|tencent://"
+        r"|(扫码|二维码|群号|进群|加群|拉群|入群)"
+        r"|(群|Q群|QQ群)\s*号\s*[:：]?\s*\d{5,}"
+        r"|(QQ|微信|威信|薇信|VX|手机|电话)\s*号?\s*[:：]?\s*(1[3-9]\d{9}|\d{5,}|[a-zA-Z0-9_\-]{4,})"
+        r"|(加我|加V|加v|加微信|加VX|私聊我|私信我|联系我|找我|拉我|加我好友)\s*[A-Za-z0-9＋+_\-]{2,}"
+        r"|(加|进|扫|添加|私聊|私信|联系|找)\s*[我Vv群微信QQ好友号]{1,2}\s*[:：]?"
+        r"|1[3-9]\d{9}"
+    )
+
+    @classmethod
+    def _ad_hit_has_strong_evidence(cls, text: str) -> bool:
+        """判断 ad 规则命中是否带有强广告证据（联系方式/链接/群号/引流引导词）。"""
+        reduced = str(text or "")
+        if not reduced:
+            return False
+        try:
+            return re.search(cls._AD_STRONG_EVIDENCE_RE, reduced) is not None
+        except Exception:
+            return False
+
     def _llm_fallback_blocks(self, group_id: str = "") -> bool:
         """LLM 审核失败时的降级策略是否为 fail-close（llm_fallback_mode=block_on_error）。"""
         try:
@@ -577,6 +603,20 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 v for k, v in hit_types.items() if k not in self._NEVER_FAIL_CLOSED_HITS
             )
             if real_hit:
+                # v2.34.0：LLM 不可用时，仅广告泛词命中（无强广告证据）不再 fail-closed。
+                # 生产日志显示 ad 词库把「微信支付宝/校园网/交资料/优惠/绑定/机器人」等
+                # 校园日常泛词当广告，LLM 抖动时直判会反复禁言/踢出正常用户；广告判定
+                # 依赖上下文，宁可放行也不误伤。命中强证据（联系方式/链接/群号/引导词）
+                # 或同时命中其它高置信类别时仍 fail-closed。
+                if (
+                    hit_types.get("ad")
+                    and not self._ad_hit_has_strong_evidence(text)
+                    and not any(
+                        v for k, v in hit_types.items()
+                        if k not in self._NEVER_FAIL_CLOSED_HITS and k != "ad"
+                    )
+                ):
+                    return False
                 return True
         if not hit_types.get("swear"):
             return False

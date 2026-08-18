@@ -1580,7 +1580,39 @@ class LlmFallbackModeTests(unittest.TestCase):
         fallback = {"violation": False, "reason": "failed", "fallback": True}
         h = self.make("block_on_error")
         self.assertTrue(h._llm_failure_requires_rule_penalty(
-            fallback, {"ad": True}, "广告", "100"))
+            fallback, {"ad": True}, "加微信：abc123456 领取优惠", "100"))
+
+    def test_block_mode_weak_ad_hit_is_released_not_fail_closed(self):
+        # v2.34.0：无强广告证据的 ad 泛词命中（微信支付宝/校园网/交资料等日常聊天），
+        # LLM 不可用时不再 fail-closed，避免反复误禁言/误踢正常用户
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        for weak in ("微信支付宝 熟悉环境，交资料",
+                     "是和校园网绑定的吗",
+                     "办了卡再办网优惠不？",
+                     "这机器人挺忙的",
+                     "已经是黑名单了不能挑衅它"):
+            self.assertFalse(h._llm_failure_requires_rule_penalty(
+                fallback, {"ad": True}, weak, "100"), weak)
+
+    def test_block_mode_strong_ad_hit_still_fails_closed(self):
+        # 广告强证据（联系方式/链接/群号/引导词）在 LLM 不可用时仍 fail-closed
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        for strong in ("QQ群号：770369874",
+                       "加V: 123456",
+                       "加微信abc123456",
+                       "扫码进群 领优惠 https://spam.com",
+                       "私聊我，电话13800138000"):
+            self.assertTrue(h._llm_failure_requires_rule_penalty(
+                fallback, {"ad": True}, strong, "100"), strong)
+
+    def test_block_mode_ad_plus_swear_still_fails_closed(self):
+        # ad 无强证据但同时命中高置信 swear → 仍 fail-closed
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        self.assertTrue(h._llm_failure_requires_rule_penalty(
+            fallback, {"ad": True, "swear": True}, "滚 微信支付宝", "100"))
 
     def test_block_mode_semantic_only_not_rule_penalty(self):
         # 仅语义候选（full_scan）无真实命中 → 规则处罚判定为 False；
