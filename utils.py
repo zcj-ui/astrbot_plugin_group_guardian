@@ -412,11 +412,15 @@ class UtilitiesMixin:
     def _lexicon_switch_map(self, group_id: str = None) -> Dict[str, bool]:
         """统一计算各词库分类的启用状态，供审核阶段过滤复用。
 
-        其中 supplement / livelihood / tencent_ban 跟随 other 开关，
-        ad 分类始终启用（由独立的广告规则匹配器控制）。传 group_id 时优先使用群覆盖。
+        swear / ad 分别跟随 scan_swear / scan_ad：这两个开关现在是「完整审核开关」，
+        同时控制内置正则（_swear_matcher / _is_ad_pattern）与对应词库分类，关闭后
+        该类别审核彻底不生效，实现「广告」与「其他违规」审核开关完全独立
+        （v2.35.0，此前词库 swear/ad 恒启用、关不掉）。supplement / livelihood /
+        tencent_ban 跟随 other 开关。传 group_id 时优先使用群覆盖。
         """
         enable_other = self._cfg("lexicon_other_enabled", True, group_id=group_id)
         return {
+            "swear": self._cfg("scan_swear", True, group_id=group_id),
             "political": self._cfg("lexicon_political_enabled", True, group_id=group_id),
             "porn": self._cfg("lexicon_porn_enabled", True, group_id=group_id),
             "violent_terror": self._cfg("lexicon_violent_enabled", True, group_id=group_id),
@@ -428,7 +432,7 @@ class UtilitiesMixin:
             "supplement": enable_other,
             "livelihood": enable_other,
             "tencent_ban": enable_other,
-            "ad": True,
+            "ad": self._cfg("scan_ad", True, group_id=group_id),
         }
 
     @staticmethod

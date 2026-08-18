@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.35.0 - 2026-08-18
+
+### 功能：广告审核与其他违规审核开关完全独立（用户需求）
+
+此前 `scan_swear` / `scan_ad` 只控制**内置正则**匹配（`_swear_matcher` / `_is_ad_pattern`），
+而 **lexicon.db 词库中的 swear / ad 分类恒启用**（`_lexicon_switch_map` 中 swear 未返回
+= 默认启用、ad 恒为 True），导致关闭脏话/广告开关后对应词库分类命中**仍然生效**，
+「广告」与「其他违规」无法真正分开控制。
+
+修复（`utils.py` `_lexicon_switch_map`）：
+
+- `swear` 分类跟随 `scan_swear`：关闭脏话审核 = 内置正则 + 脏话词库全部失效；
+- `ad` 分类跟随 `scan_ad`：关闭广告审核 = 内置正则 + 广告词库（含视频广告复核队列）全部失效；
+- 其它词库分类（政治/色情/暴恐/武器/贪腐/非法网址/other 等）仍由各自 `lexicon_*_enabled`
+  独立控制，与 `scan_swear` / `scan_ad` 互不影响；
+- 支持按群覆盖：某群单独关闭 `scan_ad`，其它群广告审核不受影响（名片监控/入群审核的
+  词库匹配同样受控，符合「审核开关」语义）。
+
+效果：现在可以**只开广告审核、关闭所有其他违规**（`scan_ad=true` + 各 `lexicon_*_enabled=false`），
+或**只开其他违规、关闭广告**（`scan_ad=false`），互不干扰。
+
+测试：新增 `tests/test_audit_switch_separation.py` 共 6 项——默认全开 / 关广告仅广告失效 /
+关脏话仅脏话失效 / 词库分类独立 / other 跟随 / 按群覆盖。
+
 ## v2.34.0 - 2026-08-18
 
 ### 修复：误报率过高——LLM 不可用时广告泛词 fail-closed 反复误禁言/误踢正常用户（用户反馈）
