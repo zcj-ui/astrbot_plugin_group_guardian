@@ -1033,6 +1033,30 @@
         "default": "",
         "hint": "填写一个 QQ 群号后，疑似视频广告进入复核队列时会把「群号/发送者/识别内容/编号」转发到该管理群，管理员在群里回复「确认广告 #编号」确认违规（学习指纹并禁言）或「放行广告 #编号」放行。留空则仅通过 WebUI 广告后台-视频复核处理"
     },
+    "video_ad_review_private_admin": {
+        "description": "疑似视频广告私信该群全部管理员",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.32.0。开启后，疑似视频广告进入复核队列时，立即私信该群全部管理员（群主+管理员），发送「群号/发送者/识别内容/编号」供重新审核，管理员可直接在私聊回复「确认广告 #编号」或「放行广告 #编号」完成复核。可按群覆盖"
+    },
+    "uncertain_review_enabled": {
+        "description": "LLM 无法确认的内容提交管理员复核",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.32.0。开启后，文本/图片审核中 LLM 无法确认是否违规（判定输出 unknown/疑似/无法确认）时，不再直接放行，改为提交人工复核队列，并可选私信该群全部管理员重新审核。可按群覆盖"
+    },
+    "uncertain_review_private_admin": {
+        "description": "不确定内容私信该群全部管理员",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.32.0。开启后，LLM 无法确认的内容进入复核队列时，立即私信该群全部管理员（群主+管理员），发送「群号/发送者/内容/编号」供重新审核，管理员可直接在私聊回复「确认复核 #编号」或「放行复核 #编号」。可按群覆盖"
+    },
+    "uncertain_review_notice": {
+        "description": "不确定内容入队时群内通知",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.32.0。开启后，LLM 无法确认的内容进入复核队列时在群内发送一条提示。可按群覆盖"
+    },
     "video_short_qr_fast_hit": {
         "description": "短视频+引流二维码快速强信号",
         "type": "bool",

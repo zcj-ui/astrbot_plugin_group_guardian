@@ -1,5 +1,45 @@
 # Changelog
 
+## v2.32.0 - 2026-08-18
+
+### 新功能：不确定内容 → 私信当群全部管理员重新审核（用户需求）
+
+背景：审核遇到「不确定」的内容时（视频广告疑似、文本/图片 LLM 无法确认），
+此前仅群内通知或转发管理群，管理员需主动去 WebUI/管理群处理。本版新增：
+**不确定内容立即私信该群全部管理员（群主+管理员），发送内容信息供重新审核**，
+管理员可直接在私聊回复命令完成复核，形成闭环。
+
+改动：
+
+- **通用不确定复核队列**（`storage.py`）：新增 `uncertain_reviews` 表
+  （group/user/内容/来源 text|image/状态/复核人），提供 create / list_pending /
+  get / resolve（CAS 防并发），与 `video_ad_reviews` 并列；
+- **LLM 三态判定**（`moderation.py`）：
+  - `_normalize_llm_moderation_result` 支持 `violation: "unknown"` /
+    「疑似/无法判断/无法确认/不确定/无法判定」→ 标记 `uncertain`；
+  - `_call_llm_for_moderation` 两处 prompt 的 JSON 输出约束改为
+    `{"violation": true/false/"unknown", ...}`，仅无法判断时才输出 `unknown`；
+  - `_handle_message` 在 LLM 判定后增加 uncertain 分支：开启
+    `uncertain_review_enabled` 时落复核队列 + 私信管理员 + 群内通知，不直接处罚；
+- **私信该群全部管理员**（`moderation.py`）：
+  - `_fetch_group_admin_ids`：`get_group_member_list` 过滤群主/管理员；
+  - `_send_private_message`：OneBot `send_private_msg`；
+  - `_notify_uncertain_admins_private`：逐个私信发送「群号/发送者/内容/编号/命令」，
+    视频广告用「确认广告/放行广告」，文本/图片用「确认复核/放行复核」；
+  - `_submit_video_ad_review` 新增 `video_ad_review_private_admin`（默认关）——
+    疑似视频广告入队时同样私信全部管理员；
+- **复核命令**（`commands.py` + `main.py`）：「确认复核 #N / 放行复核 #N」，
+  私聊或管理群均可；权限校验＝插件管理员 或 该记录所在群的管理员/群主；
+  确认/放行均写入审核日志；
+- **新配置**（均可按群覆盖）：`uncertain_review_enabled`（默认关）、
+  `uncertain_review_private_admin`（默认关）、`uncertain_review_notice`
+  （默认开）、`video_ad_review_private_admin`（默认关）。
+
+测试：新增 `tests/test_uncertain_review.py` 16 项——storage 复核队列 CRUD、
+LLM 三态归一化（unknown/同义词/正常布尔/垃圾值）、群管理员过滤、私信内容与
+命令、`_submit_uncertain_review` 落队+私信+通知、确认/放行命令（插件管理员/
+群管理员/非管理员拒绝/编号无效）、schema 默认值与 prompt 三态断言。
+
 ## v2.31.0 - 2026-08-18
 
 ### 移除：独立广告后台页面入口（面板清理，用户反馈「广告后台已无用则删除」）

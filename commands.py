@@ -308,6 +308,81 @@ class CommandsMixin:
         async for item in self._review_cmd_common(event, "cleared"):
             yield item
 
+    async def _review_uncertain_common(self, event: AstrMessageEvent, status: str):
+        """v2.32.0：确认/放行「LLM 无法确认」的内容（私聊或管理群）。用法: 确认复核 #编号 / 放行复核 #编号"""
+        try:
+            sender_id = self._try_get_sender_id(event)
+            if not sender_id:
+                yield event.plain_result("无法识别发送者。")
+                return
+            args = event.message_str.split()
+            if len(args) < 2:
+                yield event.plain_result("用法: 确认复核 #编号 或 放行复核 #编号")
+                return
+            raw = str(args[1]).strip().lstrip("#").strip()
+            try:
+                review_id = int(raw)
+            except (ValueError, TypeError):
+                yield event.plain_result("编号无效。")
+                return
+            item = self._storage.get_uncertain_review(review_id)
+            if not item:
+                yield event.plain_result(f"未找到复核记录 #{review_id}。")
+                return
+            if item.get("status") != "pending":
+                yield event.plain_result(
+                    f"复核记录 #{review_id} 已处理（{item.get('status')}）。"
+                )
+                return
+            group_id = str(item.get("group_id", "") or "")
+            # 权限：插件管理员 或 该记录所在群的管理员/群主
+            authorized = await self._is_plugin_admin(event)
+            if not authorized and group_id:
+                try:
+                    client = await self._get_client()
+                    role = await self._get_role_by_id(client, group_id, sender_id)
+                    authorized = str(role or "").lower() in ("owner", "admin")
+                except Exception:
+                    authorized = False
+            if not authorized:
+                yield event.plain_result("权限不足：仅该群管理员或插件管理员可复核。")
+                return
+            reviewer = sender_id
+            ok = self._storage.resolve_uncertain_review(review_id, status, reviewer)
+            if not ok:
+                yield event.plain_result("处理失败（可能已被处理）。")
+                return
+            item_user_id = str(item.get("user_id", "") or "")
+            item_user_name = str(item.get("user_name", "") or "")
+            item_text = str(item.get("msg_text", "") or "")
+            if status == "confirmed":
+                self._log_moderation(
+                    group_id, item_user_id, item_user_name, item_text,
+                    "管理员确认违规", f"管理员复核确认 #{review_id}（LLM无法确认内容）",
+                    [],
+                )
+                yield event.plain_result(f"已确认违规 #{review_id}（内容已记录）。")
+            else:
+                self._log_moderation(
+                    group_id, item_user_id, item_user_name, item_text,
+                    "管理员复核放行", f"管理员复核放行 #{review_id}（LLM无法确认内容）",
+                    [],
+                )
+                yield event.plain_result(f"已放行 #{review_id}（标记为正常）。")
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 不确定复核命令失败: {exc}")
+            yield event.plain_result("复核命令执行失败，请查看日志。")
+
+    async def cmd_review_uncertain_confirm(self, event: AstrMessageEvent):
+        '''确认「LLM 无法确认」的内容违规（私聊或管理群）。用法: 确认复核 #编号'''
+        async for item in self._review_uncertain_common(event, "confirmed"):
+            yield item
+
+    async def cmd_review_uncertain_clear(self, event: AstrMessageEvent):
+        '''放行「LLM 无法确认」的内容（私聊或管理群）。用法: 放行复核 #编号'''
+        async for item in self._review_uncertain_common(event, "cleared"):
+            yield item
+
     async def cmd_unban(self, event: AstrMessageEvent):
         '''解除指定群成员禁言。用法: /解禁 <QQ号或@某人>'''
         args = event.message_str.split()

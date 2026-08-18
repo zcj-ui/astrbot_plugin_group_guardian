@@ -450,6 +450,25 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_video_reviews_status ON video_ad_reviews(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_video_reviews_ts ON video_ad_reviews(ts)")
+        # v2.32.0 不确定内容（文本/图片 LLM 无法确认）管理员复核队列：
+        # 私信该群全部管理员重新审核，管理员私聊/管理群回复确认或放行。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS uncertain_reviews ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT '', "
+            "msg_text TEXT DEFAULT '', "
+            "msg_preview TEXT DEFAULT '', "
+            "source TEXT DEFAULT '', "          # text / image
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / confirmed / cleared
+            "reviewed_by TEXT DEFAULT '', "
+            "reviewed_at INTEGER DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uncertain_reviews_status ON uncertain_reviews(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uncertain_reviews_ts ON uncertain_reviews(ts)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -1461,6 +1480,96 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             with self._connect() as conn:
                 cur = conn.execute(
                     "UPDATE video_ad_reviews SET status=?, reviewed_by=?, "
+                    "reviewed_at=? WHERE id=? AND status='pending'",
+                    (
+                        status,
+                        str(reviewer or "")[:64],
+                        int(time.time()),
+                        int(review_id),
+                    ),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    # ============================================================
+    # v2.32.0 不确定内容（文本/图片 LLM 无法确认）管理员复核队列
+    # ============================================================
+
+    def create_uncertain_review(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str = "",
+        msg_text: str = "",
+        source: str = "",
+    ) -> int:
+        """把一条「LLM 无法确认的内容」写入待复核队列；成功返回自增 id，失败返回 0。"""
+        if not str(group_id or "") or not str(user_id or ""):
+            return 0
+        try:
+            now = int(time.time())
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO uncertain_reviews "
+                    "(ts, group_id, user_id, user_name, msg_text, msg_preview, "
+                    " source, status, reviewed_by, reviewed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', 0)",
+                    (
+                        now,
+                        str(group_id or ""),
+                        str(user_id or ""),
+                        str(user_name or "")[:64],
+                        str(msg_text or ""),
+                        str(msg_text or "")[:200],
+                        str(source or "")[:64],
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+        except Exception:
+            return 0
+
+    def list_pending_uncertain_reviews(self, limit: int = 50) -> List[dict]:
+        """列出待复核的不确定内容（pending，按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, source, status, reviewed_by, reviewed_at "
+                    "FROM uncertain_reviews WHERE status='pending' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 200)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_uncertain_review(self, review_id: int) -> Optional[dict]:
+        """按 id 查询一条不确定内容复核记录（任意状态）。"""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, source, status, reviewed_by, reviewed_at "
+                    "FROM uncertain_reviews WHERE id=?",
+                    (int(review_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def resolve_uncertain_review(
+        self, review_id: int, status: str, reviewer: str = ""
+    ) -> bool:
+        """确认违规（confirmed）或放行（cleared）；仅 pending 可成功（CAS 防并发）。"""
+        if status not in ("confirmed", "cleared"):
+            return False
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE uncertain_reviews SET status=?, reviewed_by=?, "
                     "reviewed_at=? WHERE id=? AND status='pending'",
                     (
                         status,

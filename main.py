@@ -284,6 +284,19 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         async for item in CommandsMixin.cmd_review_clear(self, event):
             yield item
 
+    # v2.32.0 不确定内容（LLM 无法确认）人工复核：私聊或管理群回复确认/放行
+    @filter.command("确认复核")
+    async def cmd_review_uncertain_confirm(self, event: AstrMessageEvent):
+        '''确认「LLM 无法确认」的内容违规（私聊或管理群）。用法: /确认复核 #编号'''
+        async for item in CommandsMixin.cmd_review_uncertain_confirm(self, event):
+            yield item
+
+    @filter.command("放行复核")
+    async def cmd_review_uncertain_clear(self, event: AstrMessageEvent):
+        '''放行「LLM 无法确认」的内容（私聊或管理群）。用法: /放行复核 #编号'''
+        async for item in CommandsMixin.cmd_review_uncertain_clear(self, event):
+            yield item
+
     @filter.command("撤回最新消息")
     async def recall_last(self, event: AstrMessageEvent):
         '''撤回群内最新一条或多条消息'''
