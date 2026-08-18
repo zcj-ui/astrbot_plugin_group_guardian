@@ -1960,11 +1960,11 @@ async function loadAdBackend() {
     var d = s.data;
     statsEl.innerHTML =
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:12px 16px">' +
-      '<div><div class="rules-subtle">今日拦截</div><b style="font-size:20px">' + esc(d.today_blocked) + '</b></div>' +
-      '<div><div class="rules-subtle">累计拦截</div><b style="font-size:20px">' + esc(d.total_blocked) + '</b></div>' +
-      '<div><div class="rules-subtle">今日图片</div><b style="font-size:20px">' + esc(d.today_img) + '</b></div>' +
-      '<div><div class="rules-subtle">今日视频</div><b style="font-size:20px">' + esc(d.today_video) + '</b></div>' +
-      '<div><div class="rules-subtle">累计记录</div><b style="font-size:20px">' + esc(d.total_logs) + '</b></div></div>';
+      '<div><div class="rules-subtle">今日拦截</div><b style="font-size:20px">' + esc(d.today_blocked != null ? d.today_blocked : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">累计拦截</div><b style="font-size:20px">' + esc(d.total_blocked != null ? d.total_blocked : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">今日图片</div><b style="font-size:20px">' + esc(d.today_img != null ? d.today_img : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">今日视频</div><b style="font-size:20px">' + esc(d.today_video != null ? d.today_video : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">累计记录</div><b style="font-size:20px">' + esc(d.total_logs != null ? d.total_logs : '--') + '</b></div></div>';
   } else { statsEl.innerHTML = '<p class="empty">加载失败</p>'; }
   // 黑名单
   var b = await safeGet('ad_backend/blacklist');

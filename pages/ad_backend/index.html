@@ -166,11 +166,15 @@ img.ev { max-width:140px; max-height:90px; border-radius:6px; cursor:zoom-in; bo
 var TOKEN = localStorage.getItem('ad_backend_token') || '';
 (function(){ try { if (new URLSearchParams(location.search).has('token')) { history.replaceState(null,'',location.pathname); } } catch(e){} })();
 
+// v2.30.0：v2.21.0 起广告后台 API 已挂载到 AstrBot Dashboard 的 /api/plug/ 下
+// （register_web_api），不再是独立端口的 /api/* 根路径；此处统一映射旧路径。
+var API_BASE = '/api/plug/astrbot_plugin_group_guardian/ad_backend';
 function api(path, opts) {
   opts = opts || {};
   opts.headers = Object.assign({'Content-Type':'application/json'}, opts.headers || {});
   if (TOKEN) opts.headers['X-Token'] = TOKEN;
-  return fetch(path, opts).then(function(r){ return r.json().catch(function(){ return {status:'error',message:'响应解析失败'}; }); });
+  if (path.indexOf('/api/') === 0) path = path.replace(/^\/api\//, '/');
+  return fetch(API_BASE + path, opts).then(function(r){ return r.json().catch(function(){ return {status:'error',message:'响应解析失败'}; }); });
 }
 function qs(obj){
   var s=[]; for (var k in obj){ if(obj[k]!=='' && obj[k]!=null) s.push(encodeURIComponent(k)+'='+encodeURIComponent(obj[k])); }

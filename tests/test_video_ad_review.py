@@ -469,10 +469,10 @@ class AdBackendStatsTests(unittest.IsolatedAsyncioTestCase):
             def __init__(self, storage):
                 self._storage = storage
                 self.config = {}
+                self._today = 0
 
-            @staticmethod
-            def _today_start():
-                return 0
+            def _today_start(self):
+                return self._today
 
         self.storage = _Storage([
             # 图片广告：OCR 文本无"广告"字样，靠 reason 类别判定
@@ -507,6 +507,45 @@ class AdBackendStatsTests(unittest.IsolatedAsyncioTestCase):
         result = await self.h._ad_backend_stats()
         self.assertEqual("success", result["status"])
         self.assertEqual(3, result["data"]["today_blocked"])
+
+    async def test_stats_exposes_dashboard_fields(self):
+        # v2.30.0：主面板使用 total_blocked / today_img / today_video，
+        # 此前字段缺失导致「累计拦截/今日图片/今日视频」显示 undefined
+        result = await self.h._ad_backend_stats()
+        self.assertEqual("success", result["status"])
+        data = result["data"]
+        self.assertEqual(2, data["total_blocked"])
+        self.assertEqual(1, data["today_img"])
+        self.assertEqual(1, data["today_video"])
+        # 旧字段名兼容保留
+        self.assertEqual(data["today_img"], data["today_image_blocked"])
+        self.assertEqual(data["today_video"], data["today_video_blocked"])
+
+    async def test_stats_release_not_counted_as_blocked(self):
+        # v2.30.0：广告类但 action 为「放行」不是拦截动作，不计入拦截统计
+        self.storage._logs.append({
+            "ts": 300, "action": "放行",
+            "msg_text": "[图片审核] 正常图片", "reason": "触发规则: ad",
+            "image_urls": [], "user_id": "5",
+        })
+        result = await self.h._ad_backend_stats()
+        data = result["data"]
+        self.assertEqual(2, data["today_blocked"])
+        self.assertEqual(2, data["total_blocked"])
+
+    async def test_stats_today_vs_total_split(self):
+        # v2.30.0：today_* 只统计今日起始时间之后的记录，累计包含全部
+        self.h._today = 150
+        self.storage._logs.append({
+            "ts": 200, "action": "撤回+禁言", "msg_text": "[图片审核] 广告",
+            "reason": "触发规则: ad", "image_urls": [], "user_id": "6",
+        })
+        result = await self.h._ad_backend_stats()
+        data = result["data"]
+        self.assertEqual(3, data["total_blocked"])
+        self.assertEqual(1, data["today_blocked"])
+        self.assertEqual(1, data["today_image_blocked"])
+        self.assertEqual(0, data["today_video_blocked"])
 
 
 if __name__ == "__main__":

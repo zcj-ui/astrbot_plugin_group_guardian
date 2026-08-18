@@ -1,5 +1,36 @@
 # Changelog
 
+## v2.30.0 - 2026-08-18
+
+### 修复：广告后台无法正常显示（用户反馈）
+
+背景：主面板「广告后台」总览的**累计拦截/今日图片/今日视频**三个卡片显示
+`undefined`，且独立广告后台页面所有接口请求失败。三个根因：
+
+1. **主面板字段与后端不匹配**（v2.21.0 迁移遗留）：`_ad_backend_stats` 返回
+   `today_video_blocked` / `today_image_blocked`，主面板 `loadAdBackend` 却读取
+   `total_blocked` / `today_img` / `today_video`——字段一直不存在，卡片显示
+   `undefined`；
+2. **独立广告后台页面请求旧路径**（v2.21.0 迁移遗留）：`pages/ad_backend/index.html`
+   仍请求 `/api/stats` 等根路径，v2.21.0 起接口已挂载到 AstrBot Dashboard 的
+   `/api/plug/astrbot_plugin_group_guardian/ad_backend/` 下，全部 404；
+3. **`_ad_backend_stats` 统计口径**：`blocked` 未按今日过滤（“今日拦截”实际是全部）、
+   action 含「放行」的记录被误计为拦截。
+
+改动（`ad_backend.py` + `pages/dashboard/index.html` + `pages/ad_backend/index.html`）：
+
+- `_ad_backend_stats` 补充 `total_blocked` / `today_img` / `today_video` 字段并保留旧
+  字段名（`today_blocked` / `today_image_blocked` / `today_video_blocked`）兼容；
+- `today_*` 按今日起始时间过滤，`blocked`（累计）为最近 2000 条内广告拦截总数；
+- 「放行」不再是拦截动作，不计入拦截；图片判定补充 `msg` 含「图片」检查，与视频
+  判定对称；
+- 主面板广告后台卡片字段缺失时显示 `--`（防御旧后端）；
+- 独立广告后台页面 `api()` 统一映射到 `/api/plug/astrbot_plugin_group_guardian/
+  ad_backend` 前缀，全部接口恢复可用。
+
+测试：`tests/test_video_ad_review.py` 新增 3 项——主面板字段存在且与旧字段一致 /
+「放行」不计入拦截 / 今日与累计正确拆分；`test_video_ad_review` 全量 25 项通过。
+
 ## v2.29.0 - 2026-08-18
 
 ### 修复：分享 QQ 群链接的广告无法处置（消息撤回 + 名片还原，用户反馈）

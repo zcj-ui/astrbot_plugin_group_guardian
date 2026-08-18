@@ -62,12 +62,19 @@ class AdBackendMixin:
         v2.27.0：数据源改为 SQLite（持久化，重启不丢）；广告判定基于
         reason 类别（"ad"/"广告"）而非 msg/action 文字——修复图片广告
         OCR 识别文本不含"广告"字样导致面板不显示的 bug。
+        v2.30.0：修复主面板「累计拦截/今日图片/今日视频」显示 undefined——
+        补充 total_blocked / today_img / today_video 字段并保留旧字段名兼容；
+        today_* 按今日过滤，blocked 为最近 2000 条内广告拦截总数；
+        「放行」不属于拦截动作，不再计入拦截。
         """
         try:
             today_start = self._today_start()
-            blocked = passed = 0
+            blocked = 0
+            today_blocked = 0
             img_blocked = 0
+            today_image_blocked = 0
             video_blocked = 0
+            today_video_blocked = 0
             user_hits = {}
             recent = []
             logs = self._storage.list_logs(limit=2000, offset=0)
@@ -86,23 +93,31 @@ class AdBackendMixin:
                     or "视频" in action
                     or "复核" in action
                 )
+                # 拦截动作：撤回/禁言/踢/待复核；「放行」不是拦截，不计入
                 is_blocked = (
                     "撤回" in action or "禁言" in action or "踢" in action
-                    or "待复核" in action or "放行" in action
+                    or "待复核" in action
                 )
-                if is_ad and is_blocked:
-                    blocked += 1
-                    if "视频" in msg or "视频" in action or "视频" in reason:
-                        video_blocked += 1
-                    elif urls or "图片" in action or "图片" in reason:
-                        img_blocked += 1
-                    uid = str(log.get("user_id", ""))
-                    if uid:
-                        user_hits[uid] = user_hits.get(uid, 0) + 1
-                    if ts >= today_start and len(recent) < 20:
+                if not (is_ad and is_blocked):
+                    continue
+                blocked += 1
+                is_video = "视频" in msg or "视频" in action or "视频" in reason
+                is_image = bool(urls) or "图片" in action or "图片" in reason or "图片" in msg
+                if is_video:
+                    video_blocked += 1
+                elif is_image:
+                    img_blocked += 1
+                uid = str(log.get("user_id", ""))
+                if uid:
+                    user_hits[uid] = user_hits.get(uid, 0) + 1
+                if ts >= today_start:
+                    today_blocked += 1
+                    if is_video:
+                        today_video_blocked += 1
+                    elif is_image:
+                        today_image_blocked += 1
+                    if len(recent) < 20:
                         recent.append(log)
-                elif is_blocked:
-                    passed += 1
             total_logs = self._storage.count_logs()
             top_users = sorted(
                 user_hits.items(), key=lambda kv: kv[1], reverse=True
@@ -110,9 +125,12 @@ class AdBackendMixin:
             return jsonify({
                 "status": "success",
                 "data": {
-                    "today_blocked": blocked,
-                    "today_video_blocked": video_blocked,
-                    "today_image_blocked": img_blocked,
+                    "today_blocked": today_blocked,
+                    "total_blocked": blocked,
+                    "today_image_blocked": today_image_blocked,
+                    "today_video_blocked": today_video_blocked,
+                    "today_img": today_image_blocked,
+                    "today_video": today_video_blocked,
                     "total_logs": total_logs,
                     "recent": recent[:20],
                     "top_users": [{"user_id": k, "count": v} for k, v in top_users],
