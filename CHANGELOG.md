@@ -1,5 +1,47 @@
 # Changelog
 
+## v2.33.0 - 2026-08-18
+
+### 修复：发送消息失败导致 AstrBot 进程反复崩溃（用户反馈「还是容易自动崩溃」）
+
+背景：生产日志显示 AstrBot 进程在短时间内反复被整进程级 traceback 打崩并容器重启
+（08-18 04:48 / 05:25 / 05:27 / 05:28 共 4 次）。4 次崩溃的现场完全一致——
+
+```
+[ERRO] respond.stage:287: 发送消息链失败: chain = MessageChain([Plain(text='[群管] 春晚庭(...) 检测到广告，撤回+禁言；该群广告违规第1次')]), error = <ActionFailed ... retcode=1200 ... 'EventChecker Failed: NTEvent ...'>
+Traceback (most recent call last):
+  ...
+> File ".../respond/stage.py", line 285, in process
+  await event.send(chain)
+  ...
+asyncio.run(main_async(...))  # 进程级崩溃，容器重启
+```
+
+根因（AstrBot v4.24.2 核心缺陷，插件无法直接修复）：NapCat/OneBot 发送群消息
+动作**超时**（retcode=1200，`EventChecker Failed: NTEvent ...`，同一时间段的撤回
+动作也大量超时）时，`RespondStage.process` 的 `event.send()` 抛 `ActionFailed`，
+AstrBot 记录「发送消息链失败」后**重新抛出**，异常穿透消息处理任务直达
+`asyncio.run()` 顶层，整个 AstrBot 进程退出。插件全部 `event.plain_result` 回复
+都走这条管线，NapCat 一抖就会把机器人整个打崩。
+
+修复（插件侧安全壳，治标但彻底）：
+
+- **`event.send` 安全壳**（`moderation.py` 新增 `_harden_event_send`）：
+  在 `main._handle_message` 消息入口把 `event.send` 替换为安全版本——发送失败仅
+  记 `WARN` 日志并返回 `None`，不向上抛异常。一次注入即可覆盖插件全部
+  `plain_result` 回复路径（审核通知/防刷屏/黑名单/命令/申诉/防刷屏提示等）；
+- **新配置 `safe_send_enabled`**（默认开，可按群覆盖）：关闭则恢复原行为；
+- **LLM 返回空值修复**：`review_chunk` 中 `llm_response` 为 `None` 时显式返回
+  「LLM无返回」降级，不再误报 `'NoneType' object has no attribute 'strip'`
+  （此前该错误被通用兜底捕获、按 pass_on_error 放行，日志误导排障）。
+
+> 说明：`retcode=1200` 的发送超时本身源于 NapCat/OneBot 侧或网络抖动，插件无法
+> 消除；本版保证此类失败**只丢消息、不崩进程**。若需彻底根治可检查 NapCat 配置
+> 与网络稳定性。
+
+测试：新增 `tests/test_safe_send.py` —— 安全壳注入/幂等、发送失败被吞并返回
+`None`、关闭开关时不注入、LLM 返回 None 走「LLM无返回」降级；全量回归通过。
+
 ## v2.32.0 - 2026-08-18
 
 ### 新功能：不确定内容 → 私信当群全部管理员重新审核（用户需求）

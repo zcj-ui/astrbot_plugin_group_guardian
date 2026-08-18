@@ -981,6 +981,15 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 )
 
                 # 优先整体解析；失败再兼容带解释文字的 JSON 响应。
+                if not llm_response:
+                    logger.warning(
+                        f"[GroupMgr] LLM 审核返回为空(分片{index}/{total})"
+                    )
+                    return {
+                        "violation": False,
+                        "reason": "LLM无返回",
+                        "fallback": True,
+                    }
                 try:
                     whole = json.loads(llm_response.strip())
                     if isinstance(whole, dict):
@@ -1901,6 +1910,43 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 if self._is_qq_favorite_text(getattr(seg, 'content', '')):
                     return True
         return False
+
+    def _harden_event_send(self, event) -> None:
+        """给 ``event.send`` 加安全壳，防止发送失败导致整个 AstrBot 进程崩溃（v2.33.0）。
+
+        AstrBot v4.24.x 的 ``RespondStage.process`` 在 ``event.send(chain)`` 抛异常时
+        （典型如 NapCat/OneBot 发送动作超时返回 retcode=1200 的 ``ActionFailed``，
+        日志特征 ``EventChecker Failed: NTEvent serviceAndMethod:NodeIKernelMsgService``）
+        会记录「发送消息链失败」后**重新抛出**，异常穿透消息处理任务直达
+        ``asyncio.run()`` 顶层，整个 AstrBot 进程退出、容器自动重启。
+
+        本方法把 ``event.send`` 替换为安全版本：发送失败仅记日志并返回 ``None``，
+        不向上抛异常。在 ``main._handle_message`` 入口统一注入一次，即可覆盖插件
+        全部 ``event.plain_result`` 回复路径（审核通知/防刷屏/黑名单/命令/申诉等）。
+        开关：``safe_send_enabled``（默认开，可按群覆盖）。
+        """
+        if not self._cfg("safe_send_enabled", True):
+            return
+        try:
+            base_send = getattr(event, "send", None)
+            if base_send is None or getattr(base_send, "_gg_safe_send", False):
+                return
+
+            async def _safe_send(chain, *args, **kwargs):
+                try:
+                    return await base_send(chain, *args, **kwargs)
+                except Exception as exc:
+                    logger.warning(
+                        f"[GroupMgr] 消息发送失败（已安全拦截，防止进程崩溃）: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                    return None
+
+            _safe_send._gg_safe_send = True
+            event.send = _safe_send  # type: ignore[attr-defined]
+        except Exception as exc:
+            # 事件对象不允许覆盖 send 时静默回退，绝不影响主流程
+            logger.debug(f"[GroupMgr] 安全发送壳注入失败: {exc}")
 
     async def _handle_message(self, event: AiocqhttpMessageEvent):
         group_id = self._get_group_id(event)

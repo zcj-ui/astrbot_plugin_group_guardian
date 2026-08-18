@@ -70,6 +70,12 @@
         "default": true,
         "hint": "开启后，消息被自动撤回/处罚时在群内发送提示（内容见 ban_notice 模板）。关闭则静默处理，不打扰群聊。统一管控三条撤回路径：规则命中撤回、LLM审核撤回、QQ收藏撤回"
     },
+    "safe_send_enabled": {
+        "description": "消息发送安全壳（防止发送失败导致 AstrBot 进程崩溃）",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.33.0。AstrBot 管线在 event.send 发送群消息失败（如 NapCat 发送动作超时 retcode=1200）时会记录日志后重新抛出，异常会穿透到顶层导致整个 AstrBot 进程退出（容器自动重启）。开启后给 event.send 加安全壳：发送失败仅记日志、不再导致进程崩溃。可按群覆盖"
+    },
     "scan_swear": {
         "description": "辱骂脏话检测开关",
         "type": "bool",

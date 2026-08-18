@@ -654,6 +654,9 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
     # 违规记录，群主/群管理员按角色豁免（_is_admin 经 PlatformOpsMixin 平台路由查询群角色）。
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def _handle_message(self, event: AstrMessageEvent):
+        # v2.33.0：给 event.send 加安全壳，防止 NapCat 发送动作超时等失败
+        # 经 AstrBot RespondStage 重新抛出导致整个进程崩溃（见 _harden_event_send）。
+        self._harden_event_send(event)
         platform = get_platform_name(event)
         if not is_aiocqhttp(platform):
             # 受限模式：仅当开关开启且该平台在启用列表时处理，否则静默忽略
