@@ -2,12 +2,12 @@
 """广告 Web 管理后台（v2.21.0 起接入 AstrBot Dashboard）。
 
 - 页面与接口统一注册到 AstrBot Dashboard（web.py register_web_api → /api/plug/ 下），
-  鉴权由 Dashboard JWT 统一执行，不再有独立端口监听服务；
+  鉴权由 Dashboard JWT 统一执行，不再有独立端口监听服务与独立页面
+  （v2.31.0：删除 v2.10.x 遗留的 pages/ad_backend/index.html 独立页面入口，
+  广告后台统一在主面板「广告后台」页签内完成）；
 - 展示广告检测核心数据：今日/累计拦截统计、违规记录（含图片/视频证据）、
   感知哈希广告黑名单、视频指纹缓存、广告分级处置记录、关键配置状态。
 """
-
-import os
 
 try:
     from quart import jsonify, request as quart_request
@@ -28,29 +28,9 @@ except ImportError:  # 独立加载 ad_backend.py 的单元测试兼容路径
         AD_ESCALATION_FILE,
     )
 
-BACKEND_PAGE_REL = os.path.join("pages", "ad_backend", "index.html")
-BACKEND_PAGE_CACHE_TTL = 10.0
-
 
 class AdBackendMixin:
-    """独立 Web 管理后台能力，由 ``Main`` 组合使用（需 Quart 可用）。"""
-
-    def _init_ad_backend(self) -> None:
-        """广告后台初始化（v2.21.0：独立 Quart 服务已移除）。
-
-        页面与接口统一接入 AstrBot Dashboard（web.py 通过 register_web_api 注册到
-        /api/plug/ 下），鉴权由 AstrBot Dashboard JWT 统一执行，不再存在独立端口监听。
-        此处仅初始化数据缓存字段；ad_backend_enabled 保留作为旧配置兼容项。
-        """
-        self._ad_backend_app = None
-        self._ad_backend_task = None
-        self._ad_backend_page_cache = ("", 0.0)
-
-    async def _stop_ad_backend(self) -> None:
-        """停止广告后台（v2.21.0：已无独立监听服务，仅清空缓存字段）。"""
-        self._ad_backend_task = None
-        self._ad_backend_app = None
-        self._ad_backend_page_cache = ("", 0.0)
+    """广告后台 API 能力，由 ``Main`` 组合使用（需 Quart 可用）。"""
 
     # ============================================================
     # 后台 API（v2.21.0 起由 web.py 通过 register_web_api 注册到 AstrBot Dashboard）

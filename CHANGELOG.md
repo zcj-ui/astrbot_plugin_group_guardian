@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.31.0 - 2026-08-18
+
+### 移除：独立广告后台页面入口（面板清理，用户反馈「广告后台已无用则删除」）
+
+v2.21.0 起广告后台已完整并入 AstrBot Dashboard 主面板「广告后台」页签
+（总览统计/违规记录/黑名单/指纹/分级/配置/视频复核，接口走 `/api/plug/` 下的
+`/ad_backend/*`）。独立页面 `pages/ad_backend/index.html` 是 v2.10.x 时代的重复
+遗留入口——v2.30.0 定位「广告后台无法正常显示」时确认其旧 API 路径 404 是三个
+根因之一，且该页面与主面板页签功能完全重叠，保留只会继续造成混淆，故直接删除。
+
+改动：
+
+- **删除 `pages/ad_backend/index.html`**：AstrBot 插件页面列表不再出现独立的
+  「广告后台」页面，广告后台统一通过主面板页签访问；
+- **`ad_backend.py`**：删除 `BACKEND_PAGE_REL` / `BACKEND_PAGE_CACHE_TTL` /
+  `_ad_backend_page_cache` 与无用的 `_init_ad_backend` / `_stop_ad_backend`
+  （v2.21.0 起即为空操作遗留）及 `import os`；全部 `/ad_backend/*` API 与
+  `AdBackendMixin` 保留（主面板页签仍在使用）；
+- **`main.py`**：删除 `_init_ad_backend()` / `_stop_ad_backend()` 调用；
+- **`README.md`**：功能表/配置表删除 v2.10.x 独立 HTTP 后台（端口 8765）的过时
+  描述与 `ad_backend_enabled/port/token` 配置条目，改为说明广告后台已并入主面板；
+  `_conf_schema.json` 中的 `ad_backend_*` 三项按 v2.21.0 约定保留为旧配置兼容项。
+
+测试：`test_video_ad_review.py` 的 `AdBackendReviewHandlerTests` /
+`AdBackendStatsTests` 全部通过（handler 与 stats 接口未受影响），全量回归
+通过。
+
 ## v2.30.0 - 2026-08-18
 
 ### 修复：广告后台无法正常显示（用户反馈）

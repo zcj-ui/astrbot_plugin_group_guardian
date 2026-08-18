@@ -112,8 +112,6 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         # 后台调度器（F3 定时解禁 + F2 申诉超时清理）
         self._init_scheduler()
         self._start_scheduler()
-        # 独立 Web 管理后台（可选，按配置启动独立端口服务）
-        self._init_ad_backend()
         # 多协议支持日志（AIOCQHTTP 全量 / 其他平台受限）
         log_startup_support()
 
@@ -128,7 +126,6 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         await self._close_moderation_context_resources()
         await self._close_image_audit_resources()
         await self._close_video_audit_resources()
-        await self._stop_ad_backend()
         logger.info("[GroupMgr] 插件卸载，SQLite 存储已自动持久化")
 
     def _set_rebuild_status(self, state: str, target: str = "", message: str = "") -> None:
