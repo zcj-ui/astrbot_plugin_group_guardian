@@ -30,6 +30,7 @@ _SHOP_LINK_RE = re.compile(
     r"(?:https?://|www\.)|"                                  # 任意网址
     r"(?:taobao|tmall|jd|pinduoduo|pdd|1688|xiaohongshu|douyin|kuaishou|weidian|youzan)\.|"  # 电商域名
     r"(?:\.(?:com|cn|net|org|shop|top|xyz|vip)\b)|"          # 裸域名
+    r"(?:qm\.qq\.com|jq\.qq\.com|qun\.qq\.com|pd\.qq\.com)|"  # v2.29.0 QQ 群链接
     r"(?:淘宝|天猫|拼多多|京东|微店|有赞|旗舰店|专卖店|扫码|二维码|领券|优惠券)",  # 明确店铺/扫码
     re.IGNORECASE,
 )
@@ -39,7 +40,7 @@ _SHOP_LINK_RE = re.compile(
 _PROMO_SUSPECT_RE = re.compile(
     r"(?:加我|加个?[微薇威]|加[vV]|[vV][xX]|微信|薇信|威信|企[鹅Q]|私聊|私我|滴我|联系我)|"
     r"(?:代购|代练|代刷|接单|承接|出售|批发|招收?代理|招募|招商|收徒|带练|上分|刷单)|"
-    r"(?:免费领|福利|优惠|折扣|低价|特价|秒杀|兼职|日结|月入|引流|推广|广告)",
+    r"(?:免费领|福利|优惠|折扣|低价|特价|秒杀|兼职|日结|月入|引流|推广|广告|群链接|拉群)",
     re.IGNORECASE,
 )
 

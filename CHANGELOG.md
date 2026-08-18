@@ -1,5 +1,29 @@
 # Changelog
 
+## v2.29.0 - 2026-08-18
+
+### 修复：分享 QQ 群链接的广告无法处置（消息撤回 + 名片还原，用户反馈）
+
+背景：广告以「QQ 群链接」形式出现——成员发 qm.qq.com 群邀请链接消息拉人、
+或把名片改成群链接。此前消息侧群链接检测受 `invite_link_recall_enabled`
+（默认关）控制，不开则不拦截；名片侧 `_SHOP_LINK_RE` 虽覆盖 `https?://`
+但去链化（无协议前缀）与纯文字「群链接」不被识别。
+
+改动：
+
+- **消息侧（`advanced_audit.py`）**：QQ 群邀请链接（`qm.qq.com` / `jq.qq.com` /
+  `qun.qq.com` / `pd.qq.com`）升级为**无条件拦截**——不依赖
+  `invite_link_recall_enabled` 开关，命中即撤回 + 记录 + 群内提示；
+  新增 `_find_qq_group_link` 支持去链化（无 `https://` 前缀也命中）；
+  Telegram / Discord 等其他平台链接仍由原开关控制。
+- **名片侧（`card_monitor.py`）**：`_SHOP_LINK_RE` 增加 QQ 群链接域名
+  （名片含 `qm.qq.com` 等直接还原）；`_PROMO_SUSPECT_RE` 增加
+  「群链接 / 拉群」（送 LLM 二判，避免误伤正常「进群」类文字）。
+
+测试：新增 `tests/test_group_link.py` 共 9 项——QQ 群链接全 URL / 去链化 /
+四域名命中 / 正常文本不命中 / `_detect_link_violation` 在开关关闭时仍无条件命中 /
+名片 `_is_shop_link_card` 命中 qm.qq.com / `_PROMO_SUSPECT_RE` 命中群链接/拉群。
+
 ## v2.28.0 - 2026-08-18
 
 ### 修复：识别到名片广告但「无法撤回」（用户反馈）

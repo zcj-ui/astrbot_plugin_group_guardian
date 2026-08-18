@@ -41,6 +41,9 @@ _INVITE_HOST_RES = [
     re.compile(r"discord\.gg", re.I),
     re.compile(r"discord\.com/invite", re.I),
 ]
+# v2.29.0：QQ 群邀请链接（域名级，无条件拦截）——QQ 群内发 qm.qq.com 等
+# 群邀请链接是明确引流特征，不依赖 invite_link_recall_enabled 开关。
+_QQ_GROUP_HOST_RES = _INVITE_HOST_RES[:4]
 # 邀请链接兜底：纯文本"群号+数字"特征（防短链/去链化）
 _INVITE_TEXT_RES = [
     re.compile(r"群号\s*[:：]?\s*\d{5,12}", re.I),
@@ -96,6 +99,23 @@ class AdvancedAuditMixin:
         # 兜底：QQ 群号明文特征
         for m in _INVITE_TEXT_RES.finditer(text):
             return m.group(0)
+        return ""
+
+    def _find_qq_group_link(self, text: str) -> str:
+        """v2.29.0：检测文本中的 QQ 群邀请链接（域名级，无需完整 URL 前缀）。
+
+        QQ 群内发送 qm.qq.com / jq.qq.com / qun.qq.com / pd.qq.com 群邀请
+        链接是明确引流特征，无条件拦截；去链化（无 https:// 前缀）也能命中。
+        """
+        if not text:
+            return ""
+        for url in self._extract_urls(text):
+            if any(rx.search(url) for rx in _QQ_GROUP_HOST_RES):
+                return url
+        for rx in _QQ_GROUP_HOST_RES:
+            m = rx.search(str(text))
+            if m:
+                return m.group(0)
         return ""
 
     def _invite_link_hit(self, group_id: str) -> bool:
@@ -314,6 +334,14 @@ class AdvancedAuditMixin:
         """检测高置信链接违规（外链邀请 / 风险链接）。命中返回 (label, reason)，否则 None。"""
         if not text:
             return None
+        # v2.29.0：QQ 群邀请链接（qm.qq.com 等）为明确引流特征，无条件拦截，
+        # 不依赖 invite_link_recall_enabled 开关；命中即撤回+记录。
+        try:
+            qq_invite = self._find_qq_group_link(text)
+            if qq_invite:
+                return ("外链邀请", f"QQ 群邀请链接: {qq_invite}")
+        except Exception as e:
+            logger.debug(f"[GroupMgr] QQ 群链接检测异常: {e}")
         try:
             if self._invite_link_hit(group_id):
                 invite = self._find_invite_link(text)
