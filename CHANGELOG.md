@@ -1,5 +1,32 @@
 # Changelog
 
+## v2.27.0 - 2026-08-18
+
+### 修复：广告后台总览不显示已识别的视频/图片广告（用户反馈）
+
+背景：AstrBot 已识别到视频/图片广告（日志中有处理记录），但插件「广告后台-总览」
+的拦截统计不显示。两个根因：
+
+1. **图片广告判定用 msg/action 文字**：`_ad_backend_stats` 用「msg/action 含"广告"
+   或"视频"字样」判断广告——图片广告的 OCR 识别文本通常不含这些字样，导致
+   `is_ad=False`，识别到的图片广告不计入拦截统计；
+2. **统计源用内存缓存**：遍历 `_moderation_logs`（deque maxlen=500），重启后丢失，
+   且只覆盖最近 500 条。
+
+改动（`ad_backend.py`）：
+
+- `_ad_backend_stats` 数据源改为 **SQLite**（`storage.list_logs`，最近 2000 条，
+  持久化、重启不丢）；
+- 广告判定补充 **reason 类别**（`"ad" in reason` / `"广告" in reason`）+ action
+  含「复核」等，覆盖图片广告 OCR 文本无广告字样、疑似广告复核队列（撤回+待复核/
+  放行）等场景；
+- 图片/视频归类：`img_blocked` 也接受 action/reason 含「图片」、`video_blocked`
+  也接受 reason 含「视频」；
+- 「待复核 / 放行」计入 `is_blocked`（复核队列中的疑似广告可见）。
+
+测试：`tests/test_video_ad_review.py` 新增 AdBackendStatsTests 2 项——图片广告按
+reason 计入 / 复核队列（撤回+待复核）计入；其余 20 项回归通过。
+
 ## v2.26.0 - 2026-08-18
 
 ### 新功能：内存自动回收机制（用户反馈：机器人因内存溢出崩溃）

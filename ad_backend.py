@@ -57,7 +57,12 @@ class AdBackendMixin:
     # ============================================================
 
     async def _ad_backend_stats(self):
-        """总览统计：今日/累计拦截、图片/视频拦截、最近记录。"""
+        """总览统计：今日/累计拦截、图片/视频拦截、最近记录。
+
+        v2.27.0：数据源改为 SQLite（持久化，重启不丢）；广告判定基于
+        reason 类别（"ad"/"广告"）而非 msg/action 文字——修复图片广告
+        OCR 识别文本不含"广告"字样导致面板不显示的 bug。
+        """
         try:
             today_start = self._today_start()
             blocked = passed = 0
@@ -65,18 +70,31 @@ class AdBackendMixin:
             video_blocked = 0
             user_hits = {}
             recent = []
-            for log in list(self._moderation_logs):
+            logs = self._storage.list_logs(limit=2000, offset=0)
+            for log in logs:
                 ts = int(log.get("ts", 0) or 0)
                 action = str(log.get("action", ""))
                 msg = str(log.get("msg_text", ""))
+                reason = str(log.get("reason", ""))
                 urls = log.get("image_urls") or []
-                is_ad = ("广告" in action) or ("广告" in msg) or ("视频" in msg)
-                is_blocked = ("撤回" in action) or ("禁言" in action) or ("踢" in action)
+                is_ad = (
+                    "ad" in reason.lower()
+                    or "广告" in reason
+                    or "广告" in action
+                    or "广告" in msg
+                    or "视频" in msg
+                    or "视频" in action
+                    or "复核" in action
+                )
+                is_blocked = (
+                    "撤回" in action or "禁言" in action or "踢" in action
+                    or "待复核" in action or "放行" in action
+                )
                 if is_ad and is_blocked:
                     blocked += 1
-                    if "视频" in msg or "视频" in action:
+                    if "视频" in msg or "视频" in action or "视频" in reason:
                         video_blocked += 1
-                    elif urls:
+                    elif urls or "图片" in action or "图片" in reason:
                         img_blocked += 1
                     uid = str(log.get("user_id", ""))
                     if uid:

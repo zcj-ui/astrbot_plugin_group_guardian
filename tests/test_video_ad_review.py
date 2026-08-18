@@ -447,6 +447,70 @@ class OcrNormalizeTests(unittest.TestCase):
         self.assertIsNone(self.h._normalize_ocr_text(None))
 
 
+
+class AdBackendStatsTests(unittest.IsolatedAsyncioTestCase):
+    """v2.27.0：广告后台总览统计（SQLite 数据源 + reason 判定）。"""
+
+    def setUp(self):
+        self.ab = _load("group_guardian_video_review_ab", "ad_backend.py")
+        self.ab.jsonify = lambda *args, **kw: (args[0] if args else kw)
+
+        class _Storage:
+            def __init__(self, logs):
+                self._logs = logs
+
+            def list_logs(self, limit=200, offset=0, **kw):
+                return self._logs
+
+            def count_logs(self):
+                return len(self._logs)
+
+        class _H(self.ab.AdBackendMixin):
+            def __init__(self, storage):
+                self._storage = storage
+                self.config = {}
+
+            @staticmethod
+            def _today_start():
+                return 0
+
+        self.storage = _Storage([
+            # 图片广告：OCR 文本无"广告"字样，靠 reason 类别判定
+            {"ts": 100, "action": "撤回+禁言", "msg_text": "加V: 123456",
+             "reason": "触发规则: ad", "image_urls": ["http://x/img.jpg"],
+             "user_id": "1"},
+            # 视频广告：识别文本含视频标记
+            {"ts": 100, "action": "撤回+禁言",
+             "msg_text": "[视频审核]\n[视频第1帧] 加微信",
+             "reason": "触发规则: ad", "image_urls": [], "user_id": "2"},
+            # 非广告（脏话），不计入广告统计
+            {"ts": 100, "action": "撤回+禁言", "msg_text": "脏话",
+             "reason": "触发规则: swear", "image_urls": [], "user_id": "3"},
+        ])
+        self.h = _H(self.storage)
+
+    async def test_stats_counts_image_ad_by_reason(self):
+        result = await self.h._ad_backend_stats()
+        self.assertEqual("success", result["status"])
+        data = result["data"]
+        self.assertEqual(2, data["today_blocked"])
+        self.assertEqual(1, data["today_image_blocked"])
+        self.assertEqual(1, data["today_video_blocked"])
+
+    async def test_stats_counts_pending_review(self):
+        # 疑似视频广告走复核队列（撤回+待复核）也应计入
+        self.storage._logs.append({
+            "ts": 200, "action": "撤回+待复核（疑似视频广告）",
+            "msg_text": "[视频审核] 疑似广告", "reason": "疑似视频广告，等待管理员复核",
+            "image_urls": [], "user_id": "4",
+        })
+        result = await self.h._ad_backend_stats()
+        self.assertEqual("success", result["status"])
+        self.assertEqual(3, result["data"]["today_blocked"])
+
+
+if __name__ == "__main__":
+    unittest.main()
 if __name__ == "__main__":
     unittest.main()
 if __name__ == "__main__":
