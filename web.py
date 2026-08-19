@@ -895,13 +895,15 @@ class WebMixin:
             self._storage.feedback_for_log_ids,
             [item.get("id", 0) for item in logs]
         )
+        pending_by_key = {}
         for item in logs:
             marked = feedback.get(int(item.get("id", 0) or 0), {})
             item["review_verdict"] = marked.get("verdict", "")
             item["review_note"] = marked.get("note", "")
             item["review_status"] = marked.get("review_status", "")
-            # v2.36.2：待复核（疑似广告）日志附加 ad_reviews 关联，前端据此显示
-            # 「确认广告/放行」人工复核按钮（编号由入队时写进 reason）。
+            # v2.36.3：待复核（疑似广告）日志附加 ad_reviews 关联，前端据此显示
+            # 「确认广告/放行」人工复核按钮。优先解析入队时写进 reason 的编号；
+            # 解析不到的旧日志回退按「群+用户+内容」匹配待复核记录。
             action = str(item.get("action", "") or "")
             if "待复核" in action and "疑似广告" in action:
                 m = re.search(r"编号 #(\d+)", str(item.get("reason", "") or ""))
@@ -917,6 +919,31 @@ class WebMixin:
                         )
                     except Exception:
                         item["ad_review_status"] = ""
+                if not item.get("ad_review_id"):
+                    key = (
+                        str(item.get("group_id", "") or ""),
+                        str(item.get("user_id", "") or ""),
+                        str(item.get("msg_text", "") or item.get("msg_preview", "") or ""),
+                    )
+                    pending_by_key[key] = item
+        # v2.36.3：旧日志无编号 → 按内容匹配仍 pending 的 ad_reviews，按钮同样可用
+        if pending_by_key:
+            try:
+                pending = await self._run_in_thread(
+                    self._storage.list_pending_ad_reviews, 500
+                )
+                for review in pending:
+                    key = (
+                        str(review.get("group_id", "") or ""),
+                        str(review.get("user_id", "") or ""),
+                        str(review.get("msg_text", "") or ""),
+                    )
+                    if key in pending_by_key:
+                        target = pending_by_key[key]
+                        target["ad_review_id"] = review.get("id")
+                        target["ad_review_status"] = review.get("status", "")
+            except Exception:
+                pass
         return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
 
     async def _web_review_feedback(self):
