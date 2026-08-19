@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.36.1 - 2026-08-19
+
+### 调整：疑似广告确认改为「后台审核日志确认」，私聊管理员仅通知，群里不通知（用户需求）
+
+v2.36.0 的交互为「私聊管理员回复命令确认 + 群内提示」，本版按用户要求调整：
+
+- **确认/放行统一在后台**（WebUI 广告后台-待确认疑似广告「确认广告/放行」，`web.py`），
+  移除私聊/管理群回复「确认广告 #编号 / 放行广告 #编号」命令对通用广告复核队列的处理
+  （`commands.py` 删除 `_review_ad_cmd_target` / `_review_ad_common`，命令仅保留 v2.23.0
+  视频广告管理群复核）；
+- **私聊管理员仅通知**：疑似广告（消息/图片/视频/群名片）入 `ad_reviews` 队列后仍私信
+  插件管理员（`ad_review_admin_ids` → `admin_list` → 该群管理员/群主），文案改为
+  「已记入后台审核日志，请到 WebUI 广告后台 → 广告审核 → 待确认疑似广告处理」；
+- **群里不通知**：`_submit_ad_review` 移除管理群转发（`ad_review_forward_group`）与群内
+  提示（`ad_review_notice`），群名片入队后也不再群内通知；确认前消息仍保留在群内不撤回；
+- **配置**：移除 `ad_review_forward_group`、`ad_review_notice` 两项；保留
+  `ad_review_enabled` / `ad_review_admin_private` / `ad_review_admin_ids` /
+  `ad_review_learn_text`，并更新文案。
+
+测试：`tests/test_ad_review.py` 新增 schema 断言（`ad_review_notice` /
+`ad_review_forward_group` 已移除）与「入队不再发送群内通知」断言。
+
 ## v2.36.0 - 2026-08-18
 
 ### 新功能：疑似广告先私聊管理员确认再处罚，确认后学习，下次相似内容直接处罚（用户需求，与 astrbot_plugin_adguard 合并思路）

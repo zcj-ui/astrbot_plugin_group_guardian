@@ -2332,10 +2332,9 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             self._set_moderation_combine_state(
                 event, group_id, user_id, extra_recall_ids, "consumed"
             )
-            async for item in self._submit_ad_review(
+            await self._submit_ad_review(
                 event, group_id, user_id, user_name, text, image_urls, "text",
-            ):
-                yield item
+            )
             return
 
         if not llm_enabled:
@@ -2391,11 +2390,10 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                     self._set_moderation_combine_state(
                         event, group_id, user_id, extra_recall_ids, "consumed"
                     )
-                    async for item in self._submit_ad_review(
+                    await self._submit_ad_review(
                         event, group_id, user_id, user_name, text, image_urls,
                         "text", reason,
-                    ):
-                        yield item
+                    )
                     return
                 async for item in self._execute_rule_penalty(
                         event, group_id, user_id, user_name, text, hit_types,
@@ -2439,11 +2437,10 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             self._set_moderation_combine_state(
                 event, group_id, user_id, extra_recall_ids, "consumed"
             )
-            async for item in self._submit_ad_review(
+            await self._submit_ad_review(
                 event, group_id, user_id, user_name, text, image_urls,
                 "image" if image_semantic_scan else "text", reason,
-            ):
-                yield item
+            )
             return
 
         self._set_moderation_combine_state(
@@ -2928,10 +2925,11 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         text: str, image_urls: list, source: str = "text",
         reason: str = "疑似广告",
     ):
-        """v2.36.0：疑似广告 → 不直接处罚，落复核队列 + 私信插件管理员确认。
+        """v2.36.1：疑似广告 → 不直接处罚，落后台审核日志 + 私信管理员通知。
 
-        管理员私聊/管理群回复「确认广告 #编号」→ 撤回原消息 + 禁言 + 学习；
-        回复「放行广告 #编号」→ 放行。确认前消息保留在群内（不撤回）。
+        确认/放行统一在 WebUI 广告后台-待确认疑似广告 完成（后台审核日志确认）；
+        群里不通知、不引导回复命令。确认 → 撤回原消息 + 禁言 + 学习指纹；
+        放行 → 放行并学习为正常。确认前消息保留在群内（不撤回）。
         """
         msg_id = str(
             getattr(getattr(event, "message_obj", None), "message_id", "")
@@ -2955,27 +2953,6 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 )
             except Exception as exc:
                 logger.debug(f"[GroupMgr] 私信广告复核到管理员失败: {exc}")
-        forward_group = self._cfg_str("ad_review_forward_group", "").strip()
-        if review_id and forward_group:
-            try:
-                await self._send_group_message(
-                    forward_group,
-                    f"[广告复核] 群 {group_id} {user_name}({user_id}) 疑似广告，"
-                    f"编号 #{review_id}。\n内容：{(text or '')[:120]}\n"
-                    f"请回复「确认广告 #{review_id}」确认违规并处罚学习，"
-                    f"或「放行广告 #{review_id}」放行。",
-                )
-            except Exception as exc:
-                logger.debug(f"[GroupMgr] 转发广告复核到管理群失败: {exc}")
-        if self._cfg("ad_review_notice", True, group_id=group_id):
-            try:
-                notice = (
-                    f"[群管] {user_name}({user_id}) 的消息疑似广告，"
-                    f"已提交管理员确认（编号 {review_id}），确认后再处理。"
-                )
-                yield event.plain_result(notice)
-            except Exception as notice_err:
-                logger.warning(f"[GroupMgr] 广告复核通知失败: {notice_err}")
         try:
             event.stop_event()
         except Exception:
@@ -2986,7 +2963,8 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         self, group_id: str, user_id: str, user_name: str,
         text: str, review_id: int, source: str = "text",
     ) -> None:
-        """私信插件管理员（admin_list）确认疑似广告；未配置则回退该群管理员/群主。"""
+        """v2.36.1：私信插件管理员（admin_list）通知疑似广告已入后台审核日志；
+        未配置则回退该群管理员/群主。确认/放行统一在 WebUI 广告后台完成。"""
         source_label = {
             "text": "文本", "image": "图片", "video": "视频", "card": "群名片"
         }.get(source, source)
@@ -3008,10 +2986,10 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 await self._send_private_message(
                     uid,
                     f"[群管广告复核] 群 {group_id} 中 {user_name}({user_id}) 的消息"
-                    f"疑似{source_label}广告（编号 #{review_id}）。\n"
+                    f"疑似{source_label}广告（编号 #{review_id}），已记入后台审核日志。\n"
                     f"内容：{(text or '')[:200]}\n"
-                    f"请私聊回复「确认广告 #{review_id}」确认违规（撤回+禁言+学习），"
-                    f"或「放行广告 #{review_id}」放行。",
+                    f"请到 WebUI 广告后台 → 广告审核 → 待确认疑似广告 处理："
+                    f"「确认广告」（撤回+禁言+学习，下次相似直接处罚）或「放行」。",
                 )
                 sent += 1
             except Exception as exc:

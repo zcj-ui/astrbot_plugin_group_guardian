@@ -299,137 +299,16 @@ class CommandsMixin:
             yield event.plain_result("复核命令执行失败，请查看日志。")
 
     async def cmd_review_confirm(self, event: AstrMessageEvent):
-        '''确认疑似广告违规（私聊或管理群）。用法: 确认广告 #编号'''
-        # v2.36.0：优先处理通用广告复核队列（私聊/管理群）；未命中则回退视频广告复核（管理群）
-        if await self._review_ad_cmd_target(event) is not None:
-            async for item in self._review_ad_common(event, "confirmed"):
-                yield item
-            return
+        '''管理群内确认疑似视频广告违规。用法: 确认广告 #编号'''
+        # v2.36.1：通用疑似广告复核改为后台审核日志（WebUI 广告后台）确认，
+        # 本命令仅保留 v2.23.0 视频广告管理群复核。
         async for item in self._review_cmd_common(event, "confirmed"):
             yield item
 
     async def cmd_review_clear(self, event: AstrMessageEvent):
-        '''放行疑似广告（私聊或管理群）。用法: 放行广告 #编号'''
-        if await self._review_ad_cmd_target(event) is not None:
-            async for item in self._review_ad_common(event, "released"):
-                yield item
-            return
+        '''管理群内放行疑似视频广告。用法: 放行广告 #编号'''
         async for item in self._review_cmd_common(event, "cleared"):
             yield item
-
-    async def _review_ad_cmd_target(self, event: AstrMessageEvent):
-        """解析命令中的编号并判断是否命中通用广告复核队列；未命中返回 None。"""
-        try:
-            args = event.message_str.split()
-            if len(args) < 2:
-                return None
-            raw = str(args[1]).strip().lstrip("#").strip()
-            try:
-                review_id = int(raw)
-            except (ValueError, TypeError):
-                return None
-            item = self._storage.get_ad_review(review_id)
-            if not item:
-                return None
-            return item
-        except Exception:
-            return None
-
-    async def _review_ad_common(self, event: AstrMessageEvent, status: str):
-        """v2.36.0：确认/放行通用疑似广告（私聊或管理群）。
-
-        用法: 确认广告 #编号 / 放行广告 #编号。
-        确认 → 撤回原消息 + 禁言发送者 + 学习文本指纹（图片/视频哈希尝试学习），
-        下次相似内容直接处罚；放行 → 学习为正常，后续相似内容自动跳过。
-        """
-        try:
-            sender_id = self._try_get_sender_id(event)
-            if not sender_id:
-                yield event.plain_result("无法识别发送者。")
-                return
-            args = event.message_str.split()
-            if len(args) < 2:
-                yield event.plain_result("用法: 确认广告 #编号 或 放行广告 #编号")
-                return
-            raw = str(args[1]).strip().lstrip("#").strip()
-            try:
-                review_id = int(raw)
-            except (ValueError, TypeError):
-                yield event.plain_result("编号无效。")
-                return
-            item = self._storage.get_ad_review(review_id)
-            if not item:
-                yield event.plain_result(f"未找到复核记录 #{review_id}。")
-                return
-            if item.get("status") != "pending":
-                yield event.plain_result(
-                    f"复核记录 #{review_id} 已处理（{item.get('status')}）。"
-                )
-                return
-            group_id = str(item.get("group_id", "") or "")
-            authorized = await self._is_plugin_admin(event)
-            if not authorized and group_id:
-                try:
-                    client = await self._get_client()
-                    role = await self._get_role_by_id(client, group_id, sender_id)
-                    authorized = str(role or "").lower() in ("owner", "admin")
-                except Exception:
-                    authorized = False
-            if not authorized:
-                yield event.plain_result("权限不足：仅该群管理员或插件管理员可复核。")
-                return
-            reviewer = sender_id
-            ok = self._storage.resolve_ad_review(review_id, status, reviewer)
-            if not ok:
-                yield event.plain_result("处理失败（可能已被处理）。")
-                return
-            user_id = str(item.get("user_id", "") or "")
-            user_name = str(item.get("user_name", "") or "")
-            item_text = str(item.get("msg_text", "") or "")
-            source = str(item.get("source", "") or "")
-            if status == "confirmed":
-                recalled = await self._recall_ad_review_message(item)
-                banned = await self._ban_ad_review_user(group_id, user_id)
-                if self._cfg("ad_review_learn_text", True, group_id=group_id):
-                    self._ad_review_learn_text(item_text, "ad", group_id)
-                try:
-                    self._learn_recent_ad_hashes(group_id)
-                    self._learn_recent_video_fingerprints()
-                except Exception:
-                    pass
-                # v2.36.0：广告名片确认后还原原名片（msg_id 字段存原名片值）
-                if source == "card":
-                    try:
-                        card_old = str(item.get("msg_id", "") or "")
-                        restore_fn = getattr(self, "_restore_card", None)
-                        if callable(restore_fn):
-                            await restore_fn(group_id, user_id, card_old)
-                    except Exception as exc:
-                        logger.warning(f"[GroupMgr] 广告名片确认后还原失败: {exc}")
-                action = "管理员确认广告（已禁言）" if banned else "管理员确认广告（禁言失败）"
-                self._log_moderation(
-                    group_id, user_id, user_name, item_text, action,
-                    f"管理员复核确认 #{review_id}（人工确认后处罚+学习）", [],
-                )
-                yield event.plain_result(
-                    f"已确认广告 #{review_id}：撤回{'成功' if recalled else '失败'}，"
-                    f"禁言{'成功' if banned else '失败'}，"
-                    f"已学习{source or '文本'}指纹，下次相似内容直接处罚。"
-                )
-            else:
-                if self._cfg("ad_review_learn_text", True, group_id=group_id):
-                    self._ad_review_learn_text(item_text, "ok", group_id)
-                self._log_moderation(
-                    group_id, user_id, user_name, item_text,
-                    "管理员复核放行",
-                    f"管理员复核放行 #{review_id}（人工确认正常）", [],
-                )
-                yield event.plain_result(
-                    f"已放行 #{review_id}（标记为正常，后续相似内容将自动放行）。"
-                )
-        except Exception as exc:
-            logger.warning(f"[GroupMgr] 广告复核命令失败: {exc}")
-            yield event.plain_result("复核命令执行失败，请查看日志。")
 
     async def _recall_ad_review_message(self, item: dict) -> bool:
         """按复核记录中的 msg_id 撤回原消息（广告被确认后）。"""

@@ -344,17 +344,7 @@ class CardMonitorMixin:
                             except Exception as exc:
                                 logger.debug(f"[GroupMgr] 私信名片广告复核失败: {exc}")
                         action = "待复核（疑似广告名片）"
-                        if self._cfg("card_monitor_notify", True, group_id=group_id):
-                            try:
-                                await self._notify_card_group(
-                                    group_id,
-                                    f"[名片监控] {user_id} 的名片「{card_new}」疑似广告，"
-                                    f"已提交管理员确认（编号 {review_id}），确认后再处理。",
-                                )
-                            except Exception as notify_err:
-                                logger.warning(
-                                    f"[GroupMgr] 名片复核通知失败: {notify_err}"
-                                )
+                        # v2.36.1：群里不通知，仅私信管理员 + 后台审核日志确认
                     else:
                         target = card_old
                         if self._is_shop_link_card(card_old) or (

@@ -64,6 +64,7 @@ def _load(module_name, filename):
 
 
 storage = _load("group_guardian_ad_review_storage", "storage.py")
+moderation = _load("group_guardian_ad_review_moderation", "moderation.py")
 
 
 def _new_storage():
@@ -218,6 +219,104 @@ class _StorageFake:
 
     def ad_text_fingerprint_hit(self, fingerprint):
         return self.hits.get(fingerprint)
+
+
+class AdReviewSchemaTests(unittest.TestCase):
+    """v2.36.1：后台审核日志确认交互对应的配置 schema 断言。"""
+
+    def test_schema_removed_forward_and_notice(self):
+        import json
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        for key in ("ad_review_enabled", "ad_review_admin_private",
+                    "ad_review_admin_ids", "ad_review_learn_text"):
+            self.assertIn(key, schema, key)
+        # v2.36.1：群里不通知 → 移除群内通知/管理群转发配置
+        self.assertNotIn("ad_review_notice", schema)
+        self.assertNotIn("ad_review_forward_group", schema)
+
+    def test_schema_hint_mentions_backend_only(self):
+        import json
+        schema = json.loads((ROOT / "_conf_schema.json").read_text(encoding="utf-8"))
+        hint = schema["ad_review_enabled"]["hint"]
+        self.assertIn("后台", hint)
+        self.assertIn("群里不通知", hint)
+        private_hint = schema["ad_review_admin_private"]["hint"]
+        self.assertIn("后台", private_hint)
+
+
+class AdReviewSubmitTests(unittest.TestCase):
+    """v2.36.1：疑似广告入队不发送任何群内通知（后台审核日志确认 + 私信通知）。"""
+
+    async def _run_submit(self, storage, event):
+        inst = object.__new__(moderation.ModerationMixin)
+        inst._storage = storage
+        inst._log_moderation = lambda *a, **k: None
+        inst._cfg = lambda key, default=None, group_id=None: True
+        sent = []
+
+        async def _notify(grp, uid, name, text, review_id, source="text"):
+            sent.append((uid, review_id, text))
+
+        inst._notify_ad_admins_private = _notify
+        await inst._submit_ad_review(
+            event, "100", "200", "tester", "加微信abc123 领取优惠", [], "text"
+        )
+        return sent
+
+    def test_submit_is_coroutine_not_generator(self):
+        import inspect
+        self.assertTrue(inspect.iscoroutinefunction(
+            moderation.ModerationMixin._submit_ad_review
+        ))
+
+    def test_submit_no_group_notice_and_private_notified(self):
+        import asyncio
+        import types
+
+        async def main():
+            class _Storage:
+                def create_ad_review(self, *a, **k):
+                    return 7
+
+            stopped = []
+            event = types.SimpleNamespace(
+                message_obj=types.SimpleNamespace(message_id="msg-9"),
+                stop_event=lambda: stopped.append(1),
+            )
+            sent = await self._run_submit(_Storage(), event)
+            self.assertEqual(1, len(sent))  # 仅私信通知一次
+            self.assertEqual(("200", 7, "加微信abc123 领取优惠"), sent[0])
+            self.assertEqual([1], stopped)
+            return True
+
+        self.assertTrue(asyncio.run(main()))
+
+    def test_notify_admins_private_mentions_backend(self):
+        import asyncio
+
+        async def main():
+            inst = object.__new__(moderation.ModerationMixin)
+            inst._admin_list = ["50001"]
+            inst._cfg_str = lambda key, default="": (
+                "50001" if key == "ad_review_admin_ids" else default
+            )
+            sent = []
+
+            async def _send(uid, content):
+                sent.append((uid, content))
+
+            inst._send_private_message = _send
+            await inst._notify_ad_admins_private(
+                "100", "200", "tester", "加微信abc123 领取优惠", 9, "text"
+            )
+            self.assertEqual(1, len(sent))
+            content = sent[0][1]
+            self.assertIn("后台审核日志", content)
+            self.assertIn("WebUI", content)
+            self.assertNotIn("请私聊回复", content)
+            return True
+
+        self.assertTrue(asyncio.run(main()))
 
 
 if __name__ == "__main__":
