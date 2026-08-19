@@ -774,11 +774,18 @@ class VideoAuditMixin:
         return self._bounded_audit_text(text, self._AUDIT_MAX_CHARS)
 
     async def _audit_all_videos(self, event, videos: list, group_id: str) -> list:
-        """并发审核多个视频（每个视频内部逐帧串行），保持输入顺序返回结果。"""
+        """并发审核多个视频（每个视频内部逐帧串行），保持输入顺序返回结果。
+
+        v2.36.6：并发数由 ``video_audit_concurrency`` 控制（默认 1）——
+        同时审核的视频数与视频帧识别共用该上限，避免本地 OCR/抽帧多路并发打满 CPU。
+        """
+        concurrency = max(1, min(
+            self._cfg_int("video_audit_concurrency", 1, group_id=group_id), 4
+        ))
         worker = lambda item: self._audit_one_video(
             event, item[0], item[1], group_id
         )
-        return await self._map_image_work(videos, worker, concurrency=2)
+        return await self._map_image_work(videos, worker, concurrency=concurrency)
     async def _audit_one_video(
         self, event, component, data, group_id: str
     ) -> str:
@@ -1019,14 +1026,18 @@ class VideoAuditMixin:
                 logger.debug(f"[GroupMgr] 视频第{index}帧识别失败: {exc}")
             return ""
 
-        results = await self._map_image_work(
-            list(enumerate(frames, start=1)),
-            recognize,
-            IMAGE_WORKER_CONCURRENCY,
-        )
-        for result in results:
+        # v2.36.6：逐帧串行识别 + 高置信广告短路。
+        # 帧数少（默认 3，硬上限 10），串行显著降低本地 OCR/视觉并发导致的 CPU 峰值；
+        # 任一帧出现「广告：」明确判定（video_ad_visual）或短视频二维码引流快命中
+        # （_video_short_qr_hit）时跳过剩余帧，节省视觉调用与 CPU。
+        for index, frame_bytes in enumerate(frames, start=1):
+            if getattr(self, "_video_short_qr_hit", False):
+                break
+            result = await recognize((index, frame_bytes))
             if result:
                 entries.append(result)
+                if "广告：" in result:
+                    break
         if not entries:
             return ""
         joined = "\n".join(entries)

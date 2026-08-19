@@ -1,5 +1,30 @@
 # Changelog
 
+## v2.36.6 - 2026-08-19
+
+### 增强：视频广告识别 CPU 防护（更省 CPU / 更快），解决视频检测导致的 CPU 100% 停机
+
+用户反馈：开启视频广告检测后插件容易 CPU 占用 100% 导致停机。主因是视频审核的
+**并发失控**：多视频同时审核（`_audit_all_videos` 硬编码并发 2）+ 每个视频帧识别并发 4
+（`IMAGE_WORKER_CONCURRENCY`），且 `ocr_engine` 默认 local（RapidOCR），本地 OCR/抽帧
+多路并发时 CPU 打满。
+
+改进（`video_audit.py`）：
+
+- **新增配置 `video_audit_concurrency`**（int，默认 1，范围 1-4）：同时审核的视频数，
+  帧识别路数也受其约束（多视频 + 多帧不再无上限并发）；低配服务器保持默认 1；
+- **帧识别改逐帧串行 + 高置信短路**（`_recognize_video_frames`）：每视频帧数少（默认 3、
+  硬上限 10），串行可接受；任一一帧识别出「广告：」（`video_ad_visual` 广告判定）或
+  短视频二维码引流快命中（`_video_short_qr_hit`）时**跳过剩余帧**——更快更省，
+  也进一步降低本地 RapidOCR/视觉调用的 CPU 峰值。
+
+> 其它 CPU 热点说明：本地 RapidOCR（`ocr_engine=local`）是 CPU 密集识别，开启
+> `ocr_enabled`（图片）/ `video_audit_enabled`（视频）时会显著增加 CPU；
+> 可在设置中改 `ocr_engine=llm`（云端视觉）或调低 `llm_max_concurrency` 进一步降负载。
+
+测试：`tests/test_video_audit.py` 新增 4 项——并发默认 1 / 配置生效 / 帧识别广告短路 /
+非广告帧全识别。
+
 ## v2.36.5 - 2026-08-19
 
 ### 修复：WebUI「确认广告」报 `'Main' object has no attribute '_recall_ad_review_message'`

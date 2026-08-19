@@ -585,6 +585,93 @@ class V222StillFrameAndDedupTests(unittest.TestCase):
 
     def test_dedup_no_phash_fallback_keeps_all(self):
         h = _Harness()  # 无 _phash_from_data
+class VideoAuditCpuProtectionTests(unittest.TestCase):
+    """v2.36.6：视频审核并发配置化 + 帧识别串行短路（CPU 防护）。"""
+
+    def _harness(self, cfg_values=None):
+        h = _Harness()
+        h.cfg_values.update(cfg_values or {})
+        return h
+
+    def test_audit_all_videos_defaults_to_one(self):
+        h = self._harness({})
+        captured = {}
+
+        async def _map_image_work(items, worker, concurrency=4):
+            captured["concurrency"] = concurrency
+            return [await worker(it) for it in items]
+
+        h._map_image_work = _map_image_work
+
+        async def _audit_one_video(event, component, data, group_id):
+            return "v"
+
+        h._audit_one_video = _audit_one_video
+        asyncio.run(h._audit_all_videos(None, [(_Video(), {}, "u")], "100"))
+        self.assertEqual(1, captured["concurrency"])
+
+    def test_audit_all_videos_uses_configured_concurrency(self):
+        h = self._harness({"video_audit_concurrency": 3})
+        captured = {}
+
+        async def _map_image_work(items, worker, concurrency=4):
+            captured["concurrency"] = concurrency
+            return [await worker(it) for it in items]
+
+        h._map_image_work = _map_image_work
+
+        async def _audit_one_video(event, component, data, group_id):
+            return "v"
+
+        h._audit_one_video = _audit_one_video
+        asyncio.run(h._audit_all_videos(None, [(_Video(), {}, "u")], "100"))
+        self.assertEqual(3, captured["concurrency"])
+
+    def test_recognize_frames_serial_and_short_circuit_on_ad(self):
+        h = self._harness({
+            "video_quick_precheck": False,
+            "ad_hash_blacklist_enabled": False,
+            "video_subtitle_boost": False,
+        })
+        h._dedup_video_frames = lambda frames: frames
+        h._ad_engine = lambda group_id=None: "llm"
+        h._frame_to_data_url = lambda data: "data:img"
+        h._bounded_audit_text = lambda text, limit: str(text or "")[:limit]
+        calls = []
+
+        async def _call_llm_ocr(data_url, group_id=None, video_ad_mode=False):
+            calls.append(1)
+            return "广告：联系微信加群"
+
+        h._call_llm_ocr = _call_llm_ocr
+        video_audit._probe_qr_decoder = lambda: None
+        # 帧1 判定「广告：」→ 短路，帧2 不再识别
+        result = asyncio.run(h._recognize_video_frames(None, [b"f1", b"f2"], "100"))
+        self.assertIn("广告：", result)
+        self.assertEqual(1, len(calls))
+
+    def test_recognize_frames_continues_when_not_ad(self):
+        h = self._harness({
+            "video_quick_precheck": False,
+            "ad_hash_blacklist_enabled": False,
+            "video_subtitle_boost": False,
+        })
+        h._dedup_video_frames = lambda frames: frames
+        h._ad_engine = lambda group_id=None: "llm"
+        h._frame_to_data_url = lambda data: "data:img"
+        h._bounded_audit_text = lambda text, limit: str(text or "")[:limit]
+        calls = []
+
+        async def _call_llm_ocr(data_url, group_id=None, video_ad_mode=False):
+            calls.append(1)
+            return "正常画面"
+
+        h._call_llm_ocr = _call_llm_ocr
+        video_audit._probe_qr_decoder = lambda: None
+        result = asyncio.run(h._recognize_video_frames(None, [b"f1", b"f2"], "100"))
+        self.assertIn("正常画面", result)
+        self.assertEqual(2, len(calls))  # 非广告帧全部识别
+
         frames = [b"a", b"b", b"c"]
         self.assertEqual(h._dedup_video_frames(frames), frames)
 
