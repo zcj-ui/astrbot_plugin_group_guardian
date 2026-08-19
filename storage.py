@@ -1582,7 +1582,7 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                     "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
                     "FROM ad_reviews WHERE status='pending' "
                     "ORDER BY ts DESC LIMIT ?",
-                    (max(1, min(int(limit), 200)),),
+                    (max(1, min(int(limit), 500)),),
                 ).fetchall()
             return [dict(r) for r in rows]
         except Exception:

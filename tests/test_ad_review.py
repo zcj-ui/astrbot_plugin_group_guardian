@@ -250,7 +250,8 @@ class AdReviewSubmitTests(unittest.TestCase):
     async def _run_submit(self, storage, event):
         inst = object.__new__(moderation.ModerationMixin)
         inst._storage = storage
-        inst._log_moderation = lambda *a, **k: None
+        inst.logged = []
+        inst._log_moderation = lambda *a, **k: inst.logged.append(a)
         inst._cfg = lambda key, default=None, group_id=None: True
         sent = []
 
@@ -283,10 +284,28 @@ class AdReviewSubmitTests(unittest.TestCase):
                 message_obj=types.SimpleNamespace(message_id="msg-9"),
                 stop_event=lambda: stopped.append(1),
             )
-            sent = await self._run_submit(_Storage(), event)
+            inst = object.__new__(moderation.ModerationMixin)
+            inst._storage = _Storage()
+            inst.logged = []
+            inst._log_moderation = lambda *a, **k: inst.logged.append(a)
+            inst._cfg = lambda key, default=None, group_id=None: True
+            sent = []
+
+            async def _notify(grp, uid, name, text, review_id, source="text"):
+                sent.append((uid, review_id, text))
+
+            inst._notify_ad_admins_private = _notify
+            await inst._submit_ad_review(
+                event, "100", "200", "tester", "加微信abc123 领取优惠", [], "text"
+            )
             self.assertEqual(1, len(sent))  # 仅私信通知一次
             self.assertEqual(("200", 7, "加微信abc123 领取优惠"), sent[0])
             self.assertEqual([1], stopped)
+            # v2.36.3：日志 reason 含复核编号，供审核日志前端提取并显示人工复核按钮
+            self.assertTrue(inst.logged)
+            args = inst.logged[0]
+            reason = str(args[5] if len(args) > 5 else "")
+            self.assertIn("编号 #7", reason)
             return True
 
         self.assertTrue(asyncio.run(main()))

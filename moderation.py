@@ -2963,7 +2963,9 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
             logger.debug(f"[GroupMgr] 写入广告复核队列失败: {exc}")
         self._log_moderation(
             group_id, user_id, user_name, text,
-            "待复核（疑似广告）", f"{reason}，等待管理员确认",
+            "待复核（疑似广告）",
+            f"{reason}（编号 #{review_id}），等待管理员确认" if review_id
+            else f"{reason}，等待管理员确认",
             image_urls,
         )
         if review_id and self._cfg("ad_review_admin_private", True, group_id=group_id):

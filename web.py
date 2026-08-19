@@ -872,9 +872,9 @@ class WebMixin:
 
     async def _web_get_logs(self):
         try:
-            limit = min(int(quart_request.args.get("limit", 50)), 200)
+            limit = min(int(quart_request.args.get("limit", 100)), 500)
         except (ValueError, TypeError):
-            limit = 50
+            limit = 100
         try:
             offset = max(0, self._safe_int(quart_request.args.get("offset", 0), 0))
         except (ValueError, TypeError):
@@ -900,6 +900,23 @@ class WebMixin:
             item["review_verdict"] = marked.get("verdict", "")
             item["review_note"] = marked.get("note", "")
             item["review_status"] = marked.get("review_status", "")
+            # v2.36.2：待复核（疑似广告）日志附加 ad_reviews 关联，前端据此显示
+            # 「确认广告/放行」人工复核按钮（编号由入队时写进 reason）。
+            action = str(item.get("action", "") or "")
+            if "待复核" in action and "疑似广告" in action:
+                m = re.search(r"编号 #(\d+)", str(item.get("reason", "") or ""))
+                if m:
+                    review_id = int(m.group(1))
+                    item["ad_review_id"] = review_id
+                    try:
+                        review = await self._run_in_thread(
+                            self._storage.get_ad_review, review_id
+                        )
+                        item["ad_review_status"] = (
+                            str(review.get("status", "")) if review else ""
+                        )
+                    except Exception:
+                        item["ad_review_status"] = ""
         return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
 
     async def _web_review_feedback(self):
@@ -1027,8 +1044,8 @@ class WebMixin:
     async def _web_ad_reviews(self):
         try:
             limit = min(max(self._safe_int(
-                quart_request.args.get("limit", 50), 50
-            ), 1), 200)
+                quart_request.args.get("limit", 200), 200
+            ), 1), 500)
             items = await self._run_in_thread(
                 self._storage.list_pending_ad_reviews, limit
             )

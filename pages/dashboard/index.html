@@ -830,6 +830,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
           <div class="card" data-adstats="blacklist"><div class="card-header"><h2>感知哈希广告黑名单</h2></div><div class="list-manage" id="adBlacklist"><p class="empty">加载中...</p></div></div>
         </div>
         <div class="card">
+          <div class="card-header"><h2>待确认疑似广告（后台审核日志）</h2><span class="rules-subtle">文本/图片/视频/群名片统一入口，确认后撤回+禁言+学习，放行后学习为正常</span></div>
+          <div class="list-manage" id="adPendingReviews"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
           <div class="card-header"><h2>视频指纹缓存</h2></div>
           <div class="list-manage" id="adFingerprints"><p class="empty">加载中...</p></div>
         </div>
@@ -1954,6 +1958,45 @@ async function loadAdBackend() {
   var statsEl = $('#adStats'), blEl = $('#adBlacklist'), fpEl = $('#adFingerprints'),
       esEl = $('#adEscalation'), cfgEl = $('#adConfig');
   if (!statsEl) return;
+  // v2.36.2：待确认疑似广告（后台审核日志）统一入口，文本/图片/视频/群名片
+  var prEl = $('#adPendingReviews');
+  if (prEl) {
+    var rv = await safeGet('ad_backend/ad_reviews', { limit: 200 });
+    if (!isApiError(rv) && rv.data) {
+      var revs = rv.data || [];
+      var srcLabel = { text: '文本', image: '图片', video: '视频', card: '群名片' };
+      prEl.innerHTML = '<div style="padding:8px 16px"><span class="rules-subtle">共 ' + esc(rv.count) + ' 条待确认（最多显示 200）</span></div>' +
+        (revs.length
+          ? '<div class="log-container" style="padding:8px">' + revs.map(function(r) {
+              var sl = srcLabel[r.source] || r.source || '';
+              var full = String(r.msg_text || '');
+              var content = full.slice(0, 60);
+              var usr = (r.user_name || r.user_id || '');
+              return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+                '<div style="min-width:0;flex:1">' +
+                '<div><b>#' + esc(String(r.id)) + '</b> ' + esc(sl) + ' · 群 ' + esc(r.group_id) + ' · ' + esc(usr) +
+                ' <span class="rules-subtle">' + fmtTime(r.ts) + '</span></div>' +
+                '<div class="rules-subtle" style="word-break:break-all;margin-top:2px">' + esc(content) + (content.length < full.length ? '…' : '') + '</div>' +
+                '</div>' +
+                '<div style="display:flex;gap:4px">' +
+                '<button class="btn btn-danger btn-sm" data-adr-confirm="' + escAttr(String(r.id)) + '">确认广告</button>' +
+                '<button class="btn btn-ghost btn-sm" data-adr-clear="' + escAttr(String(r.id)) + '">放行</button>' +
+                '</div></div>';
+            }).join('') + '</div>'
+          : '<p class="empty">暂无待确认疑似广告</p>');
+      $$('[data-adr-confirm], [data-adr-clear]', prEl).forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+          var isConfirm = btn.hasAttribute('data-adr-confirm');
+          var reviewId = btn.getAttribute('data-adr-confirm') || btn.getAttribute('data-adr-clear');
+          var result = await safePost('ad_backend/ad_reviews/' + (isConfirm ? 'confirm' : 'clear'), { review_id: reviewId });
+          if (apiCallFailed(result)) { toast('操作失败: ' + apiErrMsg(result, ''), 'error'); return; }
+          toast(result.message || (isConfirm ? '已确认广告' : '已放行'), 'success');
+          loadAdBackend();
+          loadLogs();
+        });
+      });
+    } else { prEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  }
   // 总览统计
   var s = await safeGet('ad_backend/stats');
   if (!isApiError(s) && s.data) {
@@ -2191,13 +2234,13 @@ function renderUsers(users) {
 async function loadLogs() {
   var c = $('#logContainer');
   c.innerHTML = '<p class="empty">加载中...</p>';
-  var res = await safeGet('logs');
+  var res = await safeGet('logs', { limit: 300 });
   if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
   var logs = res || [];
   if (!logs.length) { c.innerHTML = '<p class="empty">暂无日志</p>'; return; }
   var _msgStore = {};
   var _msgIdx = 0;
-  var rows = logs.slice(0, 100).map(function(l) {
+  var rows = logs.slice(0, 300).map(function(l) {
     var a = l.action || '';
     var cls = a.indexOf('撤回') !== -1 ? 'badge-danger' : a.indexOf('放行') !== -1 ? 'badge-success' : a.indexOf('提醒') !== -1 ? 'badge-warning' : 'badge-default';
     var msgFull = l.msg_text || l.msg_preview || '';
@@ -2210,7 +2253,13 @@ async function loadLogs() {
     var punished = ['撤回', '禁言', '踢出', '拒绝'].some(function(word) { return a.indexOf(word) !== -1; });
     var verdict = l.review_verdict || '';
     var reviewHtml = '<span style="color:var(--text-muted)">--</span>';
-    if (punished) {
+    // v2.36.2：待复核（疑似广告）每条显示「确认广告/放行」人工复核按钮
+    if (l.ad_review_id && l.ad_review_status === 'pending') {
+      reviewHtml = '<div style="display:flex;gap:4px;flex-wrap:wrap">' +
+        '<button class="btn btn-danger btn-sm" data-adr-confirm="' + escAttr(String(l.ad_review_id)) + '">确认广告</button>' +
+        '<button class="btn btn-ghost btn-sm" data-adr-clear="' + escAttr(String(l.ad_review_id)) + '">放行</button>' +
+        '</div>';
+    } else if (punished) {
       var verdictBadge = verdict === 'false_positive'
         ? '<span class="badge badge-warning">已标记误判</span>'
         : verdict === 'confirmed_violation'
@@ -2234,6 +2283,20 @@ async function loadLogs() {
       toast(verdict === 'false_positive' ? '已加入误判复盘样本' : (verdict === 'clear' ? '已清除标记' : '已确认本次处罚'), 'success');
       loadLogs();
       loadModerationReview();
+    });
+  });
+  // v2.36.2：待复核（疑似广告）日志的「确认广告/放行」人工复核
+  $$('[data-adr-confirm], [data-adr-clear]', c).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var isConfirm = btn.hasAttribute('data-adr-confirm');
+      var reviewId = btn.getAttribute('data-adr-confirm') || btn.getAttribute('data-adr-clear');
+      var result = await safePost('ad_backend/ad_reviews/' + (isConfirm ? 'confirm' : 'clear'), {
+        review_id: reviewId
+      });
+      if (apiCallFailed(result)) { toast('操作失败: ' + apiErrMsg(result, ''), 'error'); return; }
+      toast(result.message || (isConfirm ? '已确认广告' : '已放行'), 'success');
+      loadLogs();
+      loadAdBackend();
     });
   });
   c.querySelectorAll('.lin-msg-action').forEach(function(action) {
