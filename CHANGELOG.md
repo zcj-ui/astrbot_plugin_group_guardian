@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.36.7 - 2026-08-19
+
+### 修复：重启后出现「两个版本同时存在」（如 2.36.1 与 2.36.4）
+
+原因：AstrBot 的 plugins 目录里残留了**两个本插件目录**（例如「上传安装」产生的
+`astrbot_plugin_group_guardian` 与「手动解压 GitHub zip」产生的另一个目录并存），
+AstrBot 启动扫描会加载 plugins 下所有含 `main.py` 的目录，于是两个版本同时运行。
+
+改进（`main.py`）：插件启动时新增 **重复目录自检** `_check_duplicate_plugin_dirs()`——
+扫描 plugins 根目录下所有含 `metadata.yaml`（`name: astrbot_plugin_group_guardian`）的
+目录；发现多于一个时用 `logger.error` 醒目告警并**列出全部目录路径**，方便管理员只保留
+最新版本目录、删除其它目录后重启。
+
+> 手动清理：删除 AstrBot `data/plugins/` 下多余的 group_guardian 目录（保留一个，目录名
+> 通常是 `astrbot_plugin_group_guardian`），再重启 AstrBot。重启后查看日志若没有重复告警
+> 即正常。
+
 ## v2.36.6 - 2026-08-19
 
 ### 增强：视频广告识别 CPU 防护（更省 CPU / 更快），解决视频检测导致的 CPU 100% 停机

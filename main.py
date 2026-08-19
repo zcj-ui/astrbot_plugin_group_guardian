@@ -114,6 +114,49 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         self._start_scheduler()
         # 多协议支持日志（AIOCQHTTP 全量 / 其他平台受限）
         log_startup_support()
+        # v2.36.7：启动自检——plugins 目录是否存在多个本插件目录（重复加载）
+        self._check_duplicate_plugin_dirs()
+
+    def _check_duplicate_plugin_dirs(self) -> None:
+        """v2.36.7：启动自检——plugins 目录下是否存在多个本插件目录。
+
+        上传安装 + 手动解压（GitHub zip）等混用时，plugins 目录可能残留两个
+        group_guardian 目录（不同版本/目录名），AstrBot 会全部加载，表现为
+        「重启后两个版本同时存在（如 2.36.1 与 2.36.4）」。
+        发现多于一个目录时醒目告警并列出路径，供管理员手动清理。
+        """
+        try:
+            import os
+            import re
+
+            cur = os.path.dirname(os.path.abspath(__file__))
+            plugins_root = os.path.dirname(cur)
+            plugin_name = PLUGIN_NAME
+            pattern = re.compile(
+                r"^\s*name\s*:\s*" + re.escape(plugin_name) + r"\s*(#.*)?$", re.M
+            )
+            dupes = []
+            for entry in os.listdir(plugins_root):
+                meta = os.path.join(plugins_root, entry, "metadata.yaml")
+                if not os.path.isfile(meta):
+                    continue
+                try:
+                    with open(meta, encoding="utf-8") as f:
+                        head = f.read(2048)
+                except Exception:
+                    continue
+                if pattern.search(head):
+                    dupes.append(os.path.join(plugins_root, entry))
+            if len(dupes) > 1:
+                logger.error(
+                    "[GroupMgr] 检测到本插件目录重复（共 %d 个），AstrBot 会同时加载"
+                    "导致版本冲突（如同时出现两个版本号）。请只保留最新版本目录、"
+                    "删除其它目录后重启 AstrBot：\n%s",
+                    len(dupes),
+                    "\n".join("  - " + d for d in dupes),
+                )
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 重复插件目录自检失败: {exc}")
 
     async def terminate(self):
         if self._rebuild_task and not self._rebuild_task.done():
