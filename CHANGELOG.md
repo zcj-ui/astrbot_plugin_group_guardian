@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.36.5 - 2026-08-19
+
+### 修复：WebUI「确认广告」报 `'Main' object has no attribute '_recall_ad_review_message'`
+
+原因：`_recall_ad_review_message` / `_ban_ad_review_user` 原定义于 `CommandsMixin`，但
+**`Main` 类不继承 `CommandsMixin`**（命令处理器是显式 `CommandsMixin.xxx(self, event)`
+委托调用），WebUI 确认广告（`WebMixin._web_ad_review_confirm`）执行 `self._recall_...`
+时在 `Main` 实例上找不到该方法。
+
+修复：把两个方法迁移到 `WebMixin`（`web.py`），`Main` 继承链包含 `WebMixin`，确认/放行
+按钮正常执行「撤回 + 禁言 + 学习」。本地已按 `Main` 的 mixin 组合模拟验证确认流程返回成功。
+
 ## v2.36.4 - 2026-08-19
 
 ### 修复：审核日志「待复核」记录的「人工复核」按钮对旧日志也生效

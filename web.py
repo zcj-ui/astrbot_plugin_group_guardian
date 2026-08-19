@@ -1161,6 +1161,56 @@ class WebMixin:
         except Exception as exc:
             return jsonify({"status": "error", "message": str(exc)})
 
+    # ============================================================
+    # v2.36.5：广告复核撤回/禁言通用方法。
+    # 原定义于 CommandsMixin，但 Main 不继承 CommandsMixin（命令显式委托），
+    # WebUI 确认广告时 self._recall_ad_review_message 找不到 → 移到 WebMixin。
+    # ============================================================
+
+    async def _recall_ad_review_message(self, item: dict) -> bool:
+        """按复核记录中的 msg_id 撤回原消息（广告被确认后）。"""
+        msg_id = str(item.get("msg_id", "") or "")
+        if not msg_id:
+            return False
+        try:
+            client = await self._get_client()
+            if not client:
+                return False
+            ok, error = await self._call_group_api(
+                client, "delete_msg", "撤回消息", message_id=msg_id
+            )
+            return bool(ok)
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 广告复核撤回原消息失败: {exc}")
+            return False
+
+    async def _ban_ad_review_user(self, group_id: str, user_id: str) -> bool:
+        """按复核记录禁言广告发送者。"""
+        gid = self._safe_int(group_id, 0)
+        uid = self._safe_int(user_id, 0)
+        if not gid or not uid:
+            return False
+        try:
+            client = await self._get_client()
+            if not client:
+                return False
+            duration = self._cfg_int(
+                "moderation_ban_duration", 1800, group_id=group_id
+            )
+            ok, error = await self._call_group_api(
+                client, "set_group_ban", "禁言",
+                group_id=gid, user_id=uid, duration=duration,
+            )
+            if ok:
+                try:
+                    self._schedule_unban(str(gid), user_id, duration)
+                except Exception:
+                    pass
+            return bool(ok)
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 广告复核禁言失败: {exc}")
+            return False
+
     async def _web_review_audit(self):
         try:
             suggestion_id = self._safe_int(

@@ -310,50 +310,6 @@ class CommandsMixin:
         async for item in self._review_cmd_common(event, "cleared"):
             yield item
 
-    async def _recall_ad_review_message(self, item: dict) -> bool:
-        """按复核记录中的 msg_id 撤回原消息（广告被确认后）。"""
-        msg_id = str(item.get("msg_id", "") or "")
-        if not msg_id:
-            return False
-        try:
-            client = await self._get_client()
-            if not client:
-                return False
-            ok, error = await self._call_group_api(
-                client, "delete_msg", "撤回消息", message_id=msg_id
-            )
-            return bool(ok)
-        except Exception as exc:
-            logger.warning(f"[GroupMgr] 广告复核撤回原消息失败: {exc}")
-            return False
-
-    async def _ban_ad_review_user(self, group_id: str, user_id: str) -> bool:
-        """按复核记录禁言广告发送者。"""
-        gid = self._safe_int(group_id, 0)
-        uid = self._safe_int(user_id, 0)
-        if not gid or not uid:
-            return False
-        try:
-            client = await self._get_client()
-            if not client:
-                return False
-            duration = self._cfg_int(
-                "moderation_ban_duration", 1800, group_id=group_id
-            )
-            ok, error = await self._call_group_api(
-                client, "set_group_ban", "禁言",
-                group_id=gid, user_id=uid, duration=duration,
-            )
-            if ok:
-                try:
-                    self._schedule_unban(str(gid), user_id, duration)
-                except Exception:
-                    pass
-            return bool(ok)
-        except Exception as exc:
-            logger.warning(f"[GroupMgr] 广告复核禁言失败: {exc}")
-            return False
-
     async def _review_uncertain_common(self, event: AstrMessageEvent, status: str):
         """v2.32.0：确认/放行「LLM 无法确认」的内容（私聊或管理群）。用法: 确认复核 #编号 / 放行复核 #编号"""
         try:
