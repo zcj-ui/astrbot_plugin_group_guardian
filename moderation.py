@@ -2173,11 +2173,8 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
                 text, video_components, event, group_id
             )
         # v2.23.0：疑似视频广告 → 提交管理员复核（不直接处罚）
-        if (
-            getattr(self, "_video_ad_review_signal", False)
-            and self._cfg("video_ad_review_enabled", False, group_id=group_id)
-        ):
-            async for item in self._submit_video_ad_review(
+        if getattr(self, "_video_ad_review_signal", False):
+            async for item in self._route_video_ad_review(
                 event, group_id, user_id, user_name, text
             ):
                 yield item
@@ -2797,6 +2794,29 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         except Exception as e:
             logger.debug(f"[GroupMgr] 违规积分处罚异常: {e}")
             return False, []
+
+    async def _route_video_ad_review(
+        self, event, group_id: str, user_id: str, user_name: str, text: str,
+    ):
+        """v2.36.2：疑似视频广告路由。
+
+        - `ad_review_enabled` 开启 → 进统一后台审核日志（ad_reviews, source=video），
+          与文本/图片/群名片同一后台（WebUI 广告后台-待确认疑似广告）确认/放行；
+        - 否则回退 v2.23.0 `video_ad_review_enabled` 旧流程（video_ad_reviews 表）；
+        - 两者都关 → 不路由（返回空，由调用方继续后续审核）。
+        """
+        if self._cfg("ad_review_enabled", False, group_id=group_id):
+            await self._submit_ad_review(
+                event, group_id, user_id, user_name, text, [], "video"
+            )
+            return
+        if self._cfg("video_ad_review_enabled", False, group_id=group_id):
+            async for item in self._submit_video_ad_review(
+                event, group_id, user_id, user_name, text
+            ):
+                yield item
+            return
+        return
 
     async def _submit_video_ad_review(
         self,

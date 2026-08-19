@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.36.2 - 2026-08-19
+
+### 功能：疑似视频广告并入统一后台审核日志（群名片/视频/图片全部可在后台查看审核）
+
+v2.36.1 起消息文本/图片（source=text/image）与群名片（source=card）已统一进 `ad_reviews`
+后台审核日志；本版把**视频广告**也并入统一队列：
+
+- **视频路由**（`moderation.py`）：新增 `_route_video_ad_review`——`ad_review_enabled` 开启时，
+  疑似视频广告进 `ad_reviews`（source=video），与文本/图片/群名片同一后台
+  （WebUI 广告后台 → 广告审核 → 待确认疑似广告）查看并确认/放行；确认后按 msg_id 撤回原视频
+  消息 + 禁言 + 学习文本指纹与视频指纹；
+- `ad_review_enabled` 关闭时回退 v2.23.0 `video_ad_review_enabled` 旧流程（`video_ad_reviews` 表），
+  两套配置互不冲突，均默认关闭。
+
+> 至此所有疑似广告来源（消息文本/图片/视频/群名片）统一进入 `ad_reviews` 后台审核日志，
+> 管理员只在一个后台完成「确认广告 → 撤回+禁言+学习」或「放行 → 学习为正常」。
+
+测试：`tests/test_ad_review.py` 新增 `_route_video_ad_review` 路由断言（ad_review 优先、旧流程回退、
+两者都关不路由）。
+
 ## v2.36.1 - 2026-08-19
 
 ### 调整：疑似广告确认改为「后台审核日志确认」，私聊管理员仅通知，群里不通知（用户需求）

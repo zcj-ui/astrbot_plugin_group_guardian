@@ -319,6 +319,64 @@ class AdReviewSubmitTests(unittest.TestCase):
         self.assertTrue(asyncio.run(main()))
 
 
+class VideoAdReviewRouteTests(unittest.TestCase):
+    """v2.36.2：疑似视频广告统一进后台审核日志（ad_reviews, source=video）。"""
+
+    def _harness(self, cfg_values):
+        inst = object.__new__(moderation.ModerationMixin)
+        inst._cfg = lambda key, default=None, group_id=None: cfg_values.get(
+            key, default
+        )
+        inst.submitted = []
+        inst.video_submitted = []
+
+        async def _submit_ad_review(event, g, u, un, text, urls, source="text"):
+            inst.submitted.append((source, text))
+
+        async def _submit_video_ad_review(event, g, u, un, text):
+            yield "video-review-item"
+            inst.video_submitted.append(text)
+
+        inst._submit_ad_review = _submit_ad_review
+        inst._submit_video_ad_review = _submit_video_ad_review
+        return inst
+
+    def _collect(self, inst):
+        import asyncio
+        out = []
+
+        async def main():
+            async for item in inst._route_video_ad_review(
+                None, "100", "200", "tester", "视频广告文本"
+            ):
+                out.append(item)
+            return True
+
+        self.assertTrue(asyncio.run(main()))
+        return out
+
+    def test_ad_review_preferred_for_video(self):
+        inst = self._harness({"ad_review_enabled": True})
+        items = self._collect(inst)
+        self.assertEqual([], items)  # 统一流程不 yield
+        self.assertEqual([("video", "视频广告文本")], inst.submitted)
+        self.assertEqual([], inst.video_submitted)
+
+    def test_fallback_to_video_review_old_flow(self):
+        inst = self._harness({"video_ad_review_enabled": True})
+        items = self._collect(inst)
+        self.assertEqual(["video-review-item"], items)  # 旧流程 yield
+        self.assertEqual([], inst.submitted)
+        self.assertEqual(["视频广告文本"], inst.video_submitted)
+
+    def test_no_route_when_all_disabled(self):
+        inst = self._harness({})
+        items = self._collect(inst)
+        self.assertEqual([], items)
+        self.assertEqual([], inst.submitted)
+        self.assertEqual([], inst.video_submitted)
+
+
 if __name__ == "__main__":
     unittest.main()
 
