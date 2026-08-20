@@ -347,10 +347,45 @@ class SyncClientMixin:
             if act == "violation_clear":
                 await self._sync_apply_violation(payload, confirm=False)
                 return "ok"
+            if act == "unban":
+                await self._sync_execute_unban(payload)
+                return "ok"
             return "skipped"
         except Exception as exc:
             logger.debug(f"[GroupMgr] 执行服务器动作失败: {exc}")
             return "error"
+
+    async def _sync_execute_unban(self, payload: dict) -> None:
+        """执行解禁动作：管理员在服务端标记误封/通过申诉后，解除该用户禁言。"""
+        try:
+            group_id = str(payload.get("group_id", "") or "")
+            user_id = str(payload.get("user_id", "") or "")
+            if not group_id or not user_id:
+                return
+            try:
+                gid = int(group_id)
+                uid = int(user_id)
+            except (TypeError, ValueError):
+                gid = uid = 0
+            if not gid or not uid:
+                return
+            client = await self._get_client()
+            if not client:
+                return
+            ok, error = await self._call_group_api(
+                client, "set_group_ban", "解除禁言",
+                group_id=gid, user_id=uid, duration=0,
+            )
+            self._log_moderation(
+                group_id, str(uid), str(payload.get("user_name", "") or ""),
+                str(payload.get("msg_text", "") or ""),
+                "误封解禁" if ok else "解禁失败",
+                "管理员在服务端确认误封，自动解除禁言" if ok
+                else f"解禁失败: {error}",
+                [],
+            )
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 执行解禁失败: {exc}")
 
     async def _sync_apply_violation(self, payload: dict, confirm: bool) -> None:
         """按 payload 中的 group/user/msg 匹配本地待复核记录并确认/放行。"""
