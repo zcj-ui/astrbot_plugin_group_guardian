@@ -30,6 +30,7 @@ from .platforms import DEFAULT_LIMITED_PLATFORMS, get_platform_name, is_aiocqhtt
 from .remote import RemoteMixin
 from .scheduler import SchedulerMixin
 from .storage import SQLiteStorage
+from .sync_client import SyncClientMixin
 from .utils import UtilitiesMixin
 from .web import WebMixin
 from .ad_backend import AdBackendMixin
@@ -38,7 +39,7 @@ from .advanced_audit import AdvancedAuditMixin
 
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
-class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, MemoryGuardMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, Star):
+class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, MemoryGuardMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, SyncClientMixin, Star):
     """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -116,6 +117,40 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         log_startup_support()
         # v2.36.7：启动自检——plugins 目录是否存在多个本插件目录（重复加载）
         self._check_duplicate_plugin_dirs()
+        # v2.36.8：云同步客户端（与独立后台服务端双向同步：误判复盘/已确认违规/审核信息）
+        self._init_sync_client()
+        self._sync_task = None
+        self._start_sync_task()
+
+    def _start_sync_task(self) -> None:
+        """启动云同步后台循环（仅当配置了服务端地址且开启 sync_auto）。"""
+        try:
+            if not self._cfg("sync_auto", False):
+                return
+            if not self._sync_enabled():
+                return
+            if getattr(self, "_sync_task", None) and not self._sync_task.done():
+                return
+            self._sync_task = asyncio.create_task(self._sync_loop())
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 启动云同步任务失败: {exc}")
+
+    async def _sync_loop(self) -> None:
+        """周期同步：启动立即跑一次，之后按 sync_interval 分钟。"""
+        try:
+            await self._sync_run()
+        except Exception:
+            pass
+        while True:
+            try:
+                interval = max(1, min(self._cfg_int("sync_interval", 10), 1440))
+                await asyncio.sleep(interval * 60)
+                await self._sync_run()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 云同步周期任务异常: {exc}")
+                await asyncio.sleep(60)
 
     def _check_duplicate_plugin_dirs(self) -> None:
         """v2.36.7：启动自检——plugins 目录下是否存在多个本插件目录。
@@ -159,6 +194,12 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
             logger.debug(f"[GroupMgr] 重复插件目录自检失败: {exc}")
 
     async def terminate(self):
+        if getattr(self, "_sync_task", None) and not self._sync_task.done():
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                logger.debug("[GroupMgr] 云同步任务已取消")
         if self._rebuild_task and not self._rebuild_task.done():
             self._rebuild_task.cancel()
             try:

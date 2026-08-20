@@ -1588,6 +1588,21 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         except Exception:
             return []
 
+    def list_ad_reviews_for_sync(self, limit: int = 500) -> List[dict]:
+        """v2.36.8：列出已处理（confirmed/released）的广告复核记录，供云同步上传。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
+                    "FROM ad_reviews WHERE status IN ('confirmed', 'released') "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 500)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
     def get_ad_review(self, review_id: int) -> Optional[dict]:
         """按 id 查询一条疑似广告复核记录（任意状态）。"""
         try:

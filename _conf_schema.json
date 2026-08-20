@@ -142,6 +142,36 @@
         "default": 12,
         "hint": "消息、OCR、入群和名片审核共享的并发上限，范围 1-32；修改后需重载插件。OCR 内部最多占 4 路，避免阻塞正文审核"
     },
+    "sync_server_url": {
+        "description": "云同步服务端地址",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.8。独立后台服务端（gg_server，可宝塔部署）地址，如 http://你的域名:9000。填写后开启同步功能：误判复盘/已确认违规/审核信息自动上传服务器保存，更换服务器后可快速恢复。留空不启用"
+    },
+    "sync_username": {
+        "description": "云同步服务端账号",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.8。服务端管理员账号（owner/admin），插件用它登录并同步数据"
+    },
+    "sync_password": {
+        "description": "云同步服务端密码",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.8。服务端管理员密码"
+    },
+    "sync_auto": {
+        "description": "云同步自动开启",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.36.8。开启后插件启动即同步一次，之后按 sync_interval 分钟周期双向同步（上传本地数据 + 拉取服务器数据恢复 + 拉取执行服务端管理员操作）"
+    },
+    "sync_interval": {
+        "description": "云同步周期（分钟）",
+        "type": "int",
+        "default": 10,
+        "hint": "v2.36.8。自动同步间隔，范围 1-1440 分钟"
+    },
     "llm_moderation_ban": {
         "description": "LLM 审核违规后自动禁言",
         "type": "bool",
