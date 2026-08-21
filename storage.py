@@ -415,7 +415,7 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
             "ts INTEGER NOT NULL, "
             "expire_at INTEGER NOT NULL, "
-            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / approved / rejected / expired
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / approved / rejected / expired / failed
             "operator_name TEXT DEFAULT '', "           # 发起人（第一名管理员）
             "operator_qq TEXT DEFAULT '', "
             "operator_ip TEXT DEFAULT '', "
@@ -425,11 +425,14 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             "approver_name TEXT DEFAULT '', "           # 确认人（第二名管理员）
             "approver_qq TEXT DEFAULT '', "
             "approver_ip TEXT DEFAULT '', "
-            "executed INTEGER NOT NULL DEFAULT 0"        # 确认后是否已执行
+            "executed INTEGER NOT NULL DEFAULT 0, "      # 确认后是否已执行
+            "result TEXT DEFAULT ''"                    # 执行结果 / 失败原因
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_status ON pending_web_operations(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_ts ON pending_web_operations(ts)")
+        # 旧库补充 result 列（执行失败原因，幂等）
+        SQLiteStorage._ensure_column(conn, "pending_web_operations", "result", "TEXT DEFAULT ''")
         # v2.23.0 不确定视频广告管理员复核队列：
         # 视频广告检测判定为「疑似广告」时先落待复核，由管理员确认违规或放行。
         conn.execute(
@@ -1362,12 +1365,12 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             return 0
 
     def list_pending_web_operations(self, limit: int = 20) -> List[dict]:
-        """列出未过期且待审批的高敏感操作（按时间倒序）。"""
+        """列出未过期且待处理的高敏感操作（pending 待确认 / failed 可重试，按时间倒序）。"""
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT * FROM pending_web_operations WHERE status='pending' AND expire_at>=? "
-                    "ORDER BY ts DESC LIMIT ?", (int(time.time()), max(1, int(limit))),
+                    "SELECT * FROM pending_web_operations WHERE status IN ('pending','failed') "
+                    "AND expire_at>=? ORDER BY ts DESC LIMIT ?", (int(time.time()), max(1, int(limit))),
                 ).fetchall()
             return [dict(r) for r in rows]
         except Exception:
@@ -1385,12 +1388,13 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
 
     def approve_pending_web_operation(self, op_id: int, approver_name: str = "",
                                       approver_qq: str = "", approver_ip: str = "") -> bool:
-        """第二名管理员确认：仅 pending 且未过期可确认成功（CAS 防并发）。"""
+        """确认高敏感操作：仅 pending（或执行失败后可重试的 failed）且未过期可确认成功（CAS 防并发）。"""
         try:
             with self._connect() as conn:
                 cur = conn.execute(
                     "UPDATE pending_web_operations SET status='approved', approver_name=?, "
-                    "approver_qq=?, approver_ip=? WHERE id=? AND status='pending' AND expire_at>=?",
+                    "approver_qq=?, approver_ip=?, result='' WHERE id=? "
+                    "AND status IN ('pending','failed') AND expire_at>=?",
                     (str(approver_name or ""), str(approver_qq or ""), str(approver_ip or ""),
                      int(op_id), int(time.time())),
                 )
@@ -1399,12 +1403,14 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         except Exception:
             return False
 
-    def reject_pending_web_operation(self, op_id: int) -> bool:
+    def reject_pending_web_operation(self, op_id: int, rejector_name: str = "",
+                                     rejector_qq: str = "") -> bool:
         try:
             with self._connect() as conn:
                 cur = conn.execute(
-                    "UPDATE pending_web_operations SET status='rejected' WHERE id=? AND status='pending'",
-                    (int(op_id),),
+                    "UPDATE pending_web_operations SET status='rejected', "
+                    "approver_name=?, approver_qq=? WHERE id=? AND status IN ('pending','failed')",
+                    (str(rejector_name or ""), str(rejector_qq or ""), int(op_id)),
                 )
                 conn.commit()
                 return bool(cur.rowcount)
@@ -1417,7 +1423,7 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             with self._connect() as conn:
                 conn.execute(
                     "UPDATE pending_web_operations SET status='expired' "
-                    "WHERE status='pending' AND expire_at<?", (int(time.time()),),
+                    "WHERE status IN ('pending','failed') AND expire_at<?", (int(time.time()),),
                 )
                 conn.commit()
         except Exception:
@@ -1429,6 +1435,18 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                 conn.execute(
                     "UPDATE pending_web_operations SET executed=1 WHERE id=?",
                     (int(op_id),),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def mark_pending_web_failed(self, op_id: int, result: str = "") -> None:
+        """执行失败：标记为 failed（保持可见、可重试），记录失败原因。"""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE pending_web_operations SET status='failed', executed=0, result=? WHERE id=?",
+                    (str(result or "")[:500], int(op_id)),
                 )
                 conn.commit()
         except Exception:

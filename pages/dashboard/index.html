@@ -1226,15 +1226,11 @@ function isHighRiskConfirmRequired() {
   var v = CONFIG.web_remote_confirm_required;
   return v === undefined || v === true || v === 'true' || v === 1 || v === '1';
 }
-// 操作者身份：AstrBot Dashboard 登录用户名（本地记忆，服务端按 web_operator_bindings 绑定到 QQ）
-// v2.21.0 安全加固：前端不再携带/自报 QQ，身份只由服务端绑定解析，防止伪造管理员身份
+// 操作者身份：v2.21.0 安全重做 —— 不再由前端收集/自报用户名或 QQ。
+// 操作者身份只由服务端 web_operator_bindings（用户名:QQ）配置解析，
+// 前端此函数仅作兼容占位，请求体不再携带 operator_name / operator_qq，防止伪造管理员身份。
 function getOperatorIdentity() {
-  var name = (localStorage.getItem('gg_operator_name') || '').trim();
-  if (!name) {
-    var input = prompt('请输入操作者用户名（AstrBot Dashboard 登录用户名）。该用户名需在 WebUI 配置 web_operator_bindings 绑定到您的 QQ，仅保存在本浏览器');
-    if (input && input.trim()) { name = input.trim(); localStorage.setItem('gg_operator_name', name); }
-  }
-  return { name: name, qq: '' };
+  return { name: '', qq: '' };
 }
 
 // 通用输入弹窗：返回 Promise<string|null>（取消返回 null）。用于“添加 QQ 号/群号”等录入。
@@ -1843,8 +1839,7 @@ function renderMembers(members) {
         });
         if (!okCk) return;
       }
-      var op = ensureOperator();
-      var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_name: op.name });
+      var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params });
       var isErr = isApiError(r);
       var msg = (r && r.message) || (r && r.data && r.data.message) || (isErr ? '操作失败' : '已执行');
       toast(msg, isErr ? 'error' : 'success');
@@ -1880,8 +1875,7 @@ function renderMembers(members) {
       });
       if (!okCk) return;
     }
-    var op = ensureOperator();
-    var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params, operator_name: op.name });
+    var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params });
     var isErr = isApiError(r);
     toast((r && r.message) || (r && r.data && r.data.message) || '已执行', isErr ? 'error' : 'success');
     if (isErr) return;
@@ -1899,7 +1893,7 @@ async function loadAdmins() {
     renderAdmins();
     return;
   }
-  renderAdminLists(res.data || {});
+  renderAdminLists(res || {});
 }
 
 // v2.19.0 待审批操作列表（双管理员审批）
@@ -1908,7 +1902,7 @@ async function loadApprovals() {
   if (!el) return;
   var res = await safeGet('approvals/list');
   if (isApiError(res)) { el.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
-  var list = res.data || [];
+  var list = res || [];
   if (!list.length) { el.innerHTML = '<p class="empty">暂无待审批操作</p>'; return; }
   el.innerHTML = list.map(function(it) {
     var actionCn = HIGH_RISK_CN[it.action] || it.action;
@@ -1916,11 +1910,15 @@ async function loadApprovals() {
     try { params = JSON.stringify(JSON.parse(params)); } catch(e) {}
     var leftSec = (it.expire_at || 0) - Date.now() / 1000;
     var timeLeft = leftSec > 0 ? '约 ' + Math.max(1, Math.ceil(leftSec / 60)) + ' 分钟后过期' : '已过期';
+    var stBadge = (it.status === 'failed')
+      ? '<span class="badge badge-warning">执行失败·可重试</span>'
+      : '<span class="badge badge-danger">待审批</span>';
     return '<div class="audit-item">' +
       '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
       '<div style="min-width:0;flex:1">' +
-      '<div><b>' + esc(actionCn) + '</b> <span class="badge badge-danger">待审批</span> <span class="rules-subtle">群 ' + esc(it.group_id || '') + '</span></div>' +
+      '<div><b>' + esc(actionCn) + '</b> ' + stBadge + ' <span class="rules-subtle">群 ' + esc(it.group_id || '') + '</span></div>' +
       '<div class="rules-subtle" style="margin-top:4px;word-break:break-all">参数：' + esc(params) + '</div>' +
+      (it.result ? '<div class="rules-subtle" style="margin-top:2px;color:var(--danger)">失败原因：' + esc(it.result) + '</div>' : '') +
       '<div class="rules-subtle" style="margin-top:2px">发起人 ' + esc(it.operator_name || it.operator_qq || '未知') + ' · ' + esc(fmtTime(it.ts)) + ' · ' + esc(timeLeft) + '</div>' +
       '</div>' +
       '<div style="display:flex;gap:6px;flex-shrink:0">' +
@@ -1936,8 +1934,7 @@ async function loadApprovals() {
         okText: '确认并执行'
       });
       if (!ok) return;
-      var op = getOperatorIdentity();
-      var r = await safePost('approvals/approve', { id: btn.dataset.approve, operator_name: op.name });
+      var r = await safePost('approvals/approve', { id: btn.dataset.approve });
       toast((r && r.message) || '已确认', isApiError(r) ? 'error' : 'success');
       loadApprovals(); loadAuditLogs();
     });
@@ -1962,10 +1959,10 @@ async function loadAdBackend() {
   var prEl = $('#adPendingReviews');
   if (prEl) {
     var rv = await safeGet('ad_backend/ad_reviews', { limit: 200 });
-    if (!isApiError(rv) && rv.data) {
-      var revs = rv.data || [];
+    if (!isApiError(rv) && rv) {
+      var revs = rv || [];
       var srcLabel = { text: '文本', image: '图片', video: '视频', card: '群名片' };
-      prEl.innerHTML = '<div style="padding:8px 16px"><span class="rules-subtle">共 ' + esc(rv.count) + ' 条待确认（最多显示 200）</span></div>' +
+      prEl.innerHTML = '<div style="padding:8px 16px"><span class="rules-subtle">共 ' + esc(revs.length) + ' 条待确认（最多显示 200）</span></div>' +
         (revs.length
           ? '<div class="log-container" style="padding:8px">' + revs.map(function(r) {
               var sl = srcLabel[r.source] || r.source || '';
@@ -1999,8 +1996,8 @@ async function loadAdBackend() {
   }
   // 总览统计
   var s = await safeGet('ad_backend/stats');
-  if (!isApiError(s) && s.data) {
-    var d = s.data;
+  if (!isApiError(s) && s) {
+    var d = s;
     statsEl.innerHTML =
       '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:12px 16px">' +
       '<div><div class="rules-subtle">今日拦截</div><b style="font-size:20px">' + esc(d.today_blocked != null ? d.today_blocked : '--') + '</b></div>' +
@@ -2011,8 +2008,8 @@ async function loadAdBackend() {
   } else { statsEl.innerHTML = '<p class="empty">加载失败</p>'; }
   // 黑名单
   var b = await safeGet('ad_backend/blacklist');
-  if (!isApiError(b) && b.data) {
-    var hs = b.data.hashes || [];
+  if (!isApiError(b) && b) {
+    var hs = b || [];
     blEl.innerHTML = hs.length
       ? '<div class="log-container" style="padding:8px">' + hs.slice(0, 20).map(function(h) {
           return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
@@ -2031,13 +2028,13 @@ async function loadAdBackend() {
   } else { blEl.innerHTML = '<p class="empty">加载失败</p>'; }
   // 视频指纹
   var f = await safeGet('ad_backend/fingerprints');
-  if (!isApiError(f) && f.data) {
-    var fps = f.data.fingerprints || [];
+  if (!isApiError(f) && f) {
+    var fps = f || [];
     fpEl.innerHTML = '<div style="padding:8px 16px">' +
       '<span class="rules-subtle">共 ' + fps.length + ' 条</span> ' +
       (fps.length ? '<button class="btn btn-danger btn-sm" id="btnAdFpClear">清空</button>' : '') + '</div>' +
       (fps.length ? '<div class="log-container" style="padding:8px">' + fps.slice(0, 10).map(function(x) {
-        return '<div class="audit-item"><span style="font-family:monospace;font-size:11px;word-break:break-all">' + esc(x.f) + '</span></div>';
+        return '<div class="audit-item"><span style="font-family:monospace;font-size:11px;word-break:break-all">' + esc(x.fingerprint) + '</span></div>';
       }).join('') + '</div>' : '');
     var clearBtn = $('#btnAdFpClear');
     if (clearBtn) clearBtn.addEventListener('click', async function() {
@@ -2050,8 +2047,8 @@ async function loadAdBackend() {
   } else { fpEl.innerHTML = '<p class="empty">加载失败</p>'; }
   // 分级处置
   var e = await safeGet('ad_backend/escalation');
-  if (!isApiError(e) && e.data) {
-    var rows = e.data || [];
+  if (!isApiError(e) && e) {
+    var rows = e || [];
     esEl.innerHTML = rows.length
       ? '<div class="log-container" style="padding:8px">' + rows.slice(0, 20).map(function(r) {
           return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
@@ -2069,10 +2066,10 @@ async function loadAdBackend() {
   } else { esEl.innerHTML = '<p class="empty">加载失败</p>'; }
   // 配置状态
   var c = await safeGet('ad_backend/config');
-  if (!isApiError(c) && c.data) {
-    cfgEl.innerHTML = Object.keys(c.data).map(function(k) {
+  if (!isApiError(c) && c) {
+    cfgEl.innerHTML = Object.keys(c).map(function(k) {
       return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">' +
-        '<span class="rules-subtle">' + esc(k) + '</span><b>' + esc(String(c.data[k])) + '</b></div>';
+        '<span class="rules-subtle">' + esc(k) + '</span><b>' + esc(String(c[k])) + '</b></div>';
     }).join('');
   } else { cfgEl.innerHTML = '<p class="empty">加载失败</p>'; }
 }
@@ -2081,7 +2078,7 @@ async function loadAuditLogs() {
   if (!el) return;
   var res = await safeGet('audit_logs?limit=50');
   if (isApiError(res)) { el.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
-  var list = res.data || [];
+  var list = res || [];
   if (!list.length) { el.innerHTML = '<p class="empty">暂无审计记录</p>'; return; }
   el.innerHTML = list.map(function(it) {
     var before = it.before_value ? '修改前：' + esc(String(it.before_value)) : '';

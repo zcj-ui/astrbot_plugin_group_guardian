@@ -286,8 +286,11 @@ class StorageAuditStructureTests(unittest.TestCase):
 
     def test_web_remote_execute_passes_operator(self):
         src = _read_source("web.py")
-        self.assertIn("_resolve_operator_from_bindings", src)
+        # v2.21.0 重做：操作者身份只来自服务端配置解析（_resolve_web_operator），
+        # 不再接受请求体自报 operator_name（P0 身份伪造修复）。
+        self.assertIn("_resolve_web_operator", src)
         self.assertIn("operator_qq=operator_qq", src)
+        self.assertNotIn('data.get("operator_name"', src)
 
     def test_config_schema_has_new_keys(self):
         import json

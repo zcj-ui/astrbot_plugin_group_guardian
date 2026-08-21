@@ -1964,20 +1964,29 @@ class WebMixin:
 
     async def _web_remote_execute(self):
         # 远程执行群管操作，支持单个 user_id 或批量 user_ids。
-        # v2.15.0：解析操作者身份（Dashboard 用户名 → web_operator_bindings 映射 QQ），
+        # v2.15.0：解析操作者身份（服务端 web_operator_bindings 绑定映射 QQ），
         # 交由 _remote_execute 做目标群授权校验并写入审计日志。
         # v2.19.0：记录操作人 IP；高敏感操作（web_remote_dual_approval_enabled）先落双管理员审批。
-        # v2.21.0 安全加固：忽略请求体自报 operator_qq，操作者身份只来自服务端绑定。
+        # v2.21.0 重做（安全修复）：操作者身份**只来自服务端配置**，忽略请求体自报
+        # operator_name / operator_qq；创建待审批记录前先完成授权校验。
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
             action = str(data.get("action", "")).strip()
             params = data.get("params", {}) or {}
-            operator_name = str(data.get("operator_name", "") or "").strip()
             operator_ip = self._request_ip()
-            operator_name, operator_qq = self._resolve_operator_from_bindings(operator_name, "")
+            operator_name, operator_qq = self._resolve_web_operator()
             if not group_id or not action:
                 return jsonify({"status": "error", "message": "缺少 group_id 或 action"})
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings（用户名:QQ）后重试"})
+            # 发起前先做授权校验（与查看/确认/驳回四阶段一致的服务端授权）
+            op_ok, _role, op_err = await self._check_remote_operator(group_id, operator_qq)
+            if not op_ok:
+                self._record_web_audit(operator_name, operator_qq, group_id, action,
+                                       "", str(params)[:200], "拒绝", op_err,
+                                       operator_ip=operator_ip)
+                return jsonify({"status": "error", "message": op_err})
             # v2.19.0 双管理员审批：高敏感操作先落 pending，由第二名管理员确认后执行
             if self._cfg("web_remote_dual_approval_enabled", False) and action in self._approval_actions():
                 pending_id = await asyncio.to_thread(
@@ -1989,7 +1998,7 @@ class WebMixin:
                 if pending_id:
                     return jsonify({
                         "status": "pending", "approval_id": pending_id,
-                        "message": "该操作属于高敏感操作，已提交双管理员审批，等待第二名管理员确认（尚未执行）",
+                        "message": "该操作属于高敏感操作，已提交双管理员审批，等待确认（尚未执行）",
                     })
             result = await self._remote_execute(
                 group_id, action, params,
@@ -2014,8 +2023,12 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_approvals_list(self):
-        # 列出待审批的高敏感远程操作（自动先清理过期项）。
+        # 列出待处理的高敏感远程操作（pending 待确认 / failed 可重试）。
+        # v2.21.0 重做：列表接口同样要求服务端配置的操作者身份（一致授权）。
         try:
+            _op_name, operator_qq = self._resolve_web_operator()
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings"})
             await asyncio.to_thread(self._storage.expire_pending_web_operations)
             data = await asyncio.to_thread(self._storage.list_pending_web_operations, 20)
             return jsonify({"status": "success", "data": data})
@@ -2024,30 +2037,29 @@ class WebMixin:
 
     async def _web_approvals_approve(self):
         # 第二名管理员确认并执行高敏感操作。
+        # v2.21.0 重做：操作者身份只来自服务端配置；确认前做授权校验；
+        # 远程执行失败时标记 failed（可见、可重试），仅在真正成功后才标记 executed。
         try:
             body = await quart_request.get_json(force=True, silent=True) or {}
             try:
                 op_id = int(body.get("id") or 0)
             except (TypeError, ValueError):
                 return jsonify({"status": "error", "message": "id 无效"})
-            operator_name = str(body.get("operator_name", "") or "").strip()
-            operator_ip = self._request_ip()
-            # v2.21.0 安全加固：忽略请求体自报 operator_qq，只从服务端绑定解析
-            operator_name, operator_qq = self._resolve_operator_from_bindings(operator_name, "")
             if not op_id:
                 return jsonify({"status": "error", "message": "缺少 id"})
+            operator_ip = self._request_ip()
+            operator_name, operator_qq = self._resolve_web_operator()
             if not operator_qq:
-                return jsonify({"status": "error", "message": "操作者用户名未绑定 QQ：请在 WebUI 配置 web_operator_bindings"})
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings"})
             op = await asyncio.to_thread(self._storage.get_pending_web_operation, op_id)
             if not op:
                 return jsonify({"status": "error", "message": "审批记录不存在"})
-            if op.get("status") != "pending":
+            if op.get("status") not in ("pending", "failed"):
                 return jsonify({"status": "error", "message": f"该审批已{op['status']}，无需重复操作"})
             if int(op.get("expire_at") or 0) < int(time.time()):
-                await asyncio.to_thread(self._storage.reject_pending_web_operation, op_id)
+                await asyncio.to_thread(self._storage.reject_pending_web_operation, op_id,
+                                        operator_name, operator_qq)
                 return jsonify({"status": "error", "message": "审批已过期"})
-            if str(op.get("operator_qq") or "") == operator_qq:
-                return jsonify({"status": "error", "message": "不能由发起人自己确认（需第二名管理员）"})
             ok_op, _role, err = await self._check_remote_operator(str(op.get("group_id") or ""), operator_qq)
             if not ok_op:
                 return jsonify({"status": "error", "message": err})
@@ -2064,18 +2076,25 @@ class WebMixin:
                 str(op.get("group_id") or ""), str(op.get("action") or ""), params,
                 operator_qq=operator_qq, operator_name=operator_name, operator_ip=operator_ip,
             )
-            await asyncio.to_thread(self._storage.mark_pending_web_executed, op_id)
+            if result.get("ok"):
+                await asyncio.to_thread(self._storage.mark_pending_web_executed, op_id)
+                return jsonify({
+                    "status": "success", "data": result, "approval_id": op_id,
+                    "message": "已确认并执行：" + str(result.get("message", "")),
+                })
+            # 执行失败：标记 failed（保持可见、可重试），不再误标 executed
+            await asyncio.to_thread(
+                self._storage.mark_pending_web_failed, op_id, str(result.get("message", "")))
             return jsonify({
-                "status": "success" if result.get("ok") else "error",
-                "data": result, "approval_id": op_id,
-                "message": "已确认并执行：" + str(result.get("message", "")),
+                "status": "error", "data": result, "approval_id": op_id,
+                "message": "确认后执行失败（已保留待处理，可重试）：" + str(result.get("message", "")),
             })
         except Exception as e:
             logger.exception("[GroupMgr] 审批确认失败")
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_approvals_reject(self):
-        # 驳回待审批的高敏感操作。
+        # 驳回待处理的高敏感操作。v2.21.0 重做：身份 + 授权校验后再驳回（不再仅凭 ID）。
         try:
             body = await quart_request.get_json(force=True, silent=True) or {}
             try:
@@ -2084,7 +2103,17 @@ class WebMixin:
                 return jsonify({"status": "error", "message": "id 无效"})
             if not op_id:
                 return jsonify({"status": "error", "message": "缺少 id"})
-            ok = await asyncio.to_thread(self._storage.reject_pending_web_operation, op_id)
+            operator_name, operator_qq = self._resolve_web_operator()
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings"})
+            op = await asyncio.to_thread(self._storage.get_pending_web_operation, op_id)
+            if not op:
+                return jsonify({"status": "error", "message": "审批记录不存在"})
+            ok_op, _role, err = await self._check_remote_operator(str(op.get("group_id") or ""), operator_qq)
+            if not ok_op:
+                return jsonify({"status": "error", "message": err})
+            ok = await asyncio.to_thread(
+                self._storage.reject_pending_web_operation, op_id, operator_name, operator_qq)
             return jsonify({"status": "success" if ok else "error", "message": "已驳回" if ok else "驳回失败（可能已处理）"})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})

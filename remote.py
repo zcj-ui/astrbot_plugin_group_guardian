@@ -143,6 +143,30 @@ class RemoteMixin:
             logger.debug(f"[GroupMgr] 解析操作者绑定失败: {e}")
         return str(operator_name or "").strip(), ""
 
+    def _resolve_web_operator(self):
+        """从服务端配置解析 WebUI 操作者身份（v2.21.0 重做：不再信任客户端自报用户名）。
+
+        AstrBot Dashboard 的 /api/plug/ 仅保证“已登录会话”可访问，插件层无法区分具体登录用户，
+        因此操作者身份统一取服务端配置 web_operator_bindings（“用户名:QQ”）；
+        可选 web_operator_name / web_operator_qq 显式覆盖。未配置时返回 ("", "")，
+        由授权校验拒绝并提示管理员配置。
+
+        返回 (operator_name, operator_qq)。
+        """
+        try:
+            name = str(self._cfg_str("web_operator_name", "")).strip()
+            qq = str(self._cfg_str("web_operator_qq", "")).strip()
+            if name and qq:
+                return name, qq
+            mapping = self._parse_operator_bindings()
+            if not mapping:
+                return "", ""
+            name, qq = next(iter(mapping.items()))
+            return name, qq
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 解析操作者身份失败: {e}")
+        return "", ""
+
     def _record_web_audit(self, operator_name: str, operator_qq: str, group_id: str,
                           action: str, target_user: str, params: str,
                           result: str, message: str,
@@ -173,8 +197,8 @@ class RemoteMixin:
         返回 (ok, role, msg)。
         """
         if not operator_qq:
-            return False, "", ("缺少操作者身份(operator_qq)：请在 WebUI 配置 web_operator_bindings "
-                               "绑定 Dashboard 用户与 QQ，或在远程操作请求中携带操作者QQ")
+            return False, "", ("缺少操作者身份：请在 WebUI 配置 web_operator_bindings "
+                               "（用户名:QQ）绑定操作者，由服务端解析操作者身份后再执行")
         qq = str(operator_qq).strip()
         # ① 插件全局管理员 / AstrBot 全局 admin：可操作所有群
         try:
