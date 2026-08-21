@@ -2956,8 +2956,13 @@ class ModerationMixin(HashAuditMixin, LocalOCRMixin, VideoAuditMixin, ImageAudit
         )
         review_id = 0
         try:
+            # v2.36.x 安全修复：把本条消息审核期的媒体哈希/视频指纹快照持久化到
+            # 复核记录（media_hashes / video_fingerprints），确认时只学习该记录的
+            # 证据，避免全局缓存被后续消息覆盖后学习到无关消息的指纹。
             review_id = self._storage.create_ad_review(
-                group_id, user_id, user_name, text, msg_id, image_urls, source
+                group_id, user_id, user_name, text, msg_id, image_urls, source,
+                media_hashes=dict(getattr(self, "_recent_media_hashes", {}) or {}),
+                video_fingerprints=list(getattr(self, "_recent_video_fingerprints", {}) or {}),
             )
         except Exception as exc:
             logger.debug(f"[GroupMgr] 写入广告复核队列失败: {exc}")

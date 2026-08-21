@@ -718,6 +718,11 @@ AI: 已开启全体禁言
 3. 本产品在本地存储的审核日志与运行时词库数据库（`group_guardian.db`）、内置词库数据库（`lexicon.db`）、旧日志备份（如 `moderation_logs.json.bak`）和配置文件由使用者自行管理，使用者应采取合理措施保护这些文件中的敏感信息不被未授权访问。
 4. 本产品不启动独立 Web 服务；管理接口通过 `register_web_api` 挂载到 AstrBot Dashboard，并继承
    Dashboard 的登录鉴权。使用者仍应保护 AstrBot 管理账号和面板访问边界，不应关闭框架登录验证。
+5. **密钥治理约束（架构级）**：使用者的第三方密钥（LLM / 智谱 / 云广告检测 / 语音 ASR /
+   独立后台访问令牌等）**只保存在使用者本机配置中**，绝不进入云同步数据体（`/api/sync/push` 的
+   `scopes` 及 pull/actions 均不含任何密钥字段）；`sync_password` 仅用于登录使用者**自己部署**
+   的 gg_server（请求发往其填写的 `sync_server_url`）。该约束由 `tests/test_sync_no_secrets.py`
+   回归测试固化——任何改动导致密钥字段进入同步请求体都会导致测试失败。
 
 ### 六、法律合规
 

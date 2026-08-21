@@ -932,16 +932,21 @@ class WebMixin:
                 pending = await self._run_in_thread(
                     self._storage.list_pending_ad_reviews, 500
                 )
+                # v2.36.x 安全修复：同一「群+用户+内容」存在多条待复核时不自动绑定
+                # （避免旧日志错绑复核 ID，导致误操作确认/放行），仅在唯一匹配时绑定。
+                pending_by_group = {}
                 for review in pending:
                     key = (
                         str(review.get("group_id", "") or ""),
                         str(review.get("user_id", "") or ""),
                         str(review.get("msg_text", "") or ""),
                     )
-                    if key in pending_by_key:
+                    pending_by_group.setdefault(key, []).append(review)
+                for key, reviews in pending_by_group.items():
+                    if key in pending_by_key and len(reviews) == 1:
                         target = pending_by_key[key]
-                        target["ad_review_id"] = review.get("id")
-                        target["ad_review_status"] = review.get("status", "")
+                        target["ad_review_id"] = reviews[0].get("id")
+                        target["ad_review_status"] = reviews[0].get("status", "")
             except Exception:
                 pass
         return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
@@ -1103,16 +1108,30 @@ class WebMixin:
             banned = await self._ban_ad_review_user(group_id, user_id)
             if self._cfg("ad_review_learn_text", True, group_id=group_id):
                 self._ad_review_learn_text(item_text, "ad", group_id)
+            # v2.36.x 安全修复：只学习该复核记录持久化的证据快照（media_hashes /
+            # video_fingerprints），不再读取全局 _recent_media_hashes /
+            # _recent_video_fingerprints（可能已被后续消息覆盖，导致学习到无关消息的指纹）。
             try:
-                self._learn_recent_ad_hashes(group_id)
-                self._learn_recent_video_fingerprints()
+                media_hashes = json.loads(str(item.get("media_hashes") or "") or "{}")
+                video_fps = json.loads(str(item.get("video_fingerprints") or "") or "[]")
+                if isinstance(media_hashes, dict):
+                    self._learn_ad_hashes_from(group_id, media_hashes)
+                if isinstance(video_fps, list):
+                    self._learn_video_fingerprints_from(video_fps)
             except Exception:
                 pass
             if str(item.get("source", "")) == "card":
                 try:
                     restore_fn = getattr(self, "_restore_card", None)
                     if callable(restore_fn):
-                        await restore_fn(group_id, user_id, str(item.get("msg_id", "") or ""))
+                        # v2.36.x 安全修复：名片复核还原用独立字段 restore_value，
+                        # 不再误用 msg_id（旧名片为数字时曾被当作消息 ID 误撤回）；
+                        # 兼容旧记录回退到 msg_id。
+                        restore_value = (
+                            str(item.get("restore_value", "") or "")
+                            or str(item.get("msg_id", "") or "")
+                        )
+                        await restore_fn(group_id, user_id, restore_value)
                 except Exception as exc:
                     logger.warning(f"[GroupMgr] 广告名片确认后还原失败: {exc}")
             self._log_moderation(

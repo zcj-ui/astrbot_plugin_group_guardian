@@ -474,7 +474,9 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_uncertain_reviews_ts ON uncertain_reviews(ts)")
         # v2.36.0 通用疑似广告人工复核队列（adguard 合并）：
         # 所有疑似广告（文本/图片/视频/名片）先不处罚，私聊插件管理员确认后再
-        # 撤回+禁言+学习；msg_id 用于确认后撤回原消息，image_urls 存图片证据。
+        # 撤回+禁言+学习；msg_id 仅用于确认后撤回**原消息**，名片复核请使用
+        # restore_value（要还原的名片值，与 msg_id 完全独立，避免误撤回）；
+        # media_hashes / video_fingerprints 为确认时学习的证据快照（只学本记录）。
         conn.execute(
             "CREATE TABLE IF NOT EXISTS ad_reviews ("
             "id INTEGER PRIMARY KEY AUTOINCREMENT, "
@@ -488,11 +490,18 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             "source TEXT DEFAULT '', "          # text / image / video / card
             "status TEXT NOT NULL DEFAULT 'pending', "   # pending / confirmed / released
             "reviewed_by TEXT DEFAULT '', "
-            "reviewed_at INTEGER DEFAULT 0"
+            "reviewed_at INTEGER DEFAULT 0, "
+            "restore_value TEXT DEFAULT '', "          # 名片复核：确认后要还原的名片值
+            "media_hashes TEXT DEFAULT '', "           # 图片证据 url->phash JSON
+            "video_fingerprints TEXT DEFAULT ''"       # 视频证据指纹数组 JSON
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_reviews_status ON ad_reviews(status)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_reviews_ts ON ad_reviews(ts)")
+        # 旧库补充广告复核证据/名片还原字段（幂等）
+        SQLiteStorage._ensure_column(conn, "ad_reviews", "restore_value", "TEXT DEFAULT ''")
+        SQLiteStorage._ensure_column(conn, "ad_reviews", "media_hashes", "TEXT DEFAULT ''")
+        SQLiteStorage._ensure_column(conn, "ad_reviews", "video_fingerprints", "TEXT DEFAULT ''")
         # v2.36.0 广告文本指纹学习库：管理员确认广告后学习文本指纹，
         # 下次相似（归一化相同）内容直接撤回+禁言，无需再次人工确认。
         conn.execute(
@@ -1557,8 +1566,19 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         msg_id: str = "",
         image_urls: list = None,
         source: str = "text",
+        restore_value: str = "",
+        media_hashes: dict = None,
+        video_fingerprints: list = None,
     ) -> int:
-        """把一条「疑似广告」写入待复核队列；成功返回自增 id，失败返回 0。"""
+        """把一条「疑似广告」写入待复核队列；成功返回自增 id，失败返回 0。
+
+        参数说明：
+        - msg_id：仅用于确认后撤回**原消息**（text/image/video 复核）；
+        - restore_value：名片复核时确认后要还原的名片值（与 msg_id 独立，
+          严禁把名片值当 msg_id 传入，否则确认时可能误撤回无关消息）；
+        - media_hashes / video_fingerprints：确认时学习的证据快照
+          （只学习本记录的证据，避免学习到其它消息）。
+        """
         if not str(group_id or "") or not str(user_id or ""):
             return 0
         try:
@@ -1569,12 +1589,27 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                     images.append(str(url))
                 except Exception:
                     pass
+            media_h = {}
+            for k, v in (media_hashes or {}).items():
+                try:
+                    if v:
+                        media_h[str(k)] = str(v)
+                except Exception:
+                    pass
+            vfps = []
+            for x in (video_fingerprints or []):
+                try:
+                    if x:
+                        vfps.append(str(x))
+                except Exception:
+                    pass
             with self._connect() as conn:
                 cur = conn.execute(
                     "INSERT INTO ad_reviews "
                     "(ts, group_id, user_id, user_name, msg_text, msg_id, "
-                    " image_urls, source, status, reviewed_by, reviewed_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0)",
+                    " image_urls, source, status, reviewed_by, reviewed_at, "
+                    " restore_value, media_hashes, video_fingerprints) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0, ?, ?, ?)",
                     (
                         now,
                         str(group_id or ""),
@@ -1584,6 +1619,9 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                         str(msg_id or "")[:64],
                         ",".join(images)[:4000],
                         str(source or "text")[:64],
+                        str(restore_value or "")[:256],
+                        json.dumps(media_h, ensure_ascii=False)[:4000],
+                        json.dumps(vfps, ensure_ascii=False)[:4000],
                     ),
                 )
                 conn.commit()
@@ -1596,9 +1634,7 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
-                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
-                    "FROM ad_reviews WHERE status='pending' "
+                    "SELECT * FROM ad_reviews WHERE status='pending' "
                     "ORDER BY ts DESC LIMIT ?",
                     (max(1, min(int(limit), 500)),),
                 ).fetchall()
@@ -1611,9 +1647,7 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         try:
             with self._connect() as conn:
                 rows = conn.execute(
-                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
-                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
-                    "FROM ad_reviews WHERE status IN ('confirmed', 'released') "
+                    "SELECT * FROM ad_reviews WHERE status IN ('confirmed', 'released') "
                     "ORDER BY ts DESC LIMIT ?",
                     (max(1, min(int(limit), 500)),),
                 ).fetchall()
@@ -1626,9 +1660,7 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         try:
             with self._connect() as conn:
                 row = conn.execute(
-                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
-                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
-                    "FROM ad_reviews WHERE id=?",
+                    "SELECT * FROM ad_reviews WHERE id=?",
                     (int(review_id),),
                 ).fetchone()
             return dict(row) if row else None

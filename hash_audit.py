@@ -206,12 +206,22 @@ class HashAuditMixin:
     def _learn_recent_ad_hashes(self, group_id: str) -> None:
         """确认广告违规后，把本消息审核期缓存的媒体哈希批量学习入黑名单。"""
         recent = getattr(self, "_recent_media_hashes", {})
-        if not recent:
+        self._learn_ad_hashes_from(group_id, recent)
+
+    def _learn_ad_hashes_from(self, group_id: str, media_hashes: dict) -> None:
+        """把指定媒体哈希证据学习入黑名单。
+
+        v2.36.x 安全修复：广告复核确认时只学习该复核记录持久化的证据
+        （media_hashes 快照），不再读取全局 _recent_media_hashes——
+        后者可能已被后续消息覆盖，导致学习到无关消息的图片指纹。
+        """
+        media_hashes = media_hashes or {}
+        if not media_hashes:
             return
         distance = self._cfg_int("ad_hash_distance", DEFAULT_HASH_DISTANCE, group_id=group_id)
-        for phash in recent.values():
+        for phash in media_hashes.values():
             if phash:
-                self._learn_hash(phash, distance)
+                self._learn_hash(str(phash), distance)
 
     # ============================================================
     # 广告分级处置
@@ -362,6 +372,14 @@ class HashAuditMixin:
     def _learn_recent_video_fingerprints(self) -> None:
         """广告确认后，把本消息审核期缓存的视频指纹批量写入缓存。"""
         recent = getattr(self, "_recent_video_fingerprints", {})
-        for fingerprint in recent:
+        self._learn_video_fingerprints_from(list(recent))
+
+    def _learn_video_fingerprints_from(self, fingerprints) -> None:
+        """把指定视频指纹证据写入缓存。
+
+        v2.36.x 安全修复：广告复核确认时只学习该复核记录持久化的证据
+        （video_fingerprints 快照），避免学习到其它消息的视频指纹。
+        """
+        for fingerprint in (fingerprints or []):
             if fingerprint:
-                self._learn_video_fingerprint(fingerprint)
+                self._learn_video_fingerprint(str(fingerprint))

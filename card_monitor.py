@@ -315,6 +315,7 @@ class CardMonitorMixin:
                     and (link_only or full_audit) and not audit_exempt):
                 is_violation = False
                 reason = ""
+                hit_types = {}
                 if self._is_shop_link_card(card_new):
                     is_violation = True
                     reason = "含链接/店铺"
@@ -326,13 +327,24 @@ class CardMonitorMixin:
                             group_id, user_id, card_new, hit_types, allow_promo=False)
                         reason = "、".join(hit_types.keys()) if hit_types else "LLM 判定"
                 if is_violation:
-                    # v2.36.0：疑似广告名片 → 先提交管理员确认（不直接还原），
-                    # 确认后还原名片 + 禁言 + 学习文本指纹。
-                    if self._cfg("ad_review_enabled", False, group_id=group_id):
+                    # v2.36.x 重做（安全修复）：只有「广告类」名片违规才进入广告复核
+                    # （链接/店铺命中，或词库命中 ad/promo 引流类）；辱骂/政治/色情等
+                    # 非广告违规仍走原有「直接还原」流程，避免误用广告复核。
+                    ad_like = (
+                        self._is_shop_link_card(card_new)
+                        or bool(hit_types.get("ad"))
+                        or bool(hit_types.get("promo"))
+                    )
+                    if self._cfg("ad_review_enabled", False, group_id=group_id) and ad_like:
+                        # v2.36.0：疑似广告名片 → 先提交管理员确认（不直接还原），
+                        # 确认后还原名片 + 禁言 + 学习文本指纹。
+                        # 安全修复：msg_id 传空（名片复核没有消息 ID），
+                        # 要还原的名片值写入独立字段 restore_value（确认时只还原名片，
+                        # 不会把名片值当消息 ID 误撤回无关消息）。
                         review_id = self._storage.create_ad_review(
                             group_id, user_id, user_name,
-                            f"[群名片] {card_new}", str(card_old or ""),
-                            [], "card",
+                            f"[群名片] {card_new}", "",
+                            [], "card", restore_value=str(card_old or ""),
                         )
                         if (review_id and self._cfg(
                                 "ad_review_admin_private", True, group_id=group_id)):
