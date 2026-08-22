@@ -222,6 +222,26 @@ class SyncClientMixin:
             logger.debug(f"[GroupMgr] 收集广告复核记录失败: {exc}")
         return items
 
+    def _sync_collect_audit_logs(self) -> list:
+        """收集完整审核日志（所有动作：处罚/放行/待复核/误判等），供服务器后台查看。
+        与 violations（仅处罚类）不同，audit_logs 为全量日志。"""
+        try:
+            rows = self._storage.list_logs(1000, 0)
+            items = []
+            for r in rows or []:
+                items.append({
+                    "local_id": int(r.get("id", 0) or 0),
+                    "group_id": r.get("group_id"), "user_id": r.get("user_id"),
+                    "user_name": r.get("user_name"), "msg_text": r.get("msg_text"),
+                    "action": r.get("action"), "reason": r.get("reason"),
+                    "created_at": int(r.get("ts", 0) or 0),
+                    "updated_at": int(r.get("ts", 0) or 0),
+                })
+            return items
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 收集审核日志失败: {exc}")
+            return []
+
 
     # ============================================================
     # push / pull / actions
@@ -234,6 +254,7 @@ class SyncClientMixin:
                 "feedback": self._sync_collect_feedback(),
                 "suggestions": self._sync_collect_suggestions(),
                 "violations": self._sync_collect_violations(),
+                "audit_logs": self._sync_collect_audit_logs(),
             }
             res = self._sync_http("POST", "/api/sync/push", {
                 "client_id": self._sync_client_id(),
@@ -244,7 +265,8 @@ class SyncClientMixin:
             if res and res.get("status") == "success":
                 logger.info(
                     f"[GroupMgr] 云同步上传完成: feedback={len(payload['feedback'])}, "
-                    f"suggestions={len(payload['suggestions'])}, violations={len(payload['violations'])}"
+                    f"suggestions={len(payload['suggestions'])}, violations={len(payload['violations'])}, "
+                    f"audit_logs={len(payload['audit_logs'])}"
                 )
             else:
                 logger.debug(f"[GroupMgr] 云同步上传未成功: {res}")
