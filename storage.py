@@ -1604,26 +1604,46 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                 except Exception:
                     pass
             with self._connect() as conn:
-                cur = conn.execute(
-                    "INSERT INTO ad_reviews "
-                    "(ts, group_id, user_id, user_name, msg_text, msg_id, "
-                    " image_urls, source, status, reviewed_by, reviewed_at, "
-                    " restore_value, media_hashes, video_fingerprints) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0, ?, ?, ?)",
-                    (
-                        now,
-                        str(group_id or ""),
-                        str(user_id or ""),
-                        str(user_name or "")[:64],
-                        str(msg_text or ""),
-                        str(msg_id or "")[:64],
-                        ",".join(images)[:4000],
-                        str(source or "text")[:64],
-                        str(restore_value or "")[:256],
-                        json.dumps(media_h, ensure_ascii=False)[:4000],
-                        json.dumps(vfps, ensure_ascii=False)[:4000],
-                    ),
-                )
+                cur = None
+                for attempt in range(2):
+                    try:
+                        cur = conn.execute(
+                            "INSERT INTO ad_reviews "
+                            "(ts, group_id, user_id, user_name, msg_text, msg_id, "
+                            " image_urls, source, status, reviewed_by, reviewed_at, "
+                            " restore_value, media_hashes, video_fingerprints) "
+                            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0, ?, ?, ?)",
+                            (
+                                now,
+                                str(group_id or ""),
+                                str(user_id or ""),
+                                str(user_name or "")[:64],
+                                str(msg_text or ""),
+                                str(msg_id or "")[:64],
+                                ",".join(images)[:4000],
+                                str(source or "text")[:64],
+                                str(restore_value or "")[:256],
+                                json.dumps(media_h, ensure_ascii=False)[:4000],
+                                json.dumps(vfps, ensure_ascii=False)[:4000],
+                            ),
+                        )
+                        break
+                    except sqlite3.OperationalError as exc:
+                        # 旧库升级保护：ad_reviews 表缺少 v2.36.10 新增的证据列时，
+                        # 先补列再重试，避免「疑似广告」入队失败 → 后台待确认列表漏广告。
+                        # SQLite 两种报错文案都兼容：`no such column: xxx` /
+                        # `table xxx has no column named yyy`。
+                        if attempt == 0 and (
+                                "no such column" in str(exc)
+                                or "has no column" in str(exc)):
+                            SQLiteStorage._ensure_column(
+                                conn, "ad_reviews", "restore_value", "TEXT DEFAULT ''")
+                            SQLiteStorage._ensure_column(
+                                conn, "ad_reviews", "media_hashes", "TEXT DEFAULT ''")
+                            SQLiteStorage._ensure_column(
+                                conn, "ad_reviews", "video_fingerprints", "TEXT DEFAULT ''")
+                            continue
+                        raise
                 conn.commit()
                 return int(cur.lastrowid)
         except Exception:
