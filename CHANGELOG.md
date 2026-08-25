@@ -1,6 +1,47 @@
 # Changelog
 
-## v2.36.10 - 2026-08-22
+## v2.36.12 - 2026-08-25
+
+### 新增：服务端后台可一键「应用 / 拒绝」修正建议
+
+- 服务端（v1.4.4）「修正建议」页新增「应用」「拒绝」按钮（管理员可见）：点击后生成
+  `suggestion_apply` / `suggestion_reject` 待执行动作，同时乐观更新建议状态；
+- 插件端（`sync_client.py`）`_sync_execute_action` 新增两类动作处理：`suggestion_apply`
+  调用 `_apply_moderation_prompt_suggestion` 把建议修正并入 LLM 审核修正规则（本地
+  pending → applied），`suggestion_reject` 调用 `_reject_moderation_prompt_suggestion`
+  （pending → rejected）；执行结果真实回执（失败不再静默）；
+- 管理员在服务端即可完成建议应用/拒绝，无需再进插件 WebUI；插件下次同步（默认
+  10 分钟内）自动拉取执行并回传最终状态。
+
+## v2.36.11 - 2026-08-25
+
+### 修复：确认违规封禁下发 / 广告入队 / 立即复盘稳定性
+
+用户反馈三处异常，逐一修复并回归：
+
+1. **确认违规后指令没下发到机器人封禁**（`sync_client.py`）
+   - 根因：`_sync_apply_violation` 只在本地「待复核」记录里做严格匹配（群+用户+消息
+     前缀全部对上），匹配不到就静默返回，且上层无脑回执 `ok`——服务端动作被吞掉，
+     机器人从未收到封禁指令；
+   - 修复：① 匹配放宽（内容前缀为空/对不上时仍可按 群+用户 命中）；② **本地无待复核
+     记录时（如服务端确认的是处罚类日志、已被清理的记录）仍按 payload 的 群+用户
+     直接执行禁言**并记录审核日志，动作真实下发；③ 禁言结果纳入回执——失败时
+     回执 `error:...`，服务端动作不再假标记成功，管理员可在「待执行动作」看到失败。
+
+2. **后台审核日志漏掉广告日志**（`storage.py`）
+   - 根因：v2.36.10 给 `ad_reviews` 表新增 `restore_value / media_hashes /
+     video_fingerprints` 证据列，`create_ad_review` 的 INSERT 固定写入新列；旧库
+     升级后若建表补列未执行（热更新/初始化中断等），每次疑似广告入队都抛
+     `has no column` → 待确认列表漏广告、审核日志无法一键处理；
+   - 修复：`create_ad_review` 捕获 `no such column / has no column` 后自动补列并
+     重试，任何旧库都能正常入队（已用旧库结构实测通过）。
+
+3. **「立即复盘」卡片异常失效**（`pages/dashboard/index.html`）
+   - 根因：`loadModerationReview` 里 `feedback/suggestions/audit` 任一接口失败或
+     返回非数组时，`feedback.filter` 抛异常中断整个卡片渲染，表现为「立即复盘没了」；
+   - 修复：各请求独立降级（失败返回空数组）+ 整体 try/catch，复盘卡片始终可渲染，
+     立即复盘按钮始终可点；点击失败会明确提示原因（样本不足 / LLM 未配置等）。
+
 
 ### 新增：完整审核日志云同步
 
