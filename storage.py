@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import asyncio
 import json
 import os
 import shutil
@@ -30,6 +31,8 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         self.db_path = self.data_dir / "group_guardian.db"
         self.seed_lexicon_db_path = self.plugin_dir / "lexicon.db"
         self.legacy_logs_path = self.data_dir / "moderation_logs.json"
+        # v2.16.0 统计查询带 TTL 的内存缓存：key -> (monotonic_ts, result)
+        self._query_cache: dict = {}
 
     def initialize(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +83,46 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             seen.add(item)
             items.append(item)
         return items
+
+    # v2.16.0 统计查询 TTL 缓存：报表类 30s、群活跃度 10s、违规积分计数 5s（写日志时主动失效）
+    _QUERY_CACHE_TTL_STATS = 30.0
+    _QUERY_CACHE_TTL_ACTIVITY = 10.0
+    _QUERY_CACHE_TTL_VIOLATION = 5.0
+    _QUERY_CACHE_MAX_ENTRIES = 256
+
+    def _query_cached(self, key: str, ttl: float, fn, *args, **kwargs):
+        """带 TTL 的统计查询缓存：命中直接返回，未命中执行 fn 后缓存。失败不缓存（下次重试）。"""
+        now = time.monotonic()
+        entry = self._query_cache.get(key)
+        if entry is not None and now - entry[0] < ttl:
+            return entry[1]
+        result = fn(*args, **kwargs)
+        self._query_cache[key] = (now, result)
+        if len(self._query_cache) > self._QUERY_CACHE_MAX_ENTRIES:
+            expired = [k for k, v in self._query_cache.items() if now - v[0] > ttl]
+            for k in expired:
+                self._query_cache.pop(k, None)
+        return result
+
+    def invalidate_query_cache(self, prefix: str = "") -> None:
+        """清除全部或指定前缀的统计缓存（写日志/数据变更时调用）。"""
+        if not self._query_cache:
+            return
+        if prefix:
+            keys = [k for k in self._query_cache if k.startswith(prefix)]
+            for k in keys:
+                self._query_cache.pop(k, None)
+        else:
+            self._query_cache.clear()
+
+    async def run_in_thread(self, func, *args, **kwargs):
+        """在事件循环外的线程中执行同步 DB 操作，避免阻塞插件事件循环。
+
+        v2.21.0：改用 ``loop.run_in_executor`` 实现（Python 3.8 兼容，
+        ``asyncio.to_thread`` 为 3.9+，在 3.8 环境会 AttributeError）。
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: func(*args, **kwargs))
 
     @contextmanager
     def _connect(self):
@@ -323,6 +366,145 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             ")"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_learned_group_status ON learned_keywords(group_id, status)")
+        # 群活跃度统计（v2.13.0）：记录每群每条发言，供日活/周活/月活报表
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS group_activity ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT ''"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_group_ts ON group_activity(group_id, ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_ts ON group_activity(ts)")
+        # WebUI 远程操作审计日志（v2.15.0）：记录操作者身份、目标群、操作与结果
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS web_audit_logs ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "time TEXT, "
+            "operator_name TEXT DEFAULT '', "
+            "operator_qq TEXT DEFAULT '', "
+            "group_id TEXT DEFAULT '', "
+            "action TEXT DEFAULT '', "
+            "target_user TEXT DEFAULT '', "
+            "params TEXT DEFAULT '', "
+            "result TEXT DEFAULT '', "
+            "message TEXT DEFAULT ''"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_ts ON web_audit_logs(ts)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_operator ON web_audit_logs(operator_qq)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_group ON web_audit_logs(group_id)")
+        # v2.16.0 高频查询组合索引：
+        # 违规积分 COUNT（WHERE group_id=? AND user_id=? AND ts>=?）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_logs_group_user_ts ON moderation_logs(group_id, user_id, ts)")
+        # 群活跃用户排行（WHERE group_id=? AND ts>=? GROUP BY user_id）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_activity_group_ts_user ON group_activity(group_id, ts, user_id)")
+        # 按群倒序查 Web 审计日志（WHERE group_id=? ORDER BY ts DESC）
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_web_audit_group_ts ON web_audit_logs(group_id, ts)")
+        # v2.19.0 WebUI 远程操作安全增强：
+        # 1) 审计日志补充「操作人IP / 修改前值 / 修改后值」（旧库自动补列，幂等）
+        SQLiteStorage._ensure_column(conn, "web_audit_logs", "operator_ip", "TEXT DEFAULT ''")
+        SQLiteStorage._ensure_column(conn, "web_audit_logs", "before_value", "TEXT DEFAULT ''")
+        SQLiteStorage._ensure_column(conn, "web_audit_logs", "after_value", "TEXT DEFAULT ''")
+        # 2) 双管理员审批：高敏感远程操作先落 pending，由第二名管理员确认后执行
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS pending_web_operations ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "expire_at INTEGER NOT NULL, "
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / approved / rejected / expired / failed
+            "operator_name TEXT DEFAULT '', "           # 发起人（第一名管理员）
+            "operator_qq TEXT DEFAULT '', "
+            "operator_ip TEXT DEFAULT '', "
+            "group_id TEXT DEFAULT '', "
+            "action TEXT DEFAULT '', "
+            "params TEXT DEFAULT '', "
+            "approver_name TEXT DEFAULT '', "           # 确认人（第二名管理员）
+            "approver_qq TEXT DEFAULT '', "
+            "approver_ip TEXT DEFAULT '', "
+            "executed INTEGER NOT NULL DEFAULT 0, "      # 确认后是否已执行
+            "result TEXT DEFAULT ''"                    # 执行结果 / 失败原因
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_status ON pending_web_operations(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_pending_web_ts ON pending_web_operations(ts)")
+        # 旧库补充 result 列（执行失败原因，幂等）
+        SQLiteStorage._ensure_column(conn, "pending_web_operations", "result", "TEXT DEFAULT ''")
+        # v2.23.0 不确定视频广告管理员复核队列：
+        # 视频广告检测判定为「疑似广告」时先落待复核，由管理员确认违规或放行。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS video_ad_reviews ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT '', "
+            "msg_text TEXT DEFAULT '', "
+            "msg_preview TEXT DEFAULT '', "
+            "fingerprint TEXT DEFAULT '', "
+            "source TEXT DEFAULT '', "
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / confirmed / cleared
+            "reviewed_by TEXT DEFAULT '', "
+            "reviewed_at INTEGER DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_video_reviews_status ON video_ad_reviews(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_video_reviews_ts ON video_ad_reviews(ts)")
+        # v2.32.0 不确定内容（文本/图片 LLM 无法确认）管理员复核队列：
+        # 私信该群全部管理员重新审核，管理员私聊/管理群回复确认或放行。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS uncertain_reviews ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT '', "
+            "msg_text TEXT DEFAULT '', "
+            "msg_preview TEXT DEFAULT '', "
+            "source TEXT DEFAULT '', "          # text / image
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / confirmed / cleared
+            "reviewed_by TEXT DEFAULT '', "
+            "reviewed_at INTEGER DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uncertain_reviews_status ON uncertain_reviews(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_uncertain_reviews_ts ON uncertain_reviews(ts)")
+        # v2.36.0 通用疑似广告人工复核队列（adguard 合并）：
+        # 所有疑似广告（文本/图片/视频/名片）先不处罚，私聊插件管理员确认后再
+        # 撤回+禁言+学习；msg_id 用于确认后撤回原消息，image_urls 存图片证据。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ad_reviews ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "ts INTEGER NOT NULL, "
+            "group_id TEXT NOT NULL, "
+            "user_id TEXT NOT NULL, "
+            "user_name TEXT DEFAULT '', "
+            "msg_text TEXT DEFAULT '', "
+            "msg_id TEXT DEFAULT '', "
+            "image_urls TEXT DEFAULT '', "
+            "source TEXT DEFAULT '', "          # text / image / video / card
+            "status TEXT NOT NULL DEFAULT 'pending', "   # pending / confirmed / released
+            "reviewed_by TEXT DEFAULT '', "
+            "reviewed_at INTEGER DEFAULT 0"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_reviews_status ON ad_reviews(status)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_reviews_ts ON ad_reviews(ts)")
+        # v2.36.0 广告文本指纹学习库：管理员确认广告后学习文本指纹，
+        # 下次相似（归一化相同）内容直接撤回+禁言，无需再次人工确认。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS ad_text_fingerprints ("
+            "fingerprint TEXT PRIMARY KEY, "
+            "verdict TEXT NOT NULL, "           # ad / ok（放行）
+            "group_id TEXT DEFAULT '', "
+            "text_preview TEXT DEFAULT '', "
+            "ts INTEGER NOT NULL"
+            ")"
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ad_fp_verdict ON ad_text_fingerprints(verdict)")
         conn.commit()
 
     def _ensure_seed_lexicon(self) -> None:
@@ -801,6 +983,8 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                 self._log_to_row(log),
             )
             conn.commit()
+        # v2.16.0：写日志后失效违规积分计数缓存，保证积分升级判断相对实时
+        self.invalidate_query_cache("violation:")
 
     def import_logs(self, logs: Iterable[dict]) -> int:
         # 批量导入 dict 格式的日志到 SQLite（INSERT OR IGNORE 按 id 去重）。
@@ -945,7 +1129,13 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
 
     def get_daily_trend(self, days: int = 30) -> List[dict]:
         # 按天聚合审核日志，返回最近 days 天每日的拦截/放行/总审核数。
-        # 结果按日期升序排列，日期键为 YYYY-MM-DD 格式字符串。
+        # v2.16.0：统计报表走 30s TTL 缓存，避免 WebUI 图表反复全表聚合。
+        return self._query_cached(
+            f"daily_trend:{days}", self._QUERY_CACHE_TTL_STATS,
+            self._query_daily_trend, days,
+        )
+
+    def _query_daily_trend(self, days: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -961,6 +1151,12 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
 
     def get_violation_distribution(self, days: int = 30) -> List[dict]:
         # 按违规原因分组统计最近 days 天的分布情况，返回各类型及其出现次数。
+        return self._query_cached(
+            f"violation_dist:{days}", self._QUERY_CACHE_TTL_STATS,
+            self._query_violation_distribution, days,
+        )
+
+    def _query_violation_distribution(self, days: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -973,6 +1169,12 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
 
     def get_group_activity_ranking(self, days: int = 30, top_n: int = 10) -> List[dict]:
         # 按群号聚合最近 days 天的拦截量并排序，返回 Top N 群拦截排行。
+        return self._query_cached(
+            f"group_rank:{days}:{top_n}", self._QUERY_CACHE_TTL_STATS,
+            self._query_group_activity_ranking, days, top_n,
+        )
+
+    def _query_group_activity_ranking(self, days: int, top_n: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -985,6 +1187,12 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
 
     def get_hourly_distribution(self, days: int = 7) -> List[dict]:
         # 按小时聚合最近 days 天的拦截量，返回 0-23 各时段分布，用于分析活跃高峰。
+        return self._query_cached(
+            f"hourly:{days}", self._QUERY_CACHE_TTL_STATS,
+            self._query_hourly_distribution, days,
+        )
+
+    def _query_hourly_distribution(self, days: int) -> List[dict]:
         with self._connect() as conn:
             since = int(time.time()) - days * 86400
             rows = conn.execute(
@@ -994,6 +1202,616 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
                 (since,),
             ).fetchall()
         return [{"hour": r["hour"], "count": r["count"] or 0} for r in rows]
+
+    # ============================================================
+    # v2.13.0 新增：群活跃度统计（日活/周活/月活）
+    # ============================================================
+    def record_group_activity(self, group_id: str, user_id: str, user_name: str, ts: int = None) -> None:
+        """记录一条群发言（群活跃度统计的数据源）。失败静默。"""
+        if not group_id or not user_id:
+            return
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO group_activity(ts, group_id, user_id, user_name) VALUES(?,?,?,?)",
+                    (int(ts or time.time()), str(group_id), str(user_id), str(user_name or "")),
+                )
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 记录群活跃度失败: {e}")
+
+    def get_group_activity_summary(self, group_id: str, days: int = 30) -> List[dict]:
+        """按日聚合某群最近 days 天的活跃度，返回 [{date, users, msgs}]。"""
+        return self._query_cached(
+            f"activity_summary:{group_id}:{days}", self._QUERY_CACHE_TTL_ACTIVITY,
+            self._query_group_activity_summary, group_id, days,
+        )
+
+    def _query_group_activity_summary(self, group_id: str, days: int) -> List[dict]:
+        import datetime as _dt
+
+        since = int(time.time()) - days * 86400
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT ts, user_id FROM group_activity "
+                "WHERE group_id=? AND ts>=? ORDER BY ts ASC",
+                (str(group_id), since),
+            ).fetchall()
+        daily = {}
+        for r in rows:
+            day = _dt.date.fromtimestamp(r["ts"]).isoformat()
+            entry = daily.setdefault(day, {"date": day, "users": set(), "msgs": 0})
+            entry["users"].add(r["user_id"])
+            entry["msgs"] += 1
+        out = []
+        for day in sorted(daily.keys()):
+            e = daily[day]
+            out.append({"date": day, "users": len(e["users"]), "msgs": e["msgs"]})
+        return out
+
+    def get_group_activity_top_users(self, group_id: str, days: int = 30, top_n: int = 10) -> List[dict]:
+        """某群最近 days 天的活跃用户排行（按发言条数）。"""
+        return self._query_cached(
+            f"activity_top:{group_id}:{days}:{top_n}", self._QUERY_CACHE_TTL_ACTIVITY,
+            self._query_group_activity_top_users, group_id, days, top_n,
+        )
+
+    def _query_group_activity_top_users(self, group_id: str, days: int, top_n: int) -> List[dict]:
+        since = int(time.time()) - days * 86400
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT user_id, user_name, COUNT(*) as cnt FROM group_activity "
+                "WHERE group_id=? AND ts>=? GROUP BY user_id ORDER BY cnt DESC LIMIT ?",
+                (str(group_id), since, top_n),
+            ).fetchall()
+        return [{"user_id": r["user_id"], "user_name": r["user_name"], "count": r["cnt"] or 0} for r in rows]
+
+    def get_user_violation_count(self, group_id: str, user_id: str, days: int = 30) -> int:
+        """某用户在指定群最近 days 天内的违规次数（违规积分累进制数据源）。
+
+        统计审核处罚记录（撤回/禁言/踢出/警告等处置均写入 moderation_logs）。
+        带 5s TTL 缓存；add_log 写日志时主动失效，保证积分升级判断相对实时。
+        """
+        if not group_id or not user_id:
+            return 0
+        try:
+            return self._query_cached(
+                f"violation:{group_id}:{user_id}:{days}",
+                self._QUERY_CACHE_TTL_VIOLATION,
+                self._query_user_violation_count, group_id, user_id, days,
+            )
+        except Exception:
+            return 0
+
+    def _query_user_violation_count(self, group_id: str, user_id: str, days: int) -> int:
+        since = int(time.time()) - max(1, int(days)) * 86400
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM moderation_logs "
+                "WHERE group_id=? AND user_id=? AND ts>=? AND action != ''",
+                (str(group_id), str(user_id), since),
+            ).fetchone()
+        return int(row["cnt"] or 0) if row else 0
+
+    def record_web_audit(self, operator_name: str = "", operator_qq: str = "",
+                         group_id: str = "", action: str = "", target_user: str = "",
+                         params: str = "", result: str = "", message: str = "",
+                         operator_ip: str = "", before_value: str = "",
+                         after_value: str = "") -> None:
+        """记录一条 WebUI 远程操作审计日志（失败静默）。
+
+        v2.19.0 增加 operator_ip（操作人IP）、before_value/after_value（修改前后值）。
+        """
+        try:
+            now = int(time.time())
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO web_audit_logs(ts, time, operator_name, operator_qq, group_id, "
+                    "action, target_user, params, result, message, operator_ip, before_value, after_value) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (now, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+                     str(operator_name or ""), str(operator_qq or ""), str(group_id or ""),
+                     str(action or ""), str(target_user or ""), str(params or ""),
+                     str(result or ""), str(message or ""),
+                     str(operator_ip or ""), str(before_value or ""), str(after_value or "")),
+                )
+                # _connect() 退出时不隐式 commit，必须显式提交否则写入在连接关闭时回滚
+                conn.commit()
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 记录 Web 审计日志失败: {e}")
+
+    def list_web_audit_logs(self, limit: int = 100, group_id: str = "") -> List[dict]:
+        """查询 WebUI 远程操作审计日志（按时间倒序，可指定群过滤）。"""
+        try:
+            with self._connect() as conn:
+                if group_id:
+                    rows = conn.execute(
+                        "SELECT * FROM web_audit_logs WHERE group_id=? "
+                        "ORDER BY ts DESC LIMIT ?", (str(group_id), max(1, int(limit))),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        "SELECT * FROM web_audit_logs ORDER BY ts DESC LIMIT ?",
+                        (max(1, int(limit)),),
+                    ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    # ============================================================
+    # v2.19.0 双管理员审批：高敏感远程操作的待审批存储
+    # ============================================================
+    _PENDING_OP_TTL_SECONDS = 600  # 默认 10 分钟未确认自动过期
+
+    def create_pending_web_operation(self, operator_name: str = "", operator_qq: str = "",
+                                     operator_ip: str = "", group_id: str = "",
+                                     action: str = "", params: str = "",
+                                     ttl_seconds: int = None) -> int:
+        """创建一条待审批的高敏感远程操作，返回 id；失败返回 0。"""
+        try:
+            now = int(time.time())
+            ttl = max(60, int(ttl_seconds or self._PENDING_OP_TTL_SECONDS))
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO pending_web_operations(ts, expire_at, status, operator_name, "
+                    "operator_qq, operator_ip, group_id, action, params) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (now, now + ttl, "pending", str(operator_name or ""), str(operator_qq or ""),
+                     str(operator_ip or ""), str(group_id or ""), str(action or ""),
+                     str(params or "")),
+                )
+                conn.commit()
+                return int(cur.lastrowid or 0)
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 创建待审批操作失败: {e}")
+            return 0
+
+    def list_pending_web_operations(self, limit: int = 20) -> List[dict]:
+        """列出未过期且待处理的高敏感操作（pending 待确认 / failed 可重试，按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM pending_web_operations WHERE status IN ('pending','failed') "
+                    "AND expire_at>=? ORDER BY ts DESC LIMIT ?", (int(time.time()), max(1, int(limit))),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_pending_web_operation(self, op_id: int) -> Optional[dict]:
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT * FROM pending_web_operations WHERE id=?", (int(op_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def approve_pending_web_operation(self, op_id: int, approver_name: str = "",
+                                      approver_qq: str = "", approver_ip: str = "") -> bool:
+        """确认高敏感操作：仅 pending（或执行失败后可重试的 failed）且未过期可确认成功（CAS 防并发）。"""
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE pending_web_operations SET status='approved', approver_name=?, "
+                    "approver_qq=?, approver_ip=?, result='' WHERE id=? "
+                    "AND status IN ('pending','failed') AND expire_at>=?",
+                    (str(approver_name or ""), str(approver_qq or ""), str(approver_ip or ""),
+                     int(op_id), int(time.time())),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    def reject_pending_web_operation(self, op_id: int, rejector_name: str = "",
+                                     rejector_qq: str = "") -> bool:
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE pending_web_operations SET status='rejected', "
+                    "approver_name=?, approver_qq=? WHERE id=? AND status IN ('pending','failed')",
+                    (str(rejector_name or ""), str(rejector_qq or ""), int(op_id)),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    def expire_pending_web_operations(self) -> None:
+        """把超时未审批的操作标记为 expired（幂等）。"""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE pending_web_operations SET status='expired' "
+                    "WHERE status IN ('pending','failed') AND expire_at<?", (int(time.time()),),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def mark_pending_web_executed(self, op_id: int) -> None:
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE pending_web_operations SET executed=1 WHERE id=?",
+                    (int(op_id),),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    def mark_pending_web_failed(self, op_id: int, result: str = "") -> None:
+        """执行失败：标记为 failed（保持可见、可重试），记录失败原因。"""
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "UPDATE pending_web_operations SET status='failed', executed=0, result=? WHERE id=?",
+                    (str(result or "")[:500], int(op_id)),
+                )
+                conn.commit()
+        except Exception:
+            pass
+
+    # ============================================================
+    # v2.23.0 不确定视频广告管理员复核队列
+    # ============================================================
+
+    def create_video_ad_review(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str = "",
+        msg_text: str = "",
+        fingerprint: str = "",
+        source: str = "",
+    ) -> int:
+        """把一条「疑似广告视频」写入待复核队列；成功返回自增 id，失败返回 0。"""
+        if not str(group_id or "") or not str(user_id or ""):
+            return 0
+        try:
+            now = int(time.time())
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO video_ad_reviews "
+                    "(ts, group_id, user_id, user_name, msg_text, msg_preview, "
+                    " fingerprint, source, status, reviewed_by, reviewed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0)",
+                    (
+                        now,
+                        str(group_id or ""),
+                        str(user_id or ""),
+                        str(user_name or "")[:64],
+                        str(msg_text or ""),
+                        str(msg_text or "")[:200],
+                        str(fingerprint or ""),
+                        str(source or "")[:512],
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+        except Exception:
+            return 0
+
+    def list_pending_video_ad_reviews(self, limit: int = 50) -> List[dict]:
+        """列出待复核的视频广告（pending，按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, fingerprint, source, status, reviewed_by, reviewed_at "
+                    "FROM video_ad_reviews WHERE status='pending' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 200)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_video_ad_review(self, review_id: int) -> Optional[dict]:
+        """按 id 查询一条视频广告复核记录（任意状态）。"""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, fingerprint, source, status, reviewed_by, reviewed_at "
+                    "FROM video_ad_reviews WHERE id=?",
+                    (int(review_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def resolve_video_ad_review(
+        self, review_id: int, status: str, reviewer: str = ""
+    ) -> bool:
+        """确认违规（confirmed）或放行（cleared）；仅 pending 可成功（CAS 防并发）。"""
+        if status not in ("confirmed", "cleared"):
+            return False
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE video_ad_reviews SET status=?, reviewed_by=?, "
+                    "reviewed_at=? WHERE id=? AND status='pending'",
+                    (
+                        status,
+                        str(reviewer or "")[:64],
+                        int(time.time()),
+                        int(review_id),
+                    ),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    # ============================================================
+    # v2.36.0 通用疑似广告人工复核队列 + 文本指纹学习库（adguard 合并）
+    # ============================================================
+
+    def create_ad_review(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str = "",
+        msg_text: str = "",
+        msg_id: str = "",
+        image_urls: list = None,
+        source: str = "text",
+    ) -> int:
+        """把一条「疑似广告」写入待复核队列；成功返回自增 id，失败返回 0。"""
+        if not str(group_id or "") or not str(user_id or ""):
+            return 0
+        try:
+            now = int(time.time())
+            images = []
+            for url in (image_urls or []):
+                try:
+                    images.append(str(url))
+                except Exception:
+                    pass
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO ad_reviews "
+                    "(ts, group_id, user_id, user_name, msg_text, msg_id, "
+                    " image_urls, source, status, reviewed_by, reviewed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', '', 0)",
+                    (
+                        now,
+                        str(group_id or ""),
+                        str(user_id or ""),
+                        str(user_name or "")[:64],
+                        str(msg_text or ""),
+                        str(msg_id or "")[:64],
+                        ",".join(images)[:4000],
+                        str(source or "text")[:64],
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+        except Exception:
+            return 0
+
+    def list_pending_ad_reviews(self, limit: int = 50) -> List[dict]:
+        """列出待复核的疑似广告（pending，按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
+                    "FROM ad_reviews WHERE status='pending' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 500)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def list_ad_reviews_for_sync(self, limit: int = 500) -> List[dict]:
+        """v2.36.8：列出已处理（confirmed/released）的广告复核记录，供云同步上传。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
+                    "FROM ad_reviews WHERE status IN ('confirmed', 'released') "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 500)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_ad_review(self, review_id: int) -> Optional[dict]:
+        """按 id 查询一条疑似广告复核记录（任意状态）。"""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_id, image_urls, source, status, reviewed_by, reviewed_at "
+                    "FROM ad_reviews WHERE id=?",
+                    (int(review_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def resolve_ad_review(
+        self, review_id: int, status: str, reviewer: str = ""
+    ) -> bool:
+        """确认违规（confirmed）或放行（released）；仅 pending 可成功（CAS 防并发）。"""
+        if status not in ("confirmed", "released"):
+            return False
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE ad_reviews SET status=?, reviewed_by=?, "
+                    "reviewed_at=? WHERE id=? AND status='pending'",
+                    (
+                        status,
+                        str(reviewer or "")[:64],
+                        int(time.time()),
+                        int(review_id),
+                    ),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
+
+    def ad_text_fingerprint_hit(self, fingerprint: str) -> Optional[str]:
+        """按指纹查询学习结论；命中返回 verdict（ad/ok），未命中返回 None。"""
+        if not fingerprint:
+            return None
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT verdict FROM ad_text_fingerprints WHERE fingerprint=?",
+                    (str(fingerprint),),
+                ).fetchone()
+            return str(row["verdict"]) if row else None
+        except Exception:
+            return None
+
+    def learn_ad_text_fingerprint(
+        self, fingerprint: str, verdict: str, group_id: str = "", text: str = ""
+    ) -> bool:
+        """学习一条文本指纹结论（ad=确认广告 / ok=确认放行），重复覆盖为最新结论。"""
+        if not fingerprint or verdict not in ("ad", "ok"):
+            return False
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    "INSERT INTO ad_text_fingerprints "
+                    "(fingerprint, verdict, group_id, text_preview, ts) "
+                    "VALUES (?, ?, ?, ?, ?) "
+                    "ON CONFLICT(fingerprint) DO UPDATE SET "
+                    "verdict=excluded.verdict, group_id=excluded.group_id, "
+                    "text_preview=excluded.text_preview, ts=excluded.ts",
+                    (
+                        str(fingerprint),
+                        verdict,
+                        str(group_id or ""),
+                        str(text or "")[:200],
+                        int(time.time()),
+                    ),
+                )
+                conn.commit()
+                return True
+        except Exception:
+            return False
+
+    def list_ad_text_fingerprints(self, limit: int = 200) -> List[dict]:
+        """列出文本指纹学习库（按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT fingerprint, verdict, group_id, text_preview, ts "
+                    "FROM ad_text_fingerprints ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 1000)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def clear_ad_text_fingerprints(self) -> int:
+        """清空文本指纹学习库，返回删除条数。"""
+        try:
+            with self._connect() as conn:
+                cur = conn.execute("DELETE FROM ad_text_fingerprints")
+                conn.commit()
+                return int(cur.rowcount)
+        except Exception:
+            return 0
+
+    # ============================================================
+    # v2.32.0 不确定内容（文本/图片 LLM 无法确认）管理员复核队列
+    # ============================================================
+
+    def create_uncertain_review(
+        self,
+        group_id: str,
+        user_id: str,
+        user_name: str = "",
+        msg_text: str = "",
+        source: str = "",
+    ) -> int:
+        """把一条「LLM 无法确认的内容」写入待复核队列；成功返回自增 id，失败返回 0。"""
+        if not str(group_id or "") or not str(user_id or ""):
+            return 0
+        try:
+            now = int(time.time())
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "INSERT INTO uncertain_reviews "
+                    "(ts, group_id, user_id, user_name, msg_text, msg_preview, "
+                    " source, status, reviewed_by, reviewed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', '', 0)",
+                    (
+                        now,
+                        str(group_id or ""),
+                        str(user_id or ""),
+                        str(user_name or "")[:64],
+                        str(msg_text or ""),
+                        str(msg_text or "")[:200],
+                        str(source or "")[:64],
+                    ),
+                )
+                conn.commit()
+                return int(cur.lastrowid)
+        except Exception:
+            return 0
+
+    def list_pending_uncertain_reviews(self, limit: int = 50) -> List[dict]:
+        """列出待复核的不确定内容（pending，按时间倒序）。"""
+        try:
+            with self._connect() as conn:
+                rows = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, source, status, reviewed_by, reviewed_at "
+                    "FROM uncertain_reviews WHERE status='pending' "
+                    "ORDER BY ts DESC LIMIT ?",
+                    (max(1, min(int(limit), 200)),),
+                ).fetchall()
+            return [dict(r) for r in rows]
+        except Exception:
+            return []
+
+    def get_uncertain_review(self, review_id: int) -> Optional[dict]:
+        """按 id 查询一条不确定内容复核记录（任意状态）。"""
+        try:
+            with self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, ts, group_id, user_id, user_name, msg_text, "
+                    "msg_preview, source, status, reviewed_by, reviewed_at "
+                    "FROM uncertain_reviews WHERE id=?",
+                    (int(review_id),),
+                ).fetchone()
+            return dict(row) if row else None
+        except Exception:
+            return None
+
+    def resolve_uncertain_review(
+        self, review_id: int, status: str, reviewer: str = ""
+    ) -> bool:
+        """确认违规（confirmed）或放行（cleared）；仅 pending 可成功（CAS 防并发）。"""
+        if status not in ("confirmed", "cleared"):
+            return False
+        try:
+            with self._connect() as conn:
+                cur = conn.execute(
+                    "UPDATE uncertain_reviews SET status=?, reviewed_by=?, "
+                    "reviewed_at=? WHERE id=? AND status='pending'",
+                    (
+                        status,
+                        str(reviewer or "")[:64],
+                        int(time.time()),
+                        int(review_id),
+                    ),
+                )
+                conn.commit()
+                return bool(cur.rowcount)
+        except Exception:
+            return False
 
     # ============================================================
     # v2.4.0 新增：F1 入群审核规则

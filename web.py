@@ -2,6 +2,7 @@
 import asyncio
 import csv
 import io
+import json
 import re
 import sqlite3
 import time
@@ -121,6 +122,16 @@ class WebMixin:
             "lexicon_learn_min_length": (2, 20),
             "lexicon_learn_max_per_run": (1, 50),
             "lexicon_learn_sample_size": (15, 300),
+            "video_max_frames": (1, 10),
+            "video_max_size_mb": (1, 200),
+            "video_download_timeout": (5, 120),
+            "video_audit_timeout": (10, 300),
+            "ad_hash_distance": (0, 64),
+            "ad_escalation_warn_at": (1, 100),
+            "ad_escalation_ban_at": (1, 100),
+            "ad_escalation_kick_at": (1, 100),
+            "ad_escalation_window_seconds": (60, 31536000),
+            "ad_backend_port": (1, 65535),
             "moderation_review_interval": (300, 604800),
             "moderation_review_min_samples": (1, 20),
         }
@@ -269,6 +280,7 @@ class WebMixin:
                 ("/user_whitelist/remove", self._web_user_whitelist_remove, ["POST"], "移除审核白名单用户"),
                 ("/admin/add", self._web_admin_add, ["POST"], "添加管理员"),
                 ("/admin/remove", self._web_admin_remove, ["POST"], "移除管理员"),
+                ("/admin/lists", self._web_admin_lists, ["GET"], "获取插件/AstrBot管理员名单(排查权限)"),
                 ("/today_stats", self._web_today_stats, ["GET"], "获取今日拦截统计"),
                 ("/migration/status", self._web_migration_status, ["GET"], "获取SQLite迁移状态"),
                 ("/migration/run", self._web_migration_run, ["POST"], "执行SQLite迁移"),
@@ -288,6 +300,10 @@ class WebMixin:
                 ("/admin_grant/delete", self._web_delete_admin_grant, ["POST"], "删除群管理员授权配置"),
                 ("/remote/actions", self._web_remote_actions, ["GET"], "获取可远程执行的操作列表"),
                 ("/remote/execute", self._web_remote_execute, ["POST"], "远程执行群管操作（支持批量）"),
+                ("/audit_logs", self._web_audit_logs, ["GET"], "查询WebUI远程操作审计日志"),
+                ("/approvals/list", self._web_approvals_list, ["GET"], "列出待审批的高敏感操作"),
+                ("/approvals/approve", self._web_approvals_approve, ["POST"], "第二名管理员确认并执行"),
+                ("/approvals/reject", self._web_approvals_reject, ["POST"], "驳回待审批操作"),
                 ("/super_admin", self._web_get_super_admins, ["GET"], "获取群超管列表"),
                 ("/super_admin/add", self._web_add_super_admin, ["POST"], "添加群超管"),
                 ("/super_admin/remove", self._web_remove_super_admin, ["POST"], "移除群超管"),
@@ -315,6 +331,24 @@ class WebMixin:
                 ("/lexicon_learn/reject", self._web_learn_reject, ["POST"], "拒绝学习候选词"),
                 ("/lexicon_learn/delete", self._web_learn_delete, ["POST"], "删除学习候选词"),
                 ("/lexicon_learn/run", self._web_learn_run_now, ["POST"], "立即执行一次学习挖掘"),
+                # v2.21.0 广告后台接入 Dashboard（原独立 Quart 服务移除，鉴权由 Dashboard JWT 统一执行）
+                ("/ad_backend/stats", self._ad_backend_stats, ["GET"], "广告后台-总览统计"),
+                ("/ad_backend/logs", self._ad_backend_logs, ["GET"], "广告后台-违规记录"),
+                ("/ad_backend/blacklist", self._ad_backend_blacklist, ["GET"], "广告后台-广告黑名单"),
+                ("/ad_backend/blacklist/remove", self._ad_backend_blacklist_remove, ["POST"], "广告后台-删除黑名单"),
+                ("/ad_backend/fingerprints", self._ad_backend_fingerprints, ["GET"], "广告后台-视频指纹"),
+                ("/ad_backend/fingerprints/clear", self._ad_backend_fingerprints_clear, ["POST"], "广告后台-清空指纹"),
+                ("/ad_backend/escalation", self._ad_backend_escalation, ["GET"], "广告后台-分级处置"),
+                ("/ad_backend/escalation/reset", self._ad_backend_escalation_reset, ["POST"], "广告后台-重置分级"),
+                ("/ad_backend/config", self._ad_backend_config, ["GET"], "广告后台-配置状态"),
+                # v2.23.0 不确定视频广告管理员复核
+                ("/ad_backend/video_reviews", self._ad_backend_video_reviews, ["GET"], "广告后台-待复核视频广告"),
+                ("/ad_backend/video_reviews/confirm", self._ad_backend_video_reviews_confirm, ["POST"], "广告后台-确认视频广告违规"),
+                ("/ad_backend/video_reviews/clear", self._ad_backend_video_reviews_clear, ["POST"], "广告后台-放行疑似视频广告"),
+                # v2.36.0 通用疑似广告人工复核（adguard 合并）：确认后撤回+禁言+学习
+                ("/ad_backend/ad_reviews", self._web_ad_reviews, ["GET"], "广告后台-待确认疑似广告"),
+                ("/ad_backend/ad_reviews/confirm", self._web_ad_review_confirm, ["POST"], "广告后台-确认广告违规"),
+                ("/ad_backend/ad_reviews/clear", self._web_ad_review_clear, ["POST"], "广告后台-放行疑似广告"),
             ]
             for path, handler, methods, desc in routes:
                 self.context.register_web_api(
@@ -838,9 +872,9 @@ class WebMixin:
 
     async def _web_get_logs(self):
         try:
-            limit = min(int(quart_request.args.get("limit", 50)), 200)
+            limit = min(int(quart_request.args.get("limit", 100)), 500)
         except (ValueError, TypeError):
-            limit = 50
+            limit = 100
         try:
             offset = max(0, self._safe_int(quart_request.args.get("offset", 0), 0))
         except (ValueError, TypeError):
@@ -861,11 +895,55 @@ class WebMixin:
             self._storage.feedback_for_log_ids,
             [item.get("id", 0) for item in logs]
         )
+        pending_by_key = {}
         for item in logs:
             marked = feedback.get(int(item.get("id", 0) or 0), {})
             item["review_verdict"] = marked.get("verdict", "")
             item["review_note"] = marked.get("note", "")
             item["review_status"] = marked.get("review_status", "")
+            # v2.36.3：待复核（疑似广告）日志附加 ad_reviews 关联，前端据此显示
+            # 「确认广告/放行」人工复核按钮。优先解析入队时写进 reason 的编号；
+            # 解析不到的旧日志回退按「群+用户+内容」匹配待复核记录。
+            action = str(item.get("action", "") or "")
+            if "待复核" in action and "疑似广告" in action:
+                m = re.search(r"编号 #(\d+)", str(item.get("reason", "") or ""))
+                if m:
+                    review_id = int(m.group(1))
+                    item["ad_review_id"] = review_id
+                    try:
+                        review = await self._run_in_thread(
+                            self._storage.get_ad_review, review_id
+                        )
+                        item["ad_review_status"] = (
+                            str(review.get("status", "")) if review else ""
+                        )
+                    except Exception:
+                        item["ad_review_status"] = ""
+                if not item.get("ad_review_id"):
+                    key = (
+                        str(item.get("group_id", "") or ""),
+                        str(item.get("user_id", "") or ""),
+                        str(item.get("msg_text", "") or item.get("msg_preview", "") or ""),
+                    )
+                    pending_by_key[key] = item
+        # v2.36.3：旧日志无编号 → 按内容匹配仍 pending 的 ad_reviews，按钮同样可用
+        if pending_by_key:
+            try:
+                pending = await self._run_in_thread(
+                    self._storage.list_pending_ad_reviews, 500
+                )
+                for review in pending:
+                    key = (
+                        str(review.get("group_id", "") or ""),
+                        str(review.get("user_id", "") or ""),
+                        str(review.get("msg_text", "") or ""),
+                    )
+                    if key in pending_by_key:
+                        target = pending_by_key[key]
+                        target["ad_review_id"] = review.get("id")
+                        target["ad_review_status"] = review.get("status", "")
+            except Exception:
+                pass
         return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
 
     async def _web_review_feedback(self):
@@ -985,6 +1063,153 @@ class WebMixin:
         return jsonify({
             "status": "success" if result.get("ok") else "error", **result
         })
+
+    # ============================================================
+    # v2.36.0 通用疑似广告人工复核（adguard 合并）WebUI 入口
+    # ============================================================
+
+    async def _web_ad_reviews(self):
+        try:
+            limit = min(max(self._safe_int(
+                quart_request.args.get("limit", 200), 200
+            ), 1), 500)
+            items = await self._run_in_thread(
+                self._storage.list_pending_ad_reviews, limit
+            )
+            return jsonify({
+                "status": "success", "data": items, "count": len(items)
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_ad_review_confirm(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            review_id = self._safe_int(data.get("review_id"), 0)
+            if review_id <= 0:
+                return jsonify({"status": "error", "message": "缺少 review_id"})
+            item = self._storage.get_ad_review(review_id)
+            if not item:
+                return jsonify({"status": "error", "message": "未找到该复核记录"})
+            if item.get("status") != "pending":
+                return jsonify({"status": "error", "message": "该记录已处理"})
+            ok = self._storage.resolve_ad_review(review_id, "confirmed", "dashboard")
+            if not ok:
+                return jsonify({"status": "error", "message": "处理失败（可能已被处理）"})
+            group_id = str(item.get("group_id", "") or "")
+            user_id = str(item.get("user_id", "") or "")
+            item_text = str(item.get("msg_text", "") or "")
+            recalled = await self._recall_ad_review_message(item)
+            banned = await self._ban_ad_review_user(group_id, user_id)
+            if self._cfg("ad_review_learn_text", True, group_id=group_id):
+                self._ad_review_learn_text(item_text, "ad", group_id)
+            try:
+                self._learn_recent_ad_hashes(group_id)
+                self._learn_recent_video_fingerprints()
+            except Exception:
+                pass
+            if str(item.get("source", "")) == "card":
+                try:
+                    restore_fn = getattr(self, "_restore_card", None)
+                    if callable(restore_fn):
+                        await restore_fn(group_id, user_id, str(item.get("msg_id", "") or ""))
+                except Exception as exc:
+                    logger.warning(f"[GroupMgr] 广告名片确认后还原失败: {exc}")
+            self._log_moderation(
+                group_id, user_id, str(item.get("user_name", "") or ""),
+                item_text,
+                "管理员确认广告（已禁言）" if banned else "管理员确认广告（禁言失败）",
+                f"WebUI 复核确认 #{review_id}（人工确认后处罚+学习）", [],
+            )
+            return jsonify({
+                "status": "success",
+                "message": (
+                    f"已确认广告 #{review_id}：撤回{'成功' if recalled else '失败'}，"
+                    f"禁言{'成功' if banned else '失败'}，已学习指纹"
+                ),
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    async def _web_ad_review_clear(self):
+        try:
+            data = await quart_request.get_json(force=True, silent=True) or {}
+            review_id = self._safe_int(data.get("review_id"), 0)
+            if review_id <= 0:
+                return jsonify({"status": "error", "message": "缺少 review_id"})
+            item = self._storage.get_ad_review(review_id)
+            if not item:
+                return jsonify({"status": "error", "message": "未找到该复核记录"})
+            if item.get("status") != "pending":
+                return jsonify({"status": "error", "message": "该记录已处理"})
+            ok = self._storage.resolve_ad_review(review_id, "released", "dashboard")
+            if not ok:
+                return jsonify({"status": "error", "message": "处理失败（可能已被处理）"})
+            group_id = str(item.get("group_id", "") or "")
+            if self._cfg("ad_review_learn_text", True, group_id=group_id):
+                self._ad_review_learn_text(str(item.get("msg_text", "") or ""), "ok", group_id)
+            self._log_moderation(
+                group_id, str(item.get("user_id", "") or ""),
+                str(item.get("user_name", "") or ""),
+                str(item.get("msg_text", "") or ""),
+                "管理员复核放行",
+                f"WebUI 复核放行 #{review_id}（人工确认正常）", [],
+            )
+            return jsonify({
+                "status": "success", "message": f"已放行 #{review_id}（标记为正常）"
+            })
+        except Exception as exc:
+            return jsonify({"status": "error", "message": str(exc)})
+
+    # ============================================================
+    # v2.36.5：广告复核撤回/禁言通用方法。
+    # 原定义于 CommandsMixin，但 Main 不继承 CommandsMixin（命令显式委托），
+    # WebUI 确认广告时 self._recall_ad_review_message 找不到 → 移到 WebMixin。
+    # ============================================================
+
+    async def _recall_ad_review_message(self, item: dict) -> bool:
+        """按复核记录中的 msg_id 撤回原消息（广告被确认后）。"""
+        msg_id = str(item.get("msg_id", "") or "")
+        if not msg_id:
+            return False
+        try:
+            client = await self._get_client()
+            if not client:
+                return False
+            ok, error = await self._call_group_api(
+                client, "delete_msg", "撤回消息", message_id=msg_id
+            )
+            return bool(ok)
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 广告复核撤回原消息失败: {exc}")
+            return False
+
+    async def _ban_ad_review_user(self, group_id: str, user_id: str) -> bool:
+        """按复核记录禁言广告发送者。"""
+        gid = self._safe_int(group_id, 0)
+        uid = self._safe_int(user_id, 0)
+        if not gid or not uid:
+            return False
+        try:
+            client = await self._get_client()
+            if not client:
+                return False
+            duration = self._cfg_int(
+                "moderation_ban_duration", 1800, group_id=group_id
+            )
+            ok, error = await self._call_group_api(
+                client, "set_group_ban", "禁言",
+                group_id=gid, user_id=uid, duration=duration,
+            )
+            if ok:
+                try:
+                    self._schedule_unban(str(gid), user_id, duration)
+                except Exception:
+                    pass
+            return bool(ok)
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 广告复核禁言失败: {exc}")
+            return False
 
     async def _web_review_audit(self):
         try:
@@ -1437,6 +1662,23 @@ class WebMixin:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
+    async def _web_admin_lists(self):
+        # v2.18.0：返回插件管理员与 AstrBot 全局管理员两份名单及继承开关，便于排查权限来源。
+        try:
+            plugin_admins = self._get_admin_list()
+            astrbot_admins = sorted(self._get_astrbot_admin_ids())
+            inherited = self._cfg("inherit_astrbot_admins", True)
+            effective = sorted(set(plugin_admins) | (set(astrbot_admins) if inherited else set()))
+            return jsonify({
+                "status": "success",
+                "plugin_admins": plugin_admins,
+                "astrbot_admins": astrbot_admins,
+                "inherited": inherited,
+                "effective_admins": effective,
+            })
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
     async def _web_today_stats(self):
         # 返回今日违规拦截的详细统计：总拦截数、放行数、群排行 Top20、用户排行 Top20。
         # 数据按天缓存（_stats_cache），跨天自动重新计算。
@@ -1524,7 +1766,8 @@ class WebMixin:
         except (ValueError, TypeError):
             days = 30
         try:
-            data = self._storage.get_daily_trend(days=days)
+            # v2.16.0：聚合查询在线程池执行，避免阻塞事件循环；storage 带 30s TTL 缓存
+            data = await asyncio.to_thread(self._storage.get_daily_trend, days=days)
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1536,7 +1779,7 @@ class WebMixin:
         except (ValueError, TypeError):
             days = 30
         try:
-            data = self._storage.get_violation_distribution(days=days)
+            data = await asyncio.to_thread(self._storage.get_violation_distribution, days=days)
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1548,7 +1791,7 @@ class WebMixin:
         except (ValueError, TypeError):
             days = 7
         try:
-            data = self._storage.get_hourly_distribution(days=days)
+            data = await asyncio.to_thread(self._storage.get_hourly_distribution, days=days)
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1564,7 +1807,9 @@ class WebMixin:
         except (ValueError, TypeError):
             top_n = 10
         try:
-            data = self._storage.get_group_activity_ranking(days=days, top_n=top_n)
+            data = await asyncio.to_thread(
+                self._storage.get_group_activity_ranking, days=days, top_n=top_n,
+            )
             return jsonify({"status": "success", "data": data})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -1697,19 +1942,180 @@ class WebMixin:
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
+    def _request_ip(self) -> str:
+        """从 Quart 请求提取操作人 IP（优先 X-Forwarded-For，其次 remote_addr）。"""
+        try:
+            if quart_request is None:
+                return ""
+            fwd = quart_request.headers.get("X-Forwarded-For", "")
+            if fwd:
+                return str(fwd.split(",")[0]).strip()
+            return str(getattr(quart_request, "remote_addr", "") or "")
+        except Exception:
+            return ""
+
+    def _approval_actions(self) -> set:
+        """需要双管理员审批的高敏感操作集合（web_remote_approval_actions）。"""
+        try:
+            raw = self._cfg_str("web_remote_approval_actions", "set_admin,unset_admin,whole_ban")
+            return {s.strip() for s in str(raw).replace("，", ",").split(",") if s.strip()}
+        except Exception:
+            return {"set_admin", "unset_admin", "whole_ban"}
+
     async def _web_remote_execute(self):
         # 远程执行群管操作，支持单个 user_id 或批量 user_ids。
+        # v2.15.0：解析操作者身份（服务端 web_operator_bindings 绑定映射 QQ），
+        # 交由 _remote_execute 做目标群授权校验并写入审计日志。
+        # v2.19.0：记录操作人 IP；高敏感操作（web_remote_dual_approval_enabled）先落双管理员审批。
+        # v2.21.0 重做（安全修复）：操作者身份**只来自服务端配置**，忽略请求体自报
+        # operator_name / operator_qq；创建待审批记录前先完成授权校验。
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             group_id = str(data.get("group_id", "")).strip()
             action = str(data.get("action", "")).strip()
             params = data.get("params", {}) or {}
+            operator_ip = self._request_ip()
+            operator_name, operator_qq = self._resolve_web_operator()
             if not group_id or not action:
                 return jsonify({"status": "error", "message": "缺少 group_id 或 action"})
-            result = await self._remote_execute(group_id, action, params)
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings（用户名:QQ）后重试"})
+            # 发起前先做授权校验（与查看/确认/驳回四阶段一致的服务端授权）
+            op_ok, _role, op_err = await self._check_remote_operator(group_id, operator_qq)
+            if not op_ok:
+                self._record_web_audit(operator_name, operator_qq, group_id, action,
+                                       "", str(params)[:200], "拒绝", op_err,
+                                       operator_ip=operator_ip)
+                return jsonify({"status": "error", "message": op_err})
+            # v2.19.0 双管理员审批：高敏感操作先落 pending，由第二名管理员确认后执行
+            if self._cfg("web_remote_dual_approval_enabled", False) and action in self._approval_actions():
+                pending_id = await asyncio.to_thread(
+                    self._storage.create_pending_web_operation,
+                    operator_name=operator_name, operator_qq=operator_qq,
+                    operator_ip=operator_ip, group_id=group_id,
+                    action=action, params=json.dumps(params, ensure_ascii=False)[:500],
+                )
+                if pending_id:
+                    return jsonify({
+                        "status": "pending", "approval_id": pending_id,
+                        "message": "该操作属于高敏感操作，已提交双管理员审批，等待确认（尚未执行）",
+                    })
+            result = await self._remote_execute(
+                group_id, action, params,
+                operator_qq=operator_qq, operator_name=operator_name, operator_ip=operator_ip,
+            )
             return jsonify({"status": "success" if result.get("ok") else "error", "data": result, "message": result.get("message", "")})
         except Exception as e:
             logger.exception("[GroupMgr] 远程执行失败")
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_audit_logs(self):
+        # 查询 WebUI 远程操作审计日志（可按群过滤）。
+        try:
+            group_id = str(quart_request.args.get("group_id", "") or "").strip()
+            try:
+                limit = max(1, min(int(quart_request.args.get("limit", 100) or 100), 500))
+            except (TypeError, ValueError):
+                limit = 100
+            data = self._storage.list_web_audit_logs(limit=limit, group_id=group_id)
+            return jsonify({"status": "success", "data": data})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_approvals_list(self):
+        # 列出待处理的高敏感远程操作（pending 待确认 / failed 可重试）。
+        # v2.21.0 重做：列表接口同样要求服务端配置的操作者身份（一致授权）。
+        try:
+            _op_name, operator_qq = self._resolve_web_operator()
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings"})
+            await asyncio.to_thread(self._storage.expire_pending_web_operations)
+            data = await asyncio.to_thread(self._storage.list_pending_web_operations, 20)
+            return jsonify({"status": "success", "data": data})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_approvals_approve(self):
+        # 第二名管理员确认并执行高敏感操作。
+        # v2.21.0 重做：操作者身份只来自服务端配置；确认前做授权校验；
+        # 远程执行失败时标记 failed（可见、可重试），仅在真正成功后才标记 executed。
+        try:
+            body = await quart_request.get_json(force=True, silent=True) or {}
+            try:
+                op_id = int(body.get("id") or 0)
+            except (TypeError, ValueError):
+                return jsonify({"status": "error", "message": "id 无效"})
+            if not op_id:
+                return jsonify({"status": "error", "message": "缺少 id"})
+            operator_ip = self._request_ip()
+            operator_name, operator_qq = self._resolve_web_operator()
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings"})
+            op = await asyncio.to_thread(self._storage.get_pending_web_operation, op_id)
+            if not op:
+                return jsonify({"status": "error", "message": "审批记录不存在"})
+            if op.get("status") not in ("pending", "failed"):
+                return jsonify({"status": "error", "message": f"该审批已{op['status']}，无需重复操作"})
+            if int(op.get("expire_at") or 0) < int(time.time()):
+                await asyncio.to_thread(self._storage.reject_pending_web_operation, op_id,
+                                        operator_name, operator_qq)
+                return jsonify({"status": "error", "message": "审批已过期"})
+            ok_op, _role, err = await self._check_remote_operator(str(op.get("group_id") or ""), operator_qq)
+            if not ok_op:
+                return jsonify({"status": "error", "message": err})
+            if not await asyncio.to_thread(
+                self._storage.approve_pending_web_operation, op_id,
+                operator_name, operator_qq, operator_ip,
+            ):
+                return jsonify({"status": "error", "message": "确认失败：可能已被他人确认或已过期"})
+            try:
+                params = json.loads(op.get("params") or "{}")
+            except Exception:
+                params = {}
+            result = await self._remote_execute(
+                str(op.get("group_id") or ""), str(op.get("action") or ""), params,
+                operator_qq=operator_qq, operator_name=operator_name, operator_ip=operator_ip,
+            )
+            if result.get("ok"):
+                await asyncio.to_thread(self._storage.mark_pending_web_executed, op_id)
+                return jsonify({
+                    "status": "success", "data": result, "approval_id": op_id,
+                    "message": "已确认并执行：" + str(result.get("message", "")),
+                })
+            # 执行失败：标记 failed（保持可见、可重试），不再误标 executed
+            await asyncio.to_thread(
+                self._storage.mark_pending_web_failed, op_id, str(result.get("message", "")))
+            return jsonify({
+                "status": "error", "data": result, "approval_id": op_id,
+                "message": "确认后执行失败（已保留待处理，可重试）：" + str(result.get("message", "")),
+            })
+        except Exception as e:
+            logger.exception("[GroupMgr] 审批确认失败")
+            return jsonify({"status": "error", "message": str(e)})
+
+    async def _web_approvals_reject(self):
+        # 驳回待处理的高敏感操作。v2.21.0 重做：身份 + 授权校验后再驳回（不再仅凭 ID）。
+        try:
+            body = await quart_request.get_json(force=True, silent=True) or {}
+            try:
+                op_id = int(body.get("id") or 0)
+            except (TypeError, ValueError):
+                return jsonify({"status": "error", "message": "id 无效"})
+            if not op_id:
+                return jsonify({"status": "error", "message": "缺少 id"})
+            operator_name, operator_qq = self._resolve_web_operator()
+            if not operator_qq:
+                return jsonify({"status": "error", "message": "未配置操作者身份：请在 WebUI 配置 web_operator_bindings"})
+            op = await asyncio.to_thread(self._storage.get_pending_web_operation, op_id)
+            if not op:
+                return jsonify({"status": "error", "message": "审批记录不存在"})
+            ok_op, _role, err = await self._check_remote_operator(str(op.get("group_id") or ""), operator_qq)
+            if not ok_op:
+                return jsonify({"status": "error", "message": err})
+            ok = await asyncio.to_thread(
+                self._storage.reject_pending_web_operation, op_id, operator_name, operator_qq)
+            return jsonify({"status": "success" if ok else "error", "message": "已驳回" if ok else "驳回失败（可能已处理）"})
+        except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_get_super_admins(self):
@@ -1796,7 +2202,8 @@ class WebMixin:
     def _group_overridable_keys(self):
         # 动态计算可按群覆盖的配置项：schema 中除全局项外的通用配置。
         # list 类型通常是全局名单或复杂集合，WebUI 由专门页面维护，不进入单群覆盖。
-        supported_types = {"bool", "int", "string", "text"}
+        # v2.21.0：float 类型加入可覆盖（此前 float 配置标注“可按群覆盖”却不会出现在按群配置中）。
+        supported_types = {"bool", "int", "string", "text", "float"}
         return [
             k for k, meta in self._config_schema.items()
             if k not in self._GROUP_CONFIG_EXCLUDE

@@ -8,6 +8,11 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
+try:
+    from .platforms import get_platform_name, is_platform_routed
+except ImportError:  # 独立加载 onebot.py 的单元测试兼容路径
+    from platforms import get_platform_name, is_platform_routed
+
 # OneBot API 调用统一超时（秒），防止协议端无响应导致协程永久挂起
 ONEBOT_CALL_TIMEOUT = 20.0
 
@@ -106,17 +111,30 @@ class OneBotMixin:
                 pass
         return ""
 
-    def _get_all_admin_ids(self) -> set:
-        # 合并插件管理员名单(DB) + AstrBot 全局 admin_id
+    def _get_astrbot_admin_ids(self) -> set:
+        """读取 AstrBot 全局 admin_id（独立方法，供 _get_all_admin_ids 合并与 WebUI 双名单展示）。"""
         try:
-            astrbot_admin_ids = []
             ab_config = getattr(self.context, 'astrbot_config', None)
             if ab_config:
-                astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
-            return set(self._get_admin_list()) | set(astrbot_admin_ids)
+                return {
+                    str(x).strip() for x in (ab_config.get('admin_id', []) or [])
+                    if str(x).strip()
+                }
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 读取 AstrBot 全局管理员失败: {e}")
+        return set()
+
+    def _get_all_admin_ids(self) -> set:
+        # 合并插件管理员名单(DB) + AstrBot 全局 admin_id。
+        # v2.18.0：是否继承 AstrBot 全局管理员由 inherit_astrbot_admins 控制（默认 true 保持原行为），
+        # 关闭后插件权限仅认插件管理员名单，消除 AstrBot 全局配置与插件权限的隐式交叉污染。
+        admin_set = set(self._get_admin_list())
+        try:
+            if self._cfg("inherit_astrbot_admins", True):
+                admin_set |= self._get_astrbot_admin_ids()
         except Exception as e:
             logger.warning(f"[GroupMgr] 读取管理员名单失败: {e}")
-            return set(self._get_admin_list())
+        return admin_set
 
     def _is_group_admin_blocked(self, group_id: str, user_id: str) -> bool:
         if not group_id:
@@ -195,12 +213,72 @@ class OneBotMixin:
             return False
         return user_id in self._get_all_admin_ids()
 
+    async def _get_effective_role(self, event: AstrMessageEvent, group_id: str = None, user_id: str = None) -> str:
+        """返回用户最高有效角色：plugin_admin > owner > admin > member。
+
+        判定顺序：插件/AstrBot 全局管理员 → 群权限黑名单 → 群超管 → 群角色。
+        """
+        group_id = group_id or self._get_group_id(event)
+        user_id = user_id or self._try_get_sender_id(event)
+        if not user_id:
+            return "member"
+        # 插件全局管理员 / AstrBot 全局管理员：最高权限
+        if user_id in self._get_all_admin_ids():
+            return "plugin_admin"
+        # 群权限黑名单：降为普通成员
+        if self._is_group_admin_blocked(group_id, user_id):
+            return "member"
+        # 群超管（WebUI 为该群单独设置）：等同插件管理员
+        try:
+            if self._storage.is_group_super_admin(group_id, user_id):
+                return "plugin_admin"
+        except Exception:
+            pass
+        if not group_id:
+            return "member"
+        role = await self._get_member_role(event, group_id, user_id)
+        return role if role in ("owner", "admin") else "member"
+
+    @staticmethod
+    def _role_satisfies(actual: str, required: str) -> bool:
+        """角色是否满足要求。plugin_admin 拥有最高权限。"""
+        if required == "member":
+            return True
+        if actual == "plugin_admin":
+            return True
+        if required == "owner":
+            return actual == "owner"
+        if required == "admin":
+            return actual in ("owner", "admin")
+        return False
+
+    @staticmethod
+    def _role_name_cn(required: str) -> str:
+        return {
+            "plugin_admin": "插件管理员",
+            "owner": "群主",
+            "admin": "群管理员",
+            "member": "普通成员",
+        }.get(required, required)
+
     async def _get_member_role(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
         """获取成员在群里的角色（member/admin/owner），带短 TTL 缓存。
 
         缓存存"角色字符串"而非"是否管理员"，使 F5 授权配置变更后无需等缓存过期即可反映；
         TTL 较短（默认 10 秒），保证"下管理"后很快失效。
+
+        多协议适配：Telegram/Discord 的 OneBot call_action 不可用，委托
+        PlatformOpsMixin._platform_get_member_role 按平台查询，使按角色分权限
+        （role_*_require / 群管审核豁免）在受限平台同样生效。
         """
+        if is_platform_routed(get_platform_name(event)):
+            platform_fn = getattr(self, "_platform_get_member_role", None)
+            if platform_fn:
+                role = await platform_fn(event, group_id, user_id)
+                if role:
+                    self._admin_role_cache[f"{group_id}:{user_id}"] = (role, time.time())
+                return role
+            return ""
         cache_key = f"{group_id}:{user_id}"
         now = time.time()
         # 容量保护：超过 1000 条时清理过期项
@@ -345,10 +423,15 @@ class OneBotMixin:
                 return False, f"群 {group_id} 不在白名单中"
         return True, ""
 
-    async def _check_admin_cfg_access(self, event: AstrMessageEvent, cfg_key: str, feature_name: str, need_admin: bool = True) -> Tuple[bool, str]:
+    async def _check_admin_cfg_access(self, event: AstrMessageEvent, cfg_key: str, feature_name: str, need_admin: bool = True, require_role: str = None) -> Tuple[bool, str]:
         # 复合检查：管理员身份 → _cfg_check（插件/功能启用状态，按群）→ 群黑白名单，任一失败即拒绝。
-        if need_admin and not await self._is_admin(event):
-            return False, "仅管理员可以使用此功能"
+        if need_admin:
+            if require_role:
+                role = await self._get_effective_role(event)
+                if not self._role_satisfies(role, require_role):
+                    return False, f"权限不足：{feature_name} 需要{self._role_name_cn(require_role)}身份"
+            elif not await self._is_admin(event):
+                return False, "仅管理员可以使用此功能"
         gid = self._get_group_id(event)
         # Issue #31：可选严格模式，群管操作指令要求操作者本群角色为群主/群管理员，
         # 即使是插件全局管理员，在其非群管的群里也不能通过聊天指令禁言/踢人（防止跨群乱操作）。
@@ -373,13 +456,14 @@ class OneBotMixin:
         feature_name: str,
         user_id,
         precheck_action: str = "",
+        require_role: str = None,
     ) -> Tuple[bool, str, object, int, int]:
         """统一准备群成员操作所需的权限、client、群号和目标 QQ 号。
 
         precheck_action 非空时，额外做 bot 自身权限 + 目标角色（群主/管理员）预检，
         避免对群主/管理员执行必然失败的操作。
         """
-        ok, err = await self._check_admin_cfg_access(event, cfg_key, feature_name)
+        ok, err = await self._check_admin_cfg_access(event, cfg_key, feature_name, require_role=require_role)
         if not ok:
             return False, err, None, 0, 0
         _, client, gid, err = await self._get_group_client(event, need_gid=True)
@@ -401,9 +485,10 @@ class OneBotMixin:
         feature_name: str,
         need_admin: bool = True,
         need_gid: bool = True,
+        require_role: str = None,
     ) -> Tuple[bool, str, object, int]:
         """统一准备群操作所需的权限、client 和可选群号。"""
-        ok, err = await self._check_admin_cfg_access(event, cfg_key, feature_name, need_admin=need_admin)
+        ok, err = await self._check_admin_cfg_access(event, cfg_key, feature_name, need_admin=need_admin, require_role=require_role)
         if not ok:
             return False, err, None, 0
         if need_gid:
@@ -476,6 +561,15 @@ class OneBotMixin:
         return ok, error
 
     async def _recall_msg(self, event: AiocqhttpMessageEvent, msg_id: str):
+        # 多协议适配：Telegram/Discord 等非 OneBot 平台委托平台路由（call_action 不可用）
+        if is_platform_routed(get_platform_name(event)):
+            platform_fn = getattr(self, "_platform_recall_msg", None)
+            if platform_fn:
+                try:
+                    return await platform_fn(event, msg_id)
+                except Exception as e:
+                    logger.debug(f"[GroupMgr] 平台撤回失败: {e}")
+            return
         mid = self._safe_int(msg_id)
         if not mid:
             return
@@ -541,6 +635,15 @@ class OneBotMixin:
         user_id = self._try_get_sender_id(event)
         if not group_id or not user_id:
             return False
+        # 多协议适配：Telegram/Discord 委托平台路由（call_action 不可用）
+        if is_platform_routed(get_platform_name(event)):
+            platform_fn = getattr(self, "_platform_kick_member", None)
+            if platform_fn:
+                try:
+                    return await platform_fn(event, group_id, user_id)
+                except Exception as e:
+                    logger.debug(f"[GroupMgr] 平台踢人失败: {e}")
+            return False
         client = await self._get_client(event)
         if not client:
             return False
@@ -573,6 +676,16 @@ class OneBotMixin:
         user_id = self._try_get_sender_id(event)
         if not group_id or not user_id:
             return False
+        # 多协议适配：Telegram/Discord 委托平台路由（call_action 不可用）
+        if is_platform_routed(get_platform_name(event)):
+            platform_fn = getattr(self, "_platform_mute_member", None)
+            if platform_fn:
+                ban_duration = duration if duration is not None else self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
+                try:
+                    return await platform_fn(event, group_id, user_id, ban_duration)
+                except Exception as e:
+                    logger.debug(f"[GroupMgr] 平台禁言失败: {e}")
+            return False
         client = await self._get_client(event)
         if not client:
             return False
@@ -600,6 +713,15 @@ class OneBotMixin:
 
     async def _unban_member(self, group_id, user_id, event: AstrMessageEvent = None) -> bool:
         # 解除某群成员禁言（set_group_ban duration=0）。用于定时解禁、申诉通过等场景。
+        # 多协议适配：有事件上下文且为 Telegram/Discord 时委托平台路由。
+        if event is not None and is_platform_routed(get_platform_name(event)):
+            platform_fn = getattr(self, "_platform_unban_member", None)
+            if platform_fn:
+                try:
+                    return await platform_fn(event, group_id, user_id)
+                except Exception as e:
+                    logger.debug(f"[GroupMgr] 平台解禁失败: {e}")
+            return False
         gid = self._safe_int(group_id, 0)
         uid = self._safe_int(user_id, 0)
         if not gid or not uid:

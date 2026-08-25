@@ -7,6 +7,11 @@ from typing import Tuple
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 
+try:
+    from .ad_backend import AdBackendMixin
+except ImportError:  # 独立加载 commands.py 的单元测试兼容路径
+    from ad_backend import AdBackendMixin
+
 # 违禁词分类映射。定义为模块级常量，而非 CommandsMixin 类属性：
 # Main 的 MRO 不含 CommandsMixin（命令通过 CommandsMixin.xxx(self,...) 显式转发调用），
 # 若作为类属性，方法体内 self._RULE_CATEGORY_MAP 会 AttributeError（历史坑 #18/#19 同源）。
@@ -231,7 +236,7 @@ class CommandsMixin:
             raw_min = args[2] if len(args) > 2 else (args[1] if at_targets and len(args) > 1 else None)
             minutes = min(max(self._safe_int(raw_min, 10), 1), 43200)
             duration = minutes * 60
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "ban_enabled", "禁言", user_id, precheck_action="ban")
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "ban_enabled", "禁言", user_id, precheck_action="ban", require_role=self._cfg_str("role_ban_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -244,6 +249,142 @@ class CommandsMixin:
         except Exception as e:
             yield event.plain_result(f"禁言失败: {e}")
 
+    async def _review_cmd_common(self, event: AstrMessageEvent, status: str):
+        """管理群内确认/放行疑似视频广告。用法: 确认广告 #编号 / 放行广告 #编号"""
+        try:
+            forward_group = self._cfg_str("video_ad_review_forward_group", "").strip()
+            group_id = self._get_group_id(event)
+            if not forward_group or str(group_id) != str(forward_group):
+                yield event.plain_result("该命令仅可在配置的视频复核管理群内使用。")
+                return
+            if not await self._is_plugin_admin(event):
+                yield event.plain_result("权限不足：仅插件管理员可确认复核。")
+                return
+            args = event.message_str.split()
+            if len(args) < 2:
+                yield event.plain_result("用法: 确认广告 #编号 或 放行广告 #编号")
+                return
+            raw = str(args[1]).strip().lstrip("#").strip()
+            try:
+                review_id = int(raw)
+            except (ValueError, TypeError):
+                yield event.plain_result("编号无效，请使用转发消息中的编号。")
+                return
+            item = self._storage.get_video_ad_review(review_id)
+            if not item:
+                yield event.plain_result(f"未找到复核记录 #{review_id}。")
+                return
+            if item.get("status") != "pending":
+                yield event.plain_result(
+                    f"复核记录 #{review_id} 已处理（{item.get('status')}）。"
+                )
+                return
+            reviewer = self._try_get_sender_id(event)
+            ok = self._storage.resolve_video_ad_review(review_id, status, reviewer)
+            if not ok:
+                yield event.plain_result("处理失败（可能已被处理）。")
+                return
+            if status == "confirmed":
+                banned, learned = await AdBackendMixin._apply_video_ad_review_confirmed(
+                    self, item
+                )
+                yield event.plain_result(
+                    f"已确认广告 #{review_id}：禁言{'成功' if banned else '失败'}，"
+                    f"指纹学习{'成功' if learned else '未学习'}。"
+                )
+            else:
+                yield event.plain_result(f"已放行 #{review_id}（标记为正常）。")
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 群内复核命令失败: {exc}")
+            yield event.plain_result("复核命令执行失败，请查看日志。")
+
+    async def cmd_review_confirm(self, event: AstrMessageEvent):
+        '''管理群内确认疑似视频广告违规。用法: 确认广告 #编号'''
+        # v2.36.1：通用疑似广告复核改为后台审核日志（WebUI 广告后台）确认，
+        # 本命令仅保留 v2.23.0 视频广告管理群复核。
+        async for item in self._review_cmd_common(event, "confirmed"):
+            yield item
+
+    async def cmd_review_clear(self, event: AstrMessageEvent):
+        '''管理群内放行疑似视频广告。用法: 放行广告 #编号'''
+        async for item in self._review_cmd_common(event, "cleared"):
+            yield item
+
+    async def _review_uncertain_common(self, event: AstrMessageEvent, status: str):
+        """v2.32.0：确认/放行「LLM 无法确认」的内容（私聊或管理群）。用法: 确认复核 #编号 / 放行复核 #编号"""
+        try:
+            sender_id = self._try_get_sender_id(event)
+            if not sender_id:
+                yield event.plain_result("无法识别发送者。")
+                return
+            args = event.message_str.split()
+            if len(args) < 2:
+                yield event.plain_result("用法: 确认复核 #编号 或 放行复核 #编号")
+                return
+            raw = str(args[1]).strip().lstrip("#").strip()
+            try:
+                review_id = int(raw)
+            except (ValueError, TypeError):
+                yield event.plain_result("编号无效。")
+                return
+            item = self._storage.get_uncertain_review(review_id)
+            if not item:
+                yield event.plain_result(f"未找到复核记录 #{review_id}。")
+                return
+            if item.get("status") != "pending":
+                yield event.plain_result(
+                    f"复核记录 #{review_id} 已处理（{item.get('status')}）。"
+                )
+                return
+            group_id = str(item.get("group_id", "") or "")
+            # 权限：插件管理员 或 该记录所在群的管理员/群主
+            authorized = await self._is_plugin_admin(event)
+            if not authorized and group_id:
+                try:
+                    client = await self._get_client()
+                    role = await self._get_role_by_id(client, group_id, sender_id)
+                    authorized = str(role or "").lower() in ("owner", "admin")
+                except Exception:
+                    authorized = False
+            if not authorized:
+                yield event.plain_result("权限不足：仅该群管理员或插件管理员可复核。")
+                return
+            reviewer = sender_id
+            ok = self._storage.resolve_uncertain_review(review_id, status, reviewer)
+            if not ok:
+                yield event.plain_result("处理失败（可能已被处理）。")
+                return
+            item_user_id = str(item.get("user_id", "") or "")
+            item_user_name = str(item.get("user_name", "") or "")
+            item_text = str(item.get("msg_text", "") or "")
+            if status == "confirmed":
+                self._log_moderation(
+                    group_id, item_user_id, item_user_name, item_text,
+                    "管理员确认违规", f"管理员复核确认 #{review_id}（LLM无法确认内容）",
+                    [],
+                )
+                yield event.plain_result(f"已确认违规 #{review_id}（内容已记录）。")
+            else:
+                self._log_moderation(
+                    group_id, item_user_id, item_user_name, item_text,
+                    "管理员复核放行", f"管理员复核放行 #{review_id}（LLM无法确认内容）",
+                    [],
+                )
+                yield event.plain_result(f"已放行 #{review_id}（标记为正常）。")
+        except Exception as exc:
+            logger.warning(f"[GroupMgr] 不确定复核命令失败: {exc}")
+            yield event.plain_result("复核命令执行失败，请查看日志。")
+
+    async def cmd_review_uncertain_confirm(self, event: AstrMessageEvent):
+        '''确认「LLM 无法确认」的内容违规（私聊或管理群）。用法: 确认复核 #编号'''
+        async for item in self._review_uncertain_common(event, "confirmed"):
+            yield item
+
+    async def cmd_review_uncertain_clear(self, event: AstrMessageEvent):
+        '''放行「LLM 无法确认」的内容（私聊或管理群）。用法: 放行复核 #编号'''
+        async for item in self._review_uncertain_common(event, "cleared"):
+            yield item
+
     async def cmd_unban(self, event: AstrMessageEvent):
         '''解除指定群成员禁言。用法: /解禁 <QQ号或@某人>'''
         args = event.message_str.split()
@@ -253,7 +394,7 @@ class CommandsMixin:
             return
         try:
             user_id = at_targets[0] if at_targets else str(args[1]).strip()
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "unban_enabled", "解禁", user_id)
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "unban_enabled", "解禁", user_id, require_role=self._cfg_str("role_ban_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -275,7 +416,7 @@ class CommandsMixin:
             return
         try:
             user_id = at_targets[0] if at_targets else str(args[1]).strip()
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "kick_enabled", "踢人", user_id, precheck_action="kick")
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "kick_enabled", "踢人", user_id, precheck_action="kick", require_role=self._cfg_str("role_kick_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -302,7 +443,7 @@ class CommandsMixin:
             if action in ("关闭", "off", "0", "取消"):
                 enable = False
         try:
-            ok, err, client, gid = await self._prepare_group_action(event, "whole_ban_enabled", "全体禁言")
+            ok, err, client, gid = await self._prepare_group_action(event, "whole_ban_enabled", "全体禁言", require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -516,7 +657,7 @@ class CommandsMixin:
             yield event.plain_result("用法: /群名 <新群名>")
             return
         try:
-            ok, err, client, gid = await self._prepare_group_action(event, "set_group_name_enabled", "修改群名")
+            ok, err, client, gid = await self._prepare_group_action(event, "set_group_name_enabled", "修改群名", require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -538,7 +679,7 @@ class CommandsMixin:
         try:
             user_id = str(args[1]).strip()
             title = ' '.join(args[2:])
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置头衔", user_id, precheck_action="set_title")
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置头衔", user_id, precheck_action="set_title", require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -632,7 +773,7 @@ class CommandsMixin:
                 return
         try:
             action = "set_admin" if enable else "unset_admin"
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id, precheck_action=action)
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id, precheck_action=action, require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -838,7 +979,7 @@ class CommandsMixin:
         if len(args) < 2:
             yield event.plain_result("用法: /批量踢人 <QQ1> <QQ2> ...\n示例: /批量踢人 111 222 333")
             return
-        ok, err, client, gid = await self._prepare_group_action(event, "kick_enabled", "批量踢人")
+        ok, err, client, gid = await self._prepare_group_action(event, "kick_enabled", "批量踢人", require_role=self._cfg_str("role_kick_require", "admin"))
         if not ok:
             yield event.plain_result(err)
             return

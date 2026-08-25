@@ -2,7 +2,6 @@
 """图片 OCR、二维码解码及受控下载。"""
 
 import asyncio
-import importlib
 import ipaddress
 import socket
 import time
@@ -95,17 +94,17 @@ def _probe_qr_decoder():
         return _QR_DECODER
     _QR_PROBED = True
     try:
-        importlib.import_module("cv2")
-        importlib.import_module("numpy")
-        _QR_DECODER = "cv2"
-        return _QR_DECODER
+        import importlib.util as _ilu
+        if _ilu.find_spec("cv2") is not None:
+            _QR_DECODER = "cv2"
+            return _QR_DECODER
     except Exception:
         pass
     try:
-        importlib.import_module("PIL.Image")
-        importlib.import_module("pyzbar.pyzbar")
-        _QR_DECODER = "pyzbar"
-        return _QR_DECODER
+        import importlib.util as _ilu
+        if _ilu.find_spec("PIL") is not None and _ilu.find_spec("pyzbar") is not None:
+            _QR_DECODER = "pyzbar"
+            return _QR_DECODER
     except Exception:
         pass
     _QR_DECODER = None
@@ -165,6 +164,18 @@ class ImageAuditMixin:
             "prompt": "请将这张图片中的所有文字完整转录出来。",
         },
     }
+
+    # v2.20.0 视频广告专用视觉判定：不只看文字，还判断画面是否含广告元素（无文字广告也能识别）
+    _VIDEO_AD_SYSTEM_PROMPT = (
+        "你是一个视频广告识别助手。观察这帧视频画面，判断它是否包含广告/营销内容。请重点识别："
+        "1.品牌Logo、产品图、促销横幅、商品陈列 2.营销话术、价格信息、优惠活动、宣传标语 "
+        "3.联系方式（电话/微信号/QQ号/二维码/网址/加群引导）4.引流导流话术（关注、下单、点击链接）。"
+        "输出要求：画面明显是广告时输出「广告：」+ 简要理由（并转录画面中的文字）；"
+        "疑似广告输出「疑似广告：」+ 理由；正常画面输出「正常画面」。不要输出其他内容。"
+    )
+    _VIDEO_AD_USER_PROMPT = (
+        "请判断这帧视频画面是否属于广告/营销内容，并说明理由；若画面中有文字请一并转录。"
+    )
 
     def _init_image_audit_resources(self, llm_concurrency: int) -> None:
         """初始化插件实例级并发闸门和可复用 HTTP 会话槽位。"""
@@ -346,6 +357,41 @@ class ImageAuditMixin:
 
         async def recognize(image_url: str) -> str:
             try:
+                data = None
+                # 感知哈希广告黑名单快速命中（可选）：命中直接标记并跳过视觉 API 调用，
+                # 并缓存哈希供广告确认后学习。
+                if self._cfg("ad_hash_blacklist_enabled", False, group_id=group_id):
+                    data = await self._download_bytes(image_url)
+                    if data:
+                        phash = self._phash_from_data(data)
+                        if phash:
+                            self._recent_media_hashes[image_url] = phash
+                            distance = self._cfg_int(
+                                "ad_hash_distance", 10, group_id=group_id
+                            )
+                            best = self._check_hash_blacklist(phash, distance)
+                            if best <= distance:
+                                result = (
+                                    f"[已知广告图] 命中广告黑名单"
+                                    f"(相似度{64 - best}/64)"
+                                )
+                                self._cache_image_evidence(image_url, "ocr", result)
+                                return result
+                # 非 LLM 识别引擎（local/umi/cloud），或 auto 的本地优先
+                engine = self._ad_engine(group_id)
+                if engine in ("local", "umi", "cloud", "auto"):
+                    if data is None:
+                        data = await self._download_bytes(image_url)
+                    media_text = await self._detect_media_text(data, group_id)
+                    if media_text:
+                        result = media_text
+                        if engine == "cloud":
+                            result = "[云API] " + media_text
+                        self._cache_image_evidence(image_url, "ocr", result)
+                        return result
+                    if engine in ("local", "umi", "cloud"):
+                        return ""
+                # llm 引擎，或 auto 本地无结果时回退 LLM 视觉
                 is_gif = self._is_gif_url(image_url)
                 is_sticker = self._is_sticker_image(image_url)
                 ocr_text = await self._call_llm_ocr(
@@ -374,6 +420,7 @@ class ImageAuditMixin:
         is_gif: bool = False,
         is_sticker: bool = False,
         group_id: str = "",
+        video_ad_mode: bool = False,
     ) -> str:
         """限制 OCR 实际并发；峰值排队等待，长期过载有明确边界。"""
         semaphore = getattr(self, "_ocr_semaphore", None)
@@ -390,6 +437,7 @@ class ImageAuditMixin:
                     is_gif=is_gif,
                     is_sticker=is_sticker,
                     group_id=group_id,
+                    video_ad_mode=video_ad_mode,
                 ),
                 timeout=LLM_CALL_TIMEOUT,
             )
@@ -409,6 +457,7 @@ class ImageAuditMixin:
         is_gif: bool = False,
         is_sticker: bool = False,
         group_id: str = "",
+        video_ad_mode: bool = False,
     ) -> str:
         configured_id = str(
             self.config.get("ocr_provider_id", "")
@@ -425,7 +474,11 @@ class ImageAuditMixin:
             "ocr_custom_user_prompt", "", group_id=group_id
         ).strip()
 
-        if custom_system and custom_user:
+        # v2.20.0 视频广告判定：覆盖为广告识别专用 prompt（画面级判断，无文字广告也能识别）
+        if video_ad_mode:
+            system_prompt = self._VIDEO_AD_SYSTEM_PROMPT
+            prompt = self._VIDEO_AD_USER_PROMPT
+        elif custom_system and custom_user:
             system_prompt = custom_system
             prompt = custom_user
         else:

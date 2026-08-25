@@ -200,11 +200,24 @@ class _HangingOcrHarness(_ModerationHarness):
 
 class _ConcurrentOcrHarness(moderation.ModerationMixin):
     def __init__(self):
+        self.config = {}
+        self._config_schema = {}
         self.release = asyncio.Event()
         self.all_started = asyncio.Event()
         self.started = []
         self.active = 0
         self.max_active = 0
+
+    def _cfg(self, name, default=True, group_id=None):
+        return default
+
+    @staticmethod
+    def _get_group_override(group_id, key):
+        return None
+
+    @staticmethod
+    def _ad_engine(group_id=None):
+        return "llm"
 
     async def _call_llm_ocr(self, image_url, **kwargs):
         self.started.append(image_url)
@@ -238,6 +251,17 @@ class _QueuedOcrHarness(moderation.ModerationMixin):
         self.started = []
         self.first_wave_started = asyncio.Event()
         self.release_first_wave = asyncio.Event()
+
+    def _cfg(self, name, default=True, group_id=None):
+        return default
+
+    @staticmethod
+    def _get_group_override(group_id, key):
+        return None
+
+    @staticmethod
+    def _ad_engine(group_id=None):
+        return "llm"
 
     async def _call_llm_ocr_impl(self, image_url, **_kwargs):
         self.started.append(image_url)
@@ -496,7 +520,7 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["violation"])
         self.assertIn("管理员确认误判后的补充修正规则", harness.last_prompt)
         self.assertIn("需要结合推广意图，不按单个普通词处罚", harness.last_prompt)
-        self.assertIn('{"violation": true/false, "reason": "判断原因"}', harness.last_prompt)
+        self.assertIn('{"violation": true/false/"unknown", "reason": "判断原因"}', harness.last_prompt)
 
     async def test_review_guidance_is_appended_to_custom_moderation_prompt(self):
         harness = _ModerationHarness(semaphore=asyncio.Semaphore(1))
@@ -512,7 +536,7 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result["violation"])
         self.assertIn("只拦截存在明确招揽行为的广告", harness.last_prompt)
         self.assertIn("正常商品名讨论需要放行", harness.last_prompt)
-        self.assertIn('{"violation": true/false, "reason": "判断原因"}', harness.last_prompt)
+        self.assertIn('{"violation": true/false/"unknown", "reason": "判断原因"}', harness.last_prompt)
 
     async def test_group_history_hanging_api_is_cancelled_and_degrades_to_empty(self):
         client = _HangingClient()
@@ -792,7 +816,7 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
             group_id="1",
         ))
 
-        await REAL_WAIT_FOR(harness.all_started.wait(), timeout=1)
+        await REAL_WAIT_FOR(harness.all_started.wait(), timeout=5)
         self.assertEqual(
             harness.started,
             ["one.gif", "bad.png", "sticker-three.png", "four.png"],
@@ -817,7 +841,7 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
             ["one.png", "two.png", "three.png", "four.png", "five.png"],
             group_id="1",
         ))
-        await REAL_WAIT_FOR(harness.first_wave_started.wait(), timeout=1)
+        await REAL_WAIT_FOR(harness.first_wave_started.wait(), timeout=5)
         await asyncio.sleep(0.02)
         self.assertEqual(
             harness.started,

@@ -17,3 +17,8 @@ Thumbs.db
 .gitmodules
 ac_cache/
 docs/
+# 打包产物与脚本临时文件
+*.zip
+scripts/*.log
+scripts/*.json
+scripts/release_body*.txt

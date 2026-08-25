@@ -184,6 +184,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
 .badge-danger{background:var(--danger-light);color:var(--danger)}
 .badge-success{background:var(--success-light);color:var(--success)}
 .badge-warning{background:var(--warning-light);color:var(--warning)}
+.audit-item{padding:10px 14px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--bg-secondary);font-size:12.5px}
 .badge-default{background:var(--info-light);color:var(--text-muted)}
 .settings-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:14px}
 .settings-list{padding:8px 16px}
@@ -448,6 +449,10 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M12 3L1 9l11 6 9-4.91V17h2V9L12 3zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z"/></svg>
           <span>词库学习</span>
         </a>
+        <a class="nav-item" data-tab="adbackend">
+          <svg class="nav-icon" viewBox="0 0 24 24"><path d="M21 6h-2v2h-2V6h-2V4h2V2h2v2h2v2zm-10 3c1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3 1.34 3 3 3zm0 4c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm7 1.5V17h4v-2h-2c0-1.5-.83-2.77-2.13-3.55.35.37.67.79.13 2.05z"/></svg>
+          <span>广告后台</span>
+        </a>
         <a class="nav-item" data-tab="settings">
           <svg class="nav-icon" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.07.62-.07.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></svg>
           <span>设置</span>
@@ -711,6 +716,20 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
             <div class="list-items" id="blockList"><p class="empty">暂无</p></div>
           </div>
         </div>
+        <div class="card">
+          <div class="card-header"><h2>待审批操作（双管理员）</h2><div class="header-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshApprovals">刷新</button></div></div>
+          <div class="list-manage">
+            <p class="rules-subtle" style="margin-bottom:8px">开启「设置-高敏感操作双管理员审批」后，高敏感操作（设置/取消管理员、全体禁言等）由第一名管理员发起后<strong>不会立即执行</strong>，须由<strong>第二名管理员</strong>在此确认后才真正执行；发起人不能自我确认，超时 10 分钟自动过期。</p>
+            <div class="log-container" id="approvalList"><p class="empty">暂无待审批操作</p></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>远程操作审计日志</h2><div class="header-actions"><button class="btn btn-ghost btn-sm" id="btnRefreshAudit">刷新</button></div></div>
+          <div class="list-manage">
+            <p class="rules-subtle" style="margin-bottom:8px">记录 WebUI 远程群管操作（含拒绝）：操作人姓名 / QQ / IP、操作时间、目标群、操作、参数、修改前后值、结果。可查询 <code>GET /audit_logs</code> 或 SQLite <code>web_audit_logs</code> 表。</p>
+            <div class="log-container" id="auditLogList"><p class="empty">加载中...</p></div>
+          </div>
+        </div>
       </div>
 
       <div class="tab-panel" id="tab-groupcfg">
@@ -800,6 +819,31 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
             </div>
           </div>
           <div class="log-container" id="learnList"><p class="empty">加载中...</p></div>
+        </div>
+      </div>
+
+      <div class="tab-panel" id="tab-adbackend">
+        <div class="page-header"><h1>广告后台</h1><button class="btn btn-ghost btn-sm" id="btnRefreshAdBackend">刷新</button></div>
+        <p class="rules-subtle" style="margin:0 0 12px">v2.21.0 起广告后台接入 AstrBot Dashboard（原独立端口服务已移除，鉴权由 Dashboard 登录统一执行）。展示广告检测统计、违规记录、感知哈希黑名单、视频指纹缓存与分级处置。</p>
+        <div class="settings-grid">
+          <div class="card" data-adstats="total"><div class="card-header"><h2>总览统计</h2></div><div class="list-manage" id="adStats"><p class="empty">加载中...</p></div></div>
+          <div class="card" data-adstats="blacklist"><div class="card-header"><h2>感知哈希广告黑名单</h2></div><div class="list-manage" id="adBlacklist"><p class="empty">加载中...</p></div></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>待确认疑似广告（后台审核日志）</h2><span class="rules-subtle">文本/图片/视频/群名片统一入口，确认后撤回+禁言+学习，放行后学习为正常</span></div>
+          <div class="list-manage" id="adPendingReviews"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>视频指纹缓存</h2></div>
+          <div class="list-manage" id="adFingerprints"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>分级处置记录</h2></div>
+          <div class="list-manage" id="adEscalation"><p class="empty">加载中...</p></div>
+        </div>
+        <div class="card">
+          <div class="card-header"><h2>配置状态</h2></div>
+          <div class="settings-list" id="adConfig" style="padding:8px 16px"><p class="empty">加载中...</p></div>
         </div>
       </div>
 
@@ -1152,6 +1196,43 @@ function confirmModal(opts) {
   });
 }
 
+// v2.19.0 高风险远程操作二次确认弹窗：带「默认勾选」的确认框，防止误点高危操作。
+// opts: { title, body(html), okText, cancelText }
+function highRiskConfirm(opts) {
+  opts = opts || {};
+  return new Promise(function(resolve) {
+    showModal(
+      opts.title || '高风险操作确认',
+      '<div style="line-height:1.7;font-size:13px;color:var(--text-secondary)">' + (opts.body || '') + '</div>' +
+      '<label style="display:flex;align-items:center;gap:6px;margin-top:12px;font-size:13px;color:var(--text-secondary);cursor:pointer">' +
+      '<input type="checkbox" id="__hrCk" checked style="accent-color:var(--primary)" /> 我确认需要执行此高风险操作</label>',
+      '<button class="btn btn-ghost btn-sm" id="__hrCancel">取消</button>' +
+      '<button class="btn btn-danger btn-sm" id="__hrOk">确认执行</button>'
+    );
+    var done = function(v) { closeModal(); resolve(v); };
+    $('#__hrCancel').addEventListener('click', function() { done(false); });
+    $('#__hrOk').addEventListener('click', function() {
+      var ck = $('#__hrCk');
+      if (ck && !ck.checked) { toast('请先勾选确认框', 'error'); return; }
+      done(true);
+    });
+  });
+}
+// 高风险远程操作集合与中文名（前端二次确认 / 双管理员审批展示共用）
+var HIGH_RISK_ACTIONS = { set_admin: 1, unset_admin: 1, whole_ban: 1, kick: 1, batch_kick: 1 };
+var HIGH_RISK_CN = { set_admin: '设置管理员', unset_admin: '取消管理员', whole_ban: '全体禁言', kick: '踢人', batch_kick: '批量踢人' };
+// 高风险操作是否需要二次确认（读取全局配置 web_remote_confirm_required，默认需要）
+function isHighRiskConfirmRequired() {
+  var v = CONFIG.web_remote_confirm_required;
+  return v === undefined || v === true || v === 'true' || v === 1 || v === '1';
+}
+// 操作者身份：v2.21.0 安全重做 —— 不再由前端收集/自报用户名或 QQ。
+// 操作者身份只由服务端 web_operator_bindings（用户名:QQ）配置解析，
+// 前端此函数仅作兼容占位，请求体不再携带 operator_name / operator_qq，防止伪造管理员身份。
+function getOperatorIdentity() {
+  return { name: '', qq: '' };
+}
+
 // 通用输入弹窗：返回 Promise<string|null>（取消返回 null）。用于“添加 QQ 号/群号”等录入。
 // opts: { title, label, placeholder, value, okText, multiline }
 function promptModal(opts) {
@@ -1195,12 +1276,15 @@ function switchTab(tabName) {
     CURRENT_MEMBERS = [];
     loadGroups(false);
     loadAdmins();
+    loadApprovals();
+    loadAuditLogs();
   }
   if (tabName === 'records') { loadUsers(); loadLogs(); loadModerationReview(); }
   if (tabName === 'flood') loadFlood();
   if (tabName === 'rules') { renderRuleCenterShell(); loadRuleCenter(); }
   if (tabName === 'join') loadJoinRules();
-  if (tabName === 'perms') { loadSuperAdmins(); loadGrants(); loadBlocks(); }
+  if (tabName === 'perms') { loadSuperAdmins(); loadGrants(); loadBlocks(); loadApprovals(); loadAuditLogs(); }
+  if (tabName === 'adbackend') loadAdBackend();
   if (tabName === 'groupcfg') loadGroupCfgGroups();
   if (tabName === 'tasks') { loadAppeals(); loadUnbans(); }
   if (tabName === 'cardmon') loadCardMonitor();
@@ -1732,6 +1816,10 @@ function renderMembers(members) {
       openMemberPanel(CURRENT_GROUP);
     });
   });
+  // 操作者身份：Dashboard 用户绑定的 QQ（本地记忆，用于远程操作授权校验与审计）
+  function ensureOperator() {
+    return getOperatorIdentity();
+  }
   // 单个远程操作：禁言(读取同行时长输入)/解禁/踢
   $$('[data-rm]', $('#memberList')).forEach(function(btn) {
     btn.addEventListener('click', async function() {
@@ -1741,6 +1829,15 @@ function renderMembers(members) {
       if (action === 'ban') {
         var durInput = $('.rm-dur[data-uid="' + cssAttr(uid) + '"]', $('#memberList'));
         params.duration_minutes = parseInt(durInput && durInput.value) || 10;
+      }
+      // v2.19.0 二次确认：高风险操作（踢人/全体禁言等）默认需确认，可配置关闭
+      if (HIGH_RISK_ACTIONS[action] && isHighRiskConfirmRequired()) {
+        var okCk = await highRiskConfirm({
+          title: (HIGH_RISK_CN[action] || action) + ' - 高风险操作确认',
+          body: '确认对成员 <b>' + esc(uid) + '</b> 执行【' + (HIGH_RISK_CN[action] || action) + '】操作？该操作影响较大，请核对后再执行。',
+          okText: '确认执行'
+        });
+        if (!okCk) return;
       }
       var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params });
       var isErr = isApiError(r);
@@ -1769,6 +1866,15 @@ function renderMembers(members) {
     if (action === 'ban') params.duration_minutes = parseInt(extra) || 10;
     if (action === 'set_card') params.card = extra;
     if (action === 'set_title') params.title = extra;
+    // v2.19.0 二次确认：批量高风险操作（批量踢人/全体禁言等）默认需确认
+    if (HIGH_RISK_ACTIONS[action] && isHighRiskConfirmRequired()) {
+      var okCk = await highRiskConfirm({
+        title: (HIGH_RISK_CN[action] || action) + ' - 高风险操作确认',
+        body: '确认对 <b>' + ids.length + '</b> 名成员批量执行【' + (HIGH_RISK_CN[action] || action) + '】操作？该操作影响较大，请核对后再执行。',
+        okText: '确认执行'
+      });
+      if (!okCk) return;
+    }
     var r = await safePost('remote/execute', { group_id: CURRENT_GROUP, action: action, params: params });
     var isErr = isApiError(r);
     toast((r && r.message) || (r && r.data && r.data.message) || '已执行', isErr ? 'error' : 'success');
@@ -1779,9 +1885,219 @@ function renderMembers(members) {
 }
 
 async function loadAdmins() {
-  var res = await loadConfigCached();
-  if (isApiError(res)) return;
-  renderAdmins();
+  // v2.18.0：优先用 /admin/lists 展示「插件管理员 + AstrBot 全局管理员」双名单与继承状态
+  var res = await safeGet('admin/lists');
+  if (isApiError(res)) {
+    var rc = await loadConfigCached();
+    if (isApiError(rc)) return;
+    renderAdmins();
+    return;
+  }
+  renderAdminLists(res || {});
+}
+
+// v2.19.0 待审批操作列表（双管理员审批）
+async function loadApprovals() {
+  var el = $('#approvalList');
+  if (!el) return;
+  var res = await safeGet('approvals/list');
+  if (isApiError(res)) { el.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
+  var list = res || [];
+  if (!list.length) { el.innerHTML = '<p class="empty">暂无待审批操作</p>'; return; }
+  el.innerHTML = list.map(function(it) {
+    var actionCn = HIGH_RISK_CN[it.action] || it.action;
+    var params = it.params || '';
+    try { params = JSON.stringify(JSON.parse(params)); } catch(e) {}
+    var leftSec = (it.expire_at || 0) - Date.now() / 1000;
+    var timeLeft = leftSec > 0 ? '约 ' + Math.max(1, Math.ceil(leftSec / 60)) + ' 分钟后过期' : '已过期';
+    var stBadge = (it.status === 'failed')
+      ? '<span class="badge badge-warning">执行失败·可重试</span>'
+      : '<span class="badge badge-danger">待审批</span>';
+    return '<div class="audit-item">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<div style="min-width:0;flex:1">' +
+      '<div><b>' + esc(actionCn) + '</b> ' + stBadge + ' <span class="rules-subtle">群 ' + esc(it.group_id || '') + '</span></div>' +
+      '<div class="rules-subtle" style="margin-top:4px;word-break:break-all">参数：' + esc(params) + '</div>' +
+      (it.result ? '<div class="rules-subtle" style="margin-top:2px;color:var(--danger)">失败原因：' + esc(it.result) + '</div>' : '') +
+      '<div class="rules-subtle" style="margin-top:2px">发起人 ' + esc(it.operator_name || it.operator_qq || '未知') + ' · ' + esc(fmtTime(it.ts)) + ' · ' + esc(timeLeft) + '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:6px;flex-shrink:0">' +
+      '<button class="btn btn-primary btn-sm" data-approve="' + it.id + '">确认执行</button>' +
+      '<button class="btn btn-ghost btn-sm" data-reject="' + it.id + '">驳回</button>' +
+      '</div></div></div>';
+  }).join('');
+  $$('[data-approve]', el).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var ok = await highRiskConfirm({
+        title: '确认执行待审批操作',
+        body: '你将以<b>第二名管理员</b>身份确认并立即执行该操作。确认后无法撤销。',
+        okText: '确认并执行'
+      });
+      if (!ok) return;
+      var r = await safePost('approvals/approve', { id: btn.dataset.approve });
+      toast((r && r.message) || '已确认', isApiError(r) ? 'error' : 'success');
+      loadApprovals(); loadAuditLogs();
+    });
+  });
+  $$('[data-reject]', el).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var ok = await confirmModal({ title: '驳回待审批操作', body: '确认驳回该待审批操作？', okText: '驳回', danger: true });
+      if (!ok) return;
+      var r = await safePost('approvals/reject', { id: btn.dataset.reject });
+      toast((r && r.message) || '已驳回', isApiError(r) ? 'error' : 'success');
+      loadApprovals();
+    });
+  });
+}
+
+// v2.21.0 广告后台（接入 Dashboard，原独立端口服务已移除）
+async function loadAdBackend() {
+  var statsEl = $('#adStats'), blEl = $('#adBlacklist'), fpEl = $('#adFingerprints'),
+      esEl = $('#adEscalation'), cfgEl = $('#adConfig');
+  if (!statsEl) return;
+  // v2.36.2：待确认疑似广告（后台审核日志）统一入口，文本/图片/视频/群名片
+  var prEl = $('#adPendingReviews');
+  if (prEl) {
+    var rv = await safeGet('ad_backend/ad_reviews', { limit: 200 });
+    if (!isApiError(rv) && rv) {
+      var revs = rv || [];
+      var srcLabel = { text: '文本', image: '图片', video: '视频', card: '群名片' };
+      prEl.innerHTML = '<div style="padding:8px 16px"><span class="rules-subtle">共 ' + esc(revs.length) + ' 条待确认（最多显示 200）</span></div>' +
+        (revs.length
+          ? '<div class="log-container" style="padding:8px">' + revs.map(function(r) {
+              var sl = srcLabel[r.source] || r.source || '';
+              var full = String(r.msg_text || '');
+              var content = full.slice(0, 60);
+              var usr = (r.user_name || r.user_id || '');
+              return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+                '<div style="min-width:0;flex:1">' +
+                '<div><b>#' + esc(String(r.id)) + '</b> ' + esc(sl) + ' · 群 ' + esc(r.group_id) + ' · ' + esc(usr) +
+                ' <span class="rules-subtle">' + fmtTime(r.ts) + '</span></div>' +
+                '<div class="rules-subtle" style="word-break:break-all;margin-top:2px">' + esc(content) + (content.length < full.length ? '…' : '') + '</div>' +
+                '</div>' +
+                '<div style="display:flex;gap:4px">' +
+                '<button class="btn btn-danger btn-sm" data-adr-confirm="' + escAttr(String(r.id)) + '">确认广告</button>' +
+                '<button class="btn btn-ghost btn-sm" data-adr-clear="' + escAttr(String(r.id)) + '">放行</button>' +
+                '</div></div>';
+            }).join('') + '</div>'
+          : '<p class="empty">暂无待确认疑似广告</p>');
+      $$('[data-adr-confirm], [data-adr-clear]', prEl).forEach(function(btn) {
+        btn.addEventListener('click', async function() {
+          var isConfirm = btn.hasAttribute('data-adr-confirm');
+          var reviewId = btn.getAttribute('data-adr-confirm') || btn.getAttribute('data-adr-clear');
+          var result = await safePost('ad_backend/ad_reviews/' + (isConfirm ? 'confirm' : 'clear'), { review_id: reviewId });
+          if (apiCallFailed(result)) { toast('操作失败: ' + apiErrMsg(result, ''), 'error'); return; }
+          toast(result.message || (isConfirm ? '已确认广告' : '已放行'), 'success');
+          loadAdBackend();
+          loadLogs();
+        });
+      });
+    } else { prEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  }
+  // 总览统计
+  var s = await safeGet('ad_backend/stats');
+  if (!isApiError(s) && s) {
+    var d = s;
+    statsEl.innerHTML =
+      '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:12px 16px">' +
+      '<div><div class="rules-subtle">今日拦截</div><b style="font-size:20px">' + esc(d.today_blocked != null ? d.today_blocked : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">累计拦截</div><b style="font-size:20px">' + esc(d.total_blocked != null ? d.total_blocked : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">今日图片</div><b style="font-size:20px">' + esc(d.today_img != null ? d.today_img : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">今日视频</div><b style="font-size:20px">' + esc(d.today_video != null ? d.today_video : '--') + '</b></div>' +
+      '<div><div class="rules-subtle">累计记录</div><b style="font-size:20px">' + esc(d.total_logs != null ? d.total_logs : '--') + '</b></div></div>';
+  } else { statsEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 黑名单
+  var b = await safeGet('ad_backend/blacklist');
+  if (!isApiError(b) && b) {
+    var hs = b || [];
+    blEl.innerHTML = hs.length
+      ? '<div class="log-container" style="padding:8px">' + hs.slice(0, 20).map(function(h) {
+          return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+            '<span style="font-family:monospace;font-size:11px;word-break:break-all;flex:1">' + esc(h.h || '') + '</span>' +
+            '<span class="rules-subtle">x' + esc(h.count) + '</span>' +
+            '<button class="btn btn-ghost btn-sm" data-adbl-del="' + escAttr(h.h || '') + '">删除</button></div>';
+        }).join('') + '</div>'
+      : '<p class="empty">暂无（可开启 ad_hash_auto_learn 自动学习）</p>';
+    $$('[data-adbl-del]', blEl).forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var r = await safePost('ad_backend/blacklist/remove', { h: btn.dataset.adblDel });
+        toast((r && r.message) || '已删除', isApiError(r) ? 'error' : 'success');
+        loadAdBackend();
+      });
+    });
+  } else { blEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 视频指纹
+  var f = await safeGet('ad_backend/fingerprints');
+  if (!isApiError(f) && f) {
+    var fps = f || [];
+    fpEl.innerHTML = '<div style="padding:8px 16px">' +
+      '<span class="rules-subtle">共 ' + fps.length + ' 条</span> ' +
+      (fps.length ? '<button class="btn btn-danger btn-sm" id="btnAdFpClear">清空</button>' : '') + '</div>' +
+      (fps.length ? '<div class="log-container" style="padding:8px">' + fps.slice(0, 10).map(function(x) {
+        return '<div class="audit-item"><span style="font-family:monospace;font-size:11px;word-break:break-all">' + esc(x.fingerprint) + '</span></div>';
+      }).join('') + '</div>' : '');
+    var clearBtn = $('#btnAdFpClear');
+    if (clearBtn) clearBtn.addEventListener('click', async function() {
+      var ok = await confirmModal({ title: '清空视频指纹缓存', body: '确认清空全部视频指纹缓存？', okText: '清空', danger: true });
+      if (!ok) return;
+      var r = await safePost('ad_backend/fingerprints/clear');
+      toast((r && r.message) || '已清空', isApiError(r) ? 'error' : 'success');
+      loadAdBackend();
+    });
+  } else { fpEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 分级处置
+  var e = await safeGet('ad_backend/escalation');
+  if (!isApiError(e) && e) {
+    var rows = e || [];
+    esEl.innerHTML = rows.length
+      ? '<div class="log-container" style="padding:8px">' + rows.slice(0, 20).map(function(r) {
+          return '<div class="audit-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px">' +
+            '<span>群 ' + esc(r.group_id) + ' · ' + esc(r.user_id) + ' · 第 <b>' + esc(r.count) + '</b> 次</span>' +
+            '<button class="btn btn-ghost btn-sm" data-ades-reset="' + escAttr(r.user_id) + '" data-ades-g="' + escAttr(r.group_id) + '">重置</button></div>';
+        }).join('') + '</div>'
+      : '<p class="empty">暂无分级处置记录</p>';
+    $$('[data-ades-reset]', esEl).forEach(function(btn) {
+      btn.addEventListener('click', async function() {
+        var r = await safePost('ad_backend/escalation/reset', { group_id: btn.dataset.adesG, user_id: btn.dataset.adesReset });
+        toast((r && r.message) || '已重置', isApiError(r) ? 'error' : 'success');
+        loadAdBackend();
+      });
+    });
+  } else { esEl.innerHTML = '<p class="empty">加载失败</p>'; }
+  // 配置状态
+  var c = await safeGet('ad_backend/config');
+  if (!isApiError(c) && c) {
+    cfgEl.innerHTML = Object.keys(c).map(function(k) {
+      return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">' +
+        '<span class="rules-subtle">' + esc(k) + '</span><b>' + esc(String(c[k])) + '</b></div>';
+    }).join('');
+  } else { cfgEl.innerHTML = '<p class="empty">加载失败</p>'; }
+}
+async function loadAuditLogs() {
+  var el = $('#auditLogList');
+  if (!el) return;
+  var res = await safeGet('audit_logs?limit=50');
+  if (isApiError(res)) { el.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
+  var list = res || [];
+  if (!list.length) { el.innerHTML = '<p class="empty">暂无审计记录</p>'; return; }
+  el.innerHTML = list.map(function(it) {
+    var before = it.before_value ? '修改前：' + esc(String(it.before_value)) : '';
+    var after = it.after_value ? '修改后：' + esc(String(it.after_value)) : '';
+    var ipTxt = it.operator_ip ? ' · IP ' + esc(String(it.operator_ip)) : '';
+    return '<div class="audit-item">' +
+      '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">' +
+      '<div style="min-width:0;flex:1">' +
+      '<div><b>' + esc(it.action || '') + '</b> ' +
+      (it.result === '成功' ? '<span class="badge" style="background:rgba(46,160,67,.15);color:#2ea043">成功</span>'
+        : '<span class="badge badge-danger">' + esc(it.result || '') + '</span>') +
+      ' <span class="rules-subtle">' + esc(it.operator_name || it.operator_qq || '未知操作者') + ipTxt + '</span></div>' +
+      '<div class="rules-subtle" style="margin-top:4px;word-break:break-all">群 ' + esc(it.group_id || '') +
+        (it.target_user ? ' · 目标 ' + esc(String(it.target_user)) : '') +
+        (it.params ? ' · 参数 ' + esc(String(it.params)) : '') + '</div>' +
+      ((before || after) ? '<div class="rules-subtle" style="margin-top:2px">' + before + (before && after ? ' → ' : '') + after + '</div>' : '') +
+      '<div class="rules-subtle" style="margin-top:2px">' + esc(it.time || fmtTime(it.ts)) + ' · ' + esc(it.message || '') + '</div>' +
+      '</div></div></div>';
+  }).join('');
 }
 
 function renderAdmins() {
@@ -1791,6 +2107,41 @@ function renderAdmins() {
   c.innerHTML = admins.map(function(uid) {
     return '<span class="admin-tag">' + esc(String(uid)) + '<button class="btn-remove" data-uid="' + escAttr(String(uid)) + '">&times;</button></span>';
   }).join('');
+  $$('.btn-remove', c).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var ok = await postOrToast('admin/remove', { user_id: btn.dataset.uid }, '已移除管理员', '移除管理员失败');
+      if (ok) loadAdmins();
+    });
+  });
+}
+
+function renderAdminLists(d) {
+  var c = $('#adminList');
+  if (!c) return;
+  var plugin = d.plugin_admins || [];
+  var astrbot = d.astrbot_admins || [];
+  var inherited = !!d.inherited;
+  var section = function(label) { return '<div style="margin:8px 0 4px;font-size:12px;color:#888">' + esc(label) + '</div>'; };
+  var html = '';
+  if (astrbot.length) {
+    if (inherited) {
+      html += section('AstrBot 全局管理员（继承生效，' + astrbot.length + '人，来源 AstrBot admin_id）') +
+        astrbot.map(function(uid) {
+          return '<span class="admin-tag" title="来自 AstrBot 全局配置，可在设置关闭 inherit_astrbot_admins">' + esc(String(uid)) + '</span>';
+        }).join('');
+    } else {
+      html += section('AstrBot 全局管理员（inherit_astrbot_admins 已关闭，不生效）') +
+        astrbot.map(function(uid) {
+          return '<span class="admin-tag" style="opacity:.5" title="inherit_astrbot_admins 已关闭，不参与插件权限">' + esc(String(uid)) + '</span>';
+        }).join('');
+    }
+  }
+  html += section('插件管理员（' + plugin.length + '人）');
+  if (!plugin.length) html += '<p class="empty">暂无插件管理员</p>';
+  else html += plugin.map(function(uid) {
+    return '<span class="admin-tag">' + esc(String(uid)) + '<button class="btn-remove" data-uid="' + escAttr(String(uid)) + '">&times;</button></span>';
+  }).join('');
+  c.innerHTML = html;
   $$('.btn-remove', c).forEach(function(btn) {
     btn.addEventListener('click', async function() {
       var ok = await postOrToast('admin/remove', { user_id: btn.dataset.uid }, '已移除管理员', '移除管理员失败');
@@ -1880,13 +2231,13 @@ function renderUsers(users) {
 async function loadLogs() {
   var c = $('#logContainer');
   c.innerHTML = '<p class="empty">加载中...</p>';
-  var res = await safeGet('logs');
+  var res = await safeGet('logs', { limit: 300 });
   if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
   var logs = res || [];
   if (!logs.length) { c.innerHTML = '<p class="empty">暂无日志</p>'; return; }
   var _msgStore = {};
   var _msgIdx = 0;
-  var rows = logs.slice(0, 100).map(function(l) {
+  var rows = logs.slice(0, 300).map(function(l) {
     var a = l.action || '';
     var cls = a.indexOf('撤回') !== -1 ? 'badge-danger' : a.indexOf('放行') !== -1 ? 'badge-success' : a.indexOf('提醒') !== -1 ? 'badge-warning' : 'badge-default';
     var msgFull = l.msg_text || l.msg_preview || '';
@@ -1899,7 +2250,13 @@ async function loadLogs() {
     var punished = ['撤回', '禁言', '踢出', '拒绝'].some(function(word) { return a.indexOf(word) !== -1; });
     var verdict = l.review_verdict || '';
     var reviewHtml = '<span style="color:var(--text-muted)">--</span>';
-    if (punished) {
+    // v2.36.2：待复核（疑似广告）每条显示「确认广告/放行」人工复核按钮
+    if (l.ad_review_id && l.ad_review_status === 'pending') {
+      reviewHtml = '<div style="display:flex;gap:4px;flex-wrap:wrap">' +
+        '<button class="btn btn-danger btn-sm" data-adr-confirm="' + escAttr(String(l.ad_review_id)) + '">确认广告</button>' +
+        '<button class="btn btn-ghost btn-sm" data-adr-clear="' + escAttr(String(l.ad_review_id)) + '">放行</button>' +
+        '</div>';
+    } else if (punished) {
       var verdictBadge = verdict === 'false_positive'
         ? '<span class="badge badge-warning">已标记误判</span>'
         : verdict === 'confirmed_violation'
@@ -1923,6 +2280,20 @@ async function loadLogs() {
       toast(verdict === 'false_positive' ? '已加入误判复盘样本' : (verdict === 'clear' ? '已清除标记' : '已确认本次处罚'), 'success');
       loadLogs();
       loadModerationReview();
+    });
+  });
+  // v2.36.2：待复核（疑似广告）日志的「确认广告/放行」人工复核
+  $$('[data-adr-confirm], [data-adr-clear]', c).forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+      var isConfirm = btn.hasAttribute('data-adr-confirm');
+      var reviewId = btn.getAttribute('data-adr-confirm') || btn.getAttribute('data-adr-clear');
+      var result = await safePost('ad_backend/ad_reviews/' + (isConfirm ? 'confirm' : 'clear'), {
+        review_id: reviewId
+      });
+      if (apiCallFailed(result)) { toast('操作失败: ' + apiErrMsg(result, ''), 'error'); return; }
+      toast(result.message || (isConfirm ? '已确认广告' : '已放行'), 'success');
+      loadLogs();
+      loadAdBackend();
     });
   });
   c.querySelectorAll('.lin-msg-action').forEach(function(action) {
@@ -2076,6 +2447,9 @@ var AUDIT_TOGGLES = [
 var OCR_TOGGLES = [
   { key: 'ocr_enabled', label: 'OCR识图审核', desc: '使用LLM视觉模型识别图片内容进行审核' },
   { key: 'scan_sticker_enabled', label: '表情包审核', desc: '识别商城表情/表情包图片内容' },
+  { key: 'video_audit_enabled', label: '视频广告检测', desc: '下载群内视频并抽帧，逐帧送视觉模型识别广告内容（成本较高，默认关闭）' },
+  { key: 'ad_hash_blacklist_enabled', label: '广告图黑名单', desc: '图片/视频帧识别前比对历史广告样本（pHash），命中跳过视觉API（省费用）' },
+  { key: 'ad_escalation_enabled', label: '广告分级处置', desc: '首次警告→二次禁言→三次踢出，降低误伤投诉' },
 ];
 var LEXICON_TOGGLES = [
   { key: 'lexicon_political_enabled', label: '政治敏感' },
@@ -2121,6 +2495,7 @@ var FEATURE_TOGGLES = [
   { key: 'auto_unban_enabled', label: '定时自动解禁' },
   { key: 'group_admin_grant_enabled', label: '群管理员动态授权' },
   { key: 'legacy_role_admin_enabled', label: '兼容群管授权' },
+  { key: 'inherit_astrbot_admins', label: '继承AstrBot全局管理员', desc: 'AstrBot 全局 admin_id 自动成为插件管理员；关闭后插件权限仅认插件管理员名单' },
 ];
 var RULES_STATE = { category: 'swear', q: '', enabled: '', page: 1, pageSize: 20 };
 var KEYWORDS_STATE = { category: '', q: '', page: 1, pageSize: 50 };
@@ -3545,7 +3920,10 @@ async function init() {
   bindClick('btnSaveSettings', saveSettings);
   bindClick('btnRefreshJoin', loadJoinRules);
   bindClick('btnSaveJoinRule', saveJoinRule);
-  bindClick('btnRefreshPerms', function() { loadSuperAdmins(); loadGrants(); loadBlocks(); });
+  bindClick('btnRefreshPerms', function() { loadSuperAdmins(); loadGrants(); loadBlocks(); loadApprovals(); loadAuditLogs(); });
+  bindClick('btnRefreshApprovals', loadApprovals);
+  bindClick('btnRefreshAudit', loadAuditLogs);
+  bindClick('btnRefreshAdBackend', loadAdBackend);
   bindClick('btnAddSuperAdmin', async function() {
     var gids = ($('#saGroup').value || '').split(/[\s,，]+/).filter(Boolean);
     var uids = ($('#saUser').value || '').split(/[\s,，]+/).filter(Boolean);
@@ -3774,6 +4152,8 @@ async function init() {
 
   loadOverview();
   loadAdmins();
+  loadApprovals();
+  loadAuditLogs();
 }
 
 (async function() {

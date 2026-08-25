@@ -31,9 +31,12 @@ def _load_moderation():
             "astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event"
         )
         event_module.AiocqhttpMessageEvent = object
+        api_event = types.ModuleType("astrbot.api.event")
+        api_event.AstrMessageEvent = object
         sys.modules.update({
             "astrbot": astrbot,
             "astrbot.api": api,
+            "astrbot.api.event": api_event,
             "astrbot.core": core,
             "astrbot.core.platform": platform,
             "astrbot.core.platform.sources": sources,
@@ -308,6 +311,20 @@ class _HandleHarness(_StreamHarness):
         self.rule_penalties = 0
         self.llm_calls = 0
         self.llm_inputs = []
+        # hash/video 审核路径所需的实例状态（与 hash_audit._init_hash_audit_resources 对齐）
+        self._hash_blacklist = {"hashes": []}
+        self._ad_escalation = {}
+        self._recent_media_hashes = {}
+        self._recent_video_fingerprints = {}
+        self._video_fp_cache = {}
+        self._video_download_semaphore = asyncio.Semaphore(4)
+        self._video_audit_closing = False
+        self._video_audit_tasks = set()
+        self._video_temp_dir = None
+
+    @staticmethod
+    async def _record_activity(*_args, **_kwargs):
+        pass
 
     @staticmethod
     def _get_group_id(_event):
@@ -341,6 +358,18 @@ class _HandleHarness(_StreamHarness):
         self.rule_penalties += 1
         if False:
             yield None
+
+    async def _detect_link_violation(self, text, group_id=""):
+        # 测试不启用外链邀请/风险链接（默认关闭），直接跳过链接违规分支
+        return None
+
+    @staticmethod
+    def _gif_frame_hit(group_id=""):
+        return False
+
+    @staticmethod
+    def _voice_hit(group_id=""):
+        return False
 
     async def _call_llm_for_moderation(self, _event, text, hit_types, **_kwargs):
         self.llm_calls += 1
@@ -1525,6 +1554,80 @@ class NestedForwardTests(unittest.TestCase):
             ))
             self.assertFalse(result["violation"])
             self.assertTrue(result["fallback"])
+
+
+class LlmFallbackModeTests(unittest.TestCase):
+    """v2.17.0 llm_fallback_mode=block_on_error 的 fail-close 策略。"""
+
+    def make(self, mode):
+        class _ModeHarness(_LLMHarness):
+            @staticmethod
+            def _cfg_str(name, default="", group_id=""):
+                if name == "llm_fallback_mode":
+                    return mode
+                return default
+
+        return _ModeHarness("test-response")
+
+    def test_default_is_pass_on_error(self):
+        self.assertFalse(_LLMHarness("test-response")._llm_fallback_blocks("100"))
+
+    def test_block_on_error_mode(self):
+        self.assertTrue(self.make("block_on_error")._llm_fallback_blocks("100"))
+
+    def test_block_mode_fails_closed_on_real_hit(self):
+        # block_on_error：广告等真实词库命中 + LLM 失败 → 由规则处罚路径 fail-closed
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        self.assertTrue(h._llm_failure_requires_rule_penalty(
+            fallback, {"ad": True}, "加微信：abc123456 领取优惠", "100"))
+
+    def test_block_mode_weak_ad_hit_is_released_not_fail_closed(self):
+        # v2.34.0：无强广告证据的 ad 泛词命中（微信支付宝/校园网/交资料等日常聊天），
+        # LLM 不可用时不再 fail-closed，避免反复误禁言/误踢正常用户
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        for weak in ("微信支付宝 熟悉环境，交资料",
+                     "是和校园网绑定的吗",
+                     "办了卡再办网优惠不？",
+                     "这机器人挺忙的",
+                     "已经是黑名单了不能挑衅它"):
+            self.assertFalse(h._llm_failure_requires_rule_penalty(
+                fallback, {"ad": True}, weak, "100"), weak)
+
+    def test_block_mode_strong_ad_hit_still_fails_closed(self):
+        # 广告强证据（联系方式/链接/群号/引导词）在 LLM 不可用时仍 fail-closed
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        for strong in ("QQ群号：770369874",
+                       "加V: 123456",
+                       "加微信abc123456",
+                       "扫码进群 领优惠 https://spam.com",
+                       "私聊我，电话13800138000"):
+            self.assertTrue(h._llm_failure_requires_rule_penalty(
+                fallback, {"ad": True}, strong, "100"), strong)
+
+    def test_block_mode_ad_plus_swear_still_fails_closed(self):
+        # ad 无强证据但同时命中高置信 swear → 仍 fail-closed
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        self.assertTrue(h._llm_failure_requires_rule_penalty(
+            fallback, {"ad": True, "swear": True}, "滚 微信支付宝", "100"))
+
+    def test_block_mode_semantic_only_not_rule_penalty(self):
+        # 仅语义候选（full_scan）无真实命中 → 规则处罚判定为 False；
+        # 拦截由 _handle_message 的 _handle_llm_fallback_block 分支完成
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        h = self.make("block_on_error")
+        self.assertFalse(h._llm_failure_requires_rule_penalty(
+            fallback, {"full_scan": True}, "普通消息", "100"))
+
+    def test_pass_mode_real_hit_not_fail_closed_without_swear(self):
+        # pass_on_error 默认行为：广告命中 + LLM 失败 → 不 fail-closed（除非单独开
+        # moderation_llm_fail_closed），保持兼容
+        fallback = {"violation": False, "reason": "failed", "fallback": True}
+        self.assertFalse(_LLMHarness("test-response")._llm_failure_requires_rule_penalty(
+            fallback, {"ad": True}, "广告", "100"))
 
 
 if __name__ == "__main__":

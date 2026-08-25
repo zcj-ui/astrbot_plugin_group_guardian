@@ -13,6 +13,8 @@
 """
 import asyncio
 
+from astrbot.api import logger
+
 # 远程操作注册表：action -> (功能开关配置key, 中文名, 是否需要 user_id)
 # 功能开关沿用插件已有的 *_enabled 配置，保证 WebUI 与聊天指令权限一致。
 _REMOTE_ACTIONS = {
@@ -104,7 +106,127 @@ class RemoteMixin:
             return await self._call_group_api(client, "delete_essence_msg", "取消精华", message_id=mid)
         return False, f"未知操作: {action}"
 
-    async def _remote_execute(self, group_id: str, action: str, params: dict) -> dict:
+    def _parse_operator_bindings(self) -> dict:
+        """解析 web_operator_bindings（用户名:QQ号,用户名2:QQ2）为 {用户名: QQ} 映射。"""
+        mapping = {}
+        try:
+            raw = self._cfg_str("web_operator_bindings", "")
+            for pair in str(raw or "").replace("；", ";").replace("，", ",").split(";"):
+                for sub in pair.split(","):
+                    sub = sub.strip()
+                    if ":" not in sub:
+                        continue
+                    name, qq = sub.split(":", 1)
+                    name, qq = name.strip(), qq.strip()
+                    if name and qq and name not in mapping:
+                        mapping[name] = qq
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 解析操作者绑定失败: {e}")
+        return mapping
+
+    def _resolve_operator_from_bindings(self, operator_name: str = "", operator_qq: str = ""):
+        """从 web_operator_bindings（用户名:QQ号）解析操作者身份。
+
+        返回 (operator_name, operator_qq)。v2.21.0 安全加固：
+        **忽略请求体直接携带的 operator_qq**——操作者身份只能来自服务端绑定
+        （AstrBot Dashboard 已认证登录用户名 → QQ，`/api/plug/` 路由由 AstrBot JWT
+        保护），调用方不能自报 QQ 绕过身份绑定；未绑定用户名返回 (名, "")，
+        由 _check_remote_operator 授权校验拒绝。
+        """
+        try:
+            name = str(operator_name or "").strip()
+            if not name:
+                return "", ""
+            mapping = self._parse_operator_bindings()
+            return name, mapping.get(name, "")
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 解析操作者绑定失败: {e}")
+        return str(operator_name or "").strip(), ""
+
+    def _resolve_web_operator(self):
+        """从服务端配置解析 WebUI 操作者身份（v2.21.0 重做：不再信任客户端自报用户名）。
+
+        AstrBot Dashboard 的 /api/plug/ 仅保证“已登录会话”可访问，插件层无法区分具体登录用户，
+        因此操作者身份统一取服务端配置 web_operator_bindings（“用户名:QQ”）；
+        可选 web_operator_name / web_operator_qq 显式覆盖。未配置时返回 ("", "")，
+        由授权校验拒绝并提示管理员配置。
+
+        返回 (operator_name, operator_qq)。
+        """
+        try:
+            name = str(self._cfg_str("web_operator_name", "")).strip()
+            qq = str(self._cfg_str("web_operator_qq", "")).strip()
+            if name and qq:
+                return name, qq
+            mapping = self._parse_operator_bindings()
+            if not mapping:
+                return "", ""
+            name, qq = next(iter(mapping.items()))
+            return name, qq
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 解析操作者身份失败: {e}")
+        return "", ""
+
+    def _record_web_audit(self, operator_name: str, operator_qq: str, group_id: str,
+                          action: str, target_user: str, params: str,
+                          result: str, message: str,
+                          operator_ip: str = "", before_value: str = "",
+                          after_value: str = "") -> None:
+        """记录 WebUI 远程操作审计日志（失败静默）。v2.19.0 增加操作人IP与修改前后值。"""
+        try:
+            self._storage.record_web_audit(
+                operator_name=operator_name, operator_qq=operator_qq,
+                group_id=group_id, action=action, target_user=target_user,
+                params=params, result=result, message=message,
+                operator_ip=operator_ip, before_value=before_value,
+                after_value=after_value,
+            )
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 审计记录失败: {e}")
+
+    async def _check_remote_operator(self, group_id: str, operator_qq: str):
+        """远程写操作授权校验：操作者（QQ 身份）是否可操作目标群。
+
+        权限模型（自上而下，v2.15.0 明确）：
+          1. plugin_admin：插件全局管理员 / AstrBot 全局 admin_id / web_operator_bindings 绑定用户
+             → 可操作【所有群】（产品设计的全局管理模型）；
+          2. group_super_admin：目标群的群超管（WebUI 为该群单独设置）→ 可操作该群；
+          3. owner/admin：目标群的群主 / 群管理员（按 QQ 号查群角色）→ 可操作该群；
+          4. 其余拒绝。
+
+        返回 (ok, role, msg)。
+        """
+        if not operator_qq:
+            return False, "", ("缺少操作者身份：请在 WebUI 配置 web_operator_bindings "
+                               "（用户名:QQ）绑定操作者，由服务端解析操作者身份后再执行")
+        qq = str(operator_qq).strip()
+        # ① 插件全局管理员 / AstrBot 全局 admin：可操作所有群
+        try:
+            if qq in self._get_all_admin_ids():
+                return True, "plugin_admin", ""
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 远程操作者管理员判定失败: {e}")
+        # ② 群超管（目标群专属）
+        try:
+            if self._storage.is_group_super_admin(group_id, qq):
+                return True, "group_super_admin", ""
+        except Exception:
+            pass
+        # ③ 群主 / 群管理员（按 QQ 号查目标群角色）
+        try:
+            client = await self._get_client(None)
+            if client:
+                role = await self._get_role_by_id(client, group_id, qq)
+                if role in ("owner", "admin"):
+                    return True, role, ""
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 远程操作者角色查询失败: {e}")
+        return False, "member", ("权限不足：操作者非全局插件管理员，也不是该群的群超管/群主/群管理员，"
+                                 "无法远程操作该群")
+
+    async def _remote_execute(self, group_id: str, action: str, params: dict,
+                              operator_qq: str = "", operator_name: str = "",
+                              operator_ip: str = "") -> dict:
         """WebUI 远程执行统一入口。
 
         params 约定：
@@ -131,6 +253,15 @@ class RemoteMixin:
         ok, msg = self._cfg_check(cfg_key, cn_name, group_id=gid_str)
         if not ok:
             return {"ok": False, "message": msg}
+        # v2.15.0 远程写操作授权校验：开启 web_remote_require_operator 或提供了操作者身份时，
+        # 必须校验操作者对目标群的授权（plugin_admin 全局 / 群超管 / 群主 / 群管理员）。
+        if self._cfg("web_remote_require_operator", False) or operator_qq:
+            op_ok, op_role, op_err = await self._check_remote_operator(gid_str, operator_qq)
+            if not op_ok:
+                self._record_web_audit(operator_name, operator_qq, gid_str, action,
+                                       "", str(params)[:200], "拒绝", op_err,
+                                       operator_ip=operator_ip)
+                return {"ok": False, "message": op_err}
         client = await self._get_client(None)
         if not client:
             return {"ok": False, "message": "无法获取 QQ 客户端，请确保已连接"}
@@ -151,6 +282,18 @@ class RemoteMixin:
         else:
             targets = [""]  # 无目标操作占位执行一次
 
+        # v2.19.0 审计：记录修改前后值（对设/取消管理员尽量取目标当前角色作为 before）
+        before_value = ""
+        after_value = ""
+        try:
+            if action in ("set_admin", "unset_admin") and targets:
+                probe = await self._get_client(None)
+                if probe:
+                    before_value = str(await self._get_role_by_id(probe, gid, targets[0]) or "")
+            after_value = f"{cn_name} 目标={','.join(t for t in targets[:5] if t) or '(无目标)'} 参数={str(params)[:120]}"
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 构造审计前后值失败: {e}")
+
         results = []
         success = 0
         for uid in targets:
@@ -164,11 +307,17 @@ class RemoteMixin:
             if len(targets) > 1:
                 await asyncio.sleep(0.3)  # 批量防限频
 
-        # 记录一条操作日志便于审计
+        # 审计日志（v2.15.0）：记录操作者身份、目标群、操作与结果
+        self._record_web_audit(operator_name, operator_qq, gid_str, action,
+                               ",".join(targets[:50]), str(params)[:200],
+                               "成功" if success > 0 else "失败", f"{cn_name} 成功 {success}/{len(targets)}",
+                               operator_ip=operator_ip, before_value=before_value,
+                               after_value=after_value)
+        # 兼容旧 moderation_logs 记录（附带操作者身份便于追溯）
         try:
             self._log_moderation(str(gid), targets[0] if targets else "", "",
-                                 f"[远程操作] {cn_name} x{len(targets)}", f"远程{cn_name}",
-                                 f"成功{success}/{len(targets)}", [])
+                                 f"[远程操作] {cn_name} x{len(targets)} (操作者:{operator_name or operator_qq or '未知'})",
+                                 f"远程{cn_name}", f"成功{success}/{len(targets)}", [])
         except Exception:
             pass
 

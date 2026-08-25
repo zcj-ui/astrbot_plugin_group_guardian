@@ -5,27 +5,31 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
       - run: pip install pyahocorasick
 
-      - name: 语法检查 (py_compile)
+      - name: 全量语法检查 (compileall)
         run: |
-          for f in *.py; do
-            python -m py_compile "$f" || { echo "编译失败: $f"; exit 1; }
-          done
+          python -m compileall -q . -x '(^|/)\.git(/,|$)|(^|/)\.sakura(/,|$)' || exit 1
+          echo "compileall OK"
 
       - name: JSON 格式校验
-        run: python -c "import json; json.load(open('_conf_schema.json','r',encoding='utf-8')); print('OK')"
+        run: python -c "import json; json.load(open('_conf_schema.json','r',encoding='utf-8')); print('schema OK')"
 
       - name: 单元测试
         run: python -m unittest discover -s tests -p "test_*.py" -v
