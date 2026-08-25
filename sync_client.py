@@ -364,18 +364,68 @@ class SyncClientMixin:
             except (TypeError, ValueError):
                 payload = {}
             if act == "violation_confirm":
-                await self._sync_apply_violation(payload, confirm=True)
-                return "ok"
+                ok = await self._sync_apply_violation(payload, confirm=True)
+                return "ok" if ok else "error: 确认动作执行失败（本地无待复核记录且禁言失败）"
             if act == "violation_clear":
-                await self._sync_apply_violation(payload, confirm=False)
-                return "ok"
+                ok = await self._sync_apply_violation(payload, confirm=False)
+                return "ok" if ok else "error: 放行动作执行失败（本地无待复核记录）"
             if act == "unban":
                 await self._sync_execute_unban(payload)
                 return "ok"
+            if act == "suggestion_apply":
+                ok = await self._sync_apply_suggestion(payload)
+                return "ok" if ok else "error: 修正建议应用失败（本地无对应建议或配置保存失败）"
+            if act == "suggestion_reject":
+                ok = await self._sync_reject_suggestion(payload)
+                return "ok" if ok else "error: 修正建议拒绝失败（本地无对应建议）"
             return "skipped"
         except Exception as exc:
             logger.debug(f"[GroupMgr] 执行服务器动作失败: {exc}")
             return "error"
+
+    async def _sync_apply_suggestion(self, payload: dict) -> bool:
+        """服务端「应用」修正建议：调用本地应用逻辑，把 suggested_guidance 并入规则。
+
+        v2.36.12：服务端「修正建议」页新增「应用」按钮，生成 suggestion_apply
+        动作由插件执行；本地建议状态 pending → applied（幂等兼容已应用）。
+        """
+        try:
+            sid = int(payload.get("suggestion_id", 0) or 0)
+            if not sid:
+                return False
+            fn = getattr(self, "_apply_moderation_prompt_suggestion", None)
+            if not callable(fn):
+                logger.debug("[GroupMgr] 本地无应用建议方法，跳过")
+                return False
+            res = fn(sid, actor="sync_server")
+            ok = bool(res and res.get("ok"))
+            if not ok:
+                logger.debug(f"[GroupMgr] 服务端应用修正建议 #{sid} 失败: {res}")
+            else:
+                logger.info(f"[GroupMgr] 服务端应用修正建议 #{sid} 成功")
+            return ok
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 应用修正建议异常: {exc}")
+            return False
+
+    async def _sync_reject_suggestion(self, payload: dict) -> bool:
+        """服务端「拒绝」修正建议：本地 pending → rejected，与服务端状态一致。"""
+        try:
+            sid = int(payload.get("suggestion_id", 0) or 0)
+            if not sid:
+                return False
+            fn = getattr(self, "_reject_moderation_prompt_suggestion", None)
+            if not callable(fn):
+                logger.debug("[GroupMgr] 本地无拒绝建议方法，跳过")
+                return False
+            res = fn(sid, actor="sync_server", note="管理员在服务端拒绝")
+            ok = bool(res and res.get("ok"))
+            if not ok:
+                logger.debug(f"[GroupMgr] 服务端拒绝修正建议 #{sid} 失败: {res}")
+            return ok
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 拒绝修正建议异常: {exc}")
+            return False
 
     async def _sync_execute_unban(self, payload: dict) -> None:
         """执行解禁动作：管理员在服务端标记误封/通过申诉后，解除该用户禁言。"""
@@ -409,36 +459,92 @@ class SyncClientMixin:
         except Exception as exc:
             logger.debug(f"[GroupMgr] 执行解禁失败: {exc}")
 
-    async def _sync_apply_violation(self, payload: dict, confirm: bool) -> None:
-        """按 payload 中的 group/user/msg 匹配本地待复核记录并确认/放行。"""
+    async def _sync_apply_violation(self, payload: dict, confirm: bool) -> bool:
+        """按 payload 中的 group/user/msg 匹配本地待复核记录并确认/放行。
+
+        返回是否成功执行（确认违规=已撤回+禁言+学习，放行=学习为正常）。
+
+        修复「确认违规后指令没下发到机器人封禁」：
+        - 旧版只在本地 pending 待复核记录里做严格匹配，匹配不到就静默 return，
+          且上层无脑回执 "ok"，导致服务端动作被吞掉、机器人从未收到封禁指令；
+        - 现改为：优先匹配本地待复核记录；匹配不到（例如服务端确认的是
+          处罚类审核日志、已被清理的记录、或异地节点已处理）时，仍按
+          payload 的 群+用户 直接执行服务端确认的处罚，保证动作真实下发。
+        """
         try:
             group_id = str(payload.get("group_id", "") or "")
             user_id = str(payload.get("user_id", "") or "")
             msg_text = str(payload.get("msg_text", "") or "")
-            pending = self._storage.list_pending_ad_reviews(500)
+            if not group_id or not user_id:
+                logger.debug("[GroupMgr] 服务端动作缺少 群/用户，跳过")
+                return False
             target = None
-            for item in pending or []:
-                if (str(item.get("group_id", "") or "") == group_id
-                        and str(item.get("user_id", "") or "") == user_id
-                        and str(item.get("msg_text", "") or "").startswith(msg_text[:40])):
-                    target = item
-                    break
-            if not target:
-                return
-            rid = int(target.get("id", 0) or 0)
-            status = "confirmed" if confirm else "released"
-            ok = self._storage.resolve_ad_review(rid, status, "sync_server")
-            if ok and confirm:
+            try:
+                pending = self._storage.list_pending_ad_reviews(500)
+                for item in pending or []:
+                    if (str(item.get("group_id", "") or "") == group_id
+                            and str(item.get("user_id", "") or "") == user_id
+                            and (not msg_text
+                                 or str(item.get("msg_text", "") or "").startswith(msg_text[:40]))):
+                        target = item
+                        break
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 查询本地待复核记录失败: {exc}")
+            if target:
+                rid = int(target.get("id", 0) or 0)
                 try:
-                    await self._recall_ad_review_message(target)
-                    await self._ban_ad_review_user(group_id, user_id)
-                    self._ad_review_learn_text(str(target.get("msg_text", "") or ""), "ad", group_id)
+                    self._storage.resolve_ad_review(
+                        rid, "confirmed" if confirm else "released", "sync_server")
                 except Exception as exc:
-                    logger.debug(f"[GroupMgr] 服务器确认执行处罚失败: {exc}")
-            elif ok and not confirm:
-                self._ad_review_learn_text(str(target.get("msg_text", "") or ""), "ok", group_id)
+                    logger.debug(f"[GroupMgr] 更新待复核状态失败: {exc}")
+                if confirm:
+                    try:
+                        await self._recall_ad_review_message(target)
+                    except Exception as exc:
+                        logger.debug(f"[GroupMgr] 服务器确认撤回原消息失败: {exc}")
+                    try:
+                        banned = await self._ban_ad_review_user(group_id, user_id)
+                    except Exception as exc:
+                        logger.debug(f"[GroupMgr] 服务器确认禁言失败: {exc}")
+                        banned = False
+                    try:
+                        self._ad_review_learn_text(
+                            str(target.get("msg_text", "") or ""), "ad", group_id)
+                    except Exception:
+                        pass
+                    return banned
+                else:
+                    try:
+                        self._ad_review_learn_text(
+                            str(target.get("msg_text", "") or ""), "ok", group_id)
+                    except Exception:
+                        pass
+                return True
+            # 本地没有待复核记录：服务端已确认违规 → 直接按 群+用户 执行禁言，
+            # 保证管理员的操作真实下发到机器人（不因本地无匹配记录而静默吞掉）。
+            if confirm:
+                try:
+                    banned = await self._ban_ad_review_user(group_id, user_id)
+                except Exception as exc:
+                    logger.debug(f"[GroupMgr] 服务端确认（无待复核记录）禁言失败: {exc}")
+                    banned = False
+                if not banned:
+                    return False
+                try:
+                    self._log_moderation(
+                        group_id, user_id,
+                        str(payload.get("user_name", "") or ""),
+                        msg_text, "服务器确认违规",
+                        "管理员在服务端确认违规，插件按 群+用户 直接执行禁言"
+                        "（本地无待复核记录，可能已被清理或为处罚类日志）", [],
+                    )
+                except Exception:
+                    pass
+                return True
+            return False  # 放行且本地无记录：无可学习内容，视为无需处理
         except Exception as exc:
             logger.debug(f"[GroupMgr] 服务器动作应用失败: {exc}")
+            return False
 
     async def _sync_run(self) -> None:
         """一次完整同步：登录 → push → pull → actions。"""
