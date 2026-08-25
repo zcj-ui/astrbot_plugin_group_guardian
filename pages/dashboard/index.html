@@ -2325,15 +2325,24 @@ async function loadModerationReview() {
   var auditBox = $('#reviewAudit');
   if (!summary || !box || !auditBox) return;
   summary.textContent = '加载中...';
-  var results = await Promise.all([
-    loadConfigCached(true),
-    safeGet('moderation_review/feedback', { verdict: 'false_positive', limit: 200 }),
-    safeGet('moderation_review/suggestions', { limit: 50 }),
-    safeGet('moderation_review/audit', {})
-  ]);
-  var feedback = isApiError(results[1]) ? [] : (results[1] || []);
-  var suggestions = isApiError(results[2]) ? [] : (results[2] || []);
-  var audits = isApiError(results[3]) ? [] : (results[3] || []);
+  // 修复：任一接口失败/返回非数组时独立降级，不中断整个复盘卡片（否则
+  // 「立即复盘」等按钮所在区域会随 JS 异常失效，表现为功能“没了”）。
+  var feedback = [];
+  var suggestions = [];
+  var audits = [];
+  try {
+    var results = await Promise.all([
+      loadConfigCached(true).catch(function() { return {}; }),
+      safeGet('moderation_review/feedback', { verdict: 'false_positive', limit: 200 }),
+      safeGet('moderation_review/suggestions', { limit: 50 }),
+      safeGet('moderation_review/audit', {})
+    ]);
+    feedback = (isApiError(results[1]) || !Array.isArray(results[1])) ? [] : results[1];
+    suggestions = (isApiError(results[2]) || !Array.isArray(results[2])) ? [] : results[2];
+    audits = (isApiError(results[3]) || !Array.isArray(results[3])) ? [] : results[3];
+  } catch (e) {
+    console.error('[loadModerationReview]', e);
+  }
   var pendingCount = feedback.filter(function(item) { return item.review_status === 'pending'; }).length;
   var guidance = CONFIG.llm_moderation_review_guidance || '';
   summary.innerHTML = '<strong>待复盘误判：</strong>' + pendingCount + ' 条　<strong>历史候选：</strong>' + suggestions.length + ' 条' +
