@@ -614,6 +614,26 @@ class CardMonitorTests(unittest.TestCase):
         self.assertEqual(harness._card_snapshots["100"]["200"], "safe")
         self.assertEqual(harness.logged[0][-1], "违规还原失败")
 
+    def test_failed_restore_notifies_admin(self):
+        class _H(_RestoreFailureHarness):
+            def __init__(self):
+                super().__init__()
+                self.notices = []
+
+            async def _notify_card_group(self, group_id, text):
+                self.notices.append((group_id, text))
+
+        harness = _H()
+        asyncio.run(
+            harness._process_card_values(
+                "100", "200", "safe", "https://bad.example", source="event"
+            )
+        )
+        self.assertTrue(harness.notices)
+        self.assertEqual("100", harness.notices[0][0])
+        self.assertIn("失败", harness.notices[0][1])
+        self.assertIn("请检查", harness.notices[0][1])
+
     def test_empty_join_card_still_enforces_protected_value(self):
         harness = _ProtectedJoinHarness()
 

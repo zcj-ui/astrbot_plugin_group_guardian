@@ -1,5 +1,1004 @@
 # Changelog
 
+## v2.36.12 - 2026-08-25
+
+### 新增：服务端后台可一键「应用 / 拒绝」修正建议
+
+- 服务端（v1.4.4）「修正建议」页新增「应用」「拒绝」按钮（管理员可见）：点击后生成
+  `suggestion_apply` / `suggestion_reject` 待执行动作，同时乐观更新建议状态；
+- 插件端（`sync_client.py`）`_sync_execute_action` 新增两类动作处理：`suggestion_apply`
+  调用 `_apply_moderation_prompt_suggestion` 把建议修正并入 LLM 审核修正规则（本地
+  pending → applied），`suggestion_reject` 调用 `_reject_moderation_prompt_suggestion`
+  （pending → rejected）；执行结果真实回执（失败不再静默）；
+- 管理员在服务端即可完成建议应用/拒绝，无需再进插件 WebUI；插件下次同步（默认
+  10 分钟内）自动拉取执行并回传最终状态。
+
+## v2.36.11 - 2026-08-25
+
+### 修复：确认违规封禁下发 / 广告入队 / 立即复盘稳定性
+
+用户反馈三处异常，逐一修复并回归：
+
+1. **确认违规后指令没下发到机器人封禁**（`sync_client.py`）
+   - 根因：`_sync_apply_violation` 只在本地「待复核」记录里做严格匹配（群+用户+消息
+     前缀全部对上），匹配不到就静默返回，且上层无脑回执 `ok`——服务端动作被吞掉，
+     机器人从未收到封禁指令；
+   - 修复：① 匹配放宽（内容前缀为空/对不上时仍可按 群+用户 命中）；② **本地无待复核
+     记录时（如服务端确认的是处罚类日志、已被清理的记录）仍按 payload 的 群+用户
+     直接执行禁言**并记录审核日志，动作真实下发；③ 禁言结果纳入回执——失败时
+     回执 `error:...`，服务端动作不再假标记成功，管理员可在「待执行动作」看到失败。
+
+2. **后台审核日志漏掉广告日志**（`storage.py`）
+   - 根因：v2.36.10 给 `ad_reviews` 表新增 `restore_value / media_hashes /
+     video_fingerprints` 证据列，`create_ad_review` 的 INSERT 固定写入新列；旧库
+     升级后若建表补列未执行（热更新/初始化中断等），每次疑似广告入队都抛
+     `has no column` → 待确认列表漏广告、审核日志无法一键处理；
+   - 修复：`create_ad_review` 捕获 `no such column / has no column` 后自动补列并
+     重试，任何旧库都能正常入队（已用旧库结构实测通过）。
+
+3. **「立即复盘」卡片异常失效**（`pages/dashboard/index.html`）
+   - 根因：`loadModerationReview` 里 `feedback/suggestions/audit` 任一接口失败或
+     返回非数组时，`feedback.filter` 抛异常中断整个卡片渲染，表现为「立即复盘没了」；
+   - 修复：各请求独立降级（失败返回空数组）+ 整体 try/catch，复盘卡片始终可渲染，
+     立即复盘按钮始终可点；点击失败会明确提示原因（样本不足 / LLM 未配置等）。
+
+
+### 新增：完整审核日志云同步
+
+用户需求：违规记录的审核日志也同步至服务器。
+
+- `sync_client.py`：云同步 push 新增 **`audit_logs` scope**——上传**完整审核日志**
+  （含撤回 / 放行 / 待复核等全部动作，不限于已确认违规，最多最近 1000 条），
+  配合服务端 **v1.2.7** 后台新增「审核日志」只读页查看；
+- 原有 `feedback / suggestions / violations` 同步保持不变。
+
+## v2.36.9 - 2026-08-21
+
+### 功能：误封申诉解禁通道（插件配合服务端，管理员审核后自动解除禁言）
+
+用户需求：服务端 OTA 更新 + 插件后台 + 服务端标记误封自动解禁 + 误封解禁通道（申请→
+管理员审核→解禁）+ 单独 Web 界面。
+
+- **插件侧**（`sync_client.py`）：新增 `unban` 动作处理——服务端管理员通过申诉或直接
+  「标记误封」后，插件拉取 `unban` 动作即执行 `set_group_ban(duration=0)` 解除该用户禁言，
+  并记录审核日志（配合服务端 v1.1.0+ 的「误封申诉/解禁」功能）；
+- 服务端新增功能见 `gg_server` 的 README/docs：申诉提交/审核、标记误封自动生成解禁动作、
+  OTA 更新（`update_source.json` 配置版本源）、独立「误封申诉/系统更新」Web 页。
+
+## v2.36.8 - 2026-08-20
+
+### 功能：独立后台服务端 + 插件双向云同步（误判复盘/已确认违规/审核信息云端保存与恢复）
+
+用户需求：后台 Web 界面与插件分离；AI 误判复盘上传服务器保存，避免换服务器数据丢失；
+插件每次接入自动同步（本地缺的拉取、服务器缺的上传）；已确认违规也上传，新机器快速恢复；
+审核信息服务端可见（普通成员只读、管理员可操作）；服务端可在宝塔部署。
+
+**服务端**（独立项目 `gg_server/`，Flask + SQLite，可宝塔部署）：
+- 多用户 + 角色权限：**owner**（全部 + 用户管理）/ **admin**（查看 + 确认违规/放行）/
+  **member**（只读查看）；
+- 数据看板：误判复盘、修正规则建议、已确认违规/审核信息、待执行动作；
+- API：注册（首用户 owner）/登录/用户管理/同步 push|pull/数据查看/违规操作/动作回执；
+- 数据存 `data/server.db`，整目录备份即可迁移；README 含宝塔部署与反向代理说明。
+
+**插件侧**（`sync_client.py`，SyncClientMixin，Main 组合）：
+- 新配置：`sync_server_url` / `sync_username` / `sync_password` / `sync_auto` / `sync_interval`；
+- `_sync_run`：登录 → **push**（本地误判复盘/建议/已确认违规与审核信息上传，服务器缺的自动增加）
+  → **pull**（服务器数据写回本地，新机器快速恢复原状）→ **actions**（执行服务端管理员
+  「确认/放行」动作：撤回+禁言+学习，并回执）；
+- 启动即同步一次，之后按 `sync_interval` 分钟周期；失败静默降级不影响审核。
+
+测试：服务端本机完整流程 15 项断言通过（注册→权限→push→pull→只读→admin 操作→动作→统计）。
+
+## v2.36.7 - 2026-08-19
+
+### 修复：重启后出现「两个版本同时存在」（如 2.36.1 与 2.36.4）
+
+原因：AstrBot 的 plugins 目录里残留了**两个本插件目录**（例如「上传安装」产生的
+`astrbot_plugin_group_guardian` 与「手动解压 GitHub zip」产生的另一个目录并存），
+AstrBot 启动扫描会加载 plugins 下所有含 `main.py` 的目录，于是两个版本同时运行。
+
+改进（`main.py`）：插件启动时新增 **重复目录自检** `_check_duplicate_plugin_dirs()`——
+扫描 plugins 根目录下所有含 `metadata.yaml`（`name: astrbot_plugin_group_guardian`）的
+目录；发现多于一个时用 `logger.error` 醒目告警并**列出全部目录路径**，方便管理员只保留
+最新版本目录、删除其它目录后重启。
+
+> 手动清理：删除 AstrBot `data/plugins/` 下多余的 group_guardian 目录（保留一个，目录名
+> 通常是 `astrbot_plugin_group_guardian`），再重启 AstrBot。重启后查看日志若没有重复告警
+> 即正常。
+
+## v2.36.6 - 2026-08-19
+
+### 增强：视频广告识别 CPU 防护（更省 CPU / 更快），解决视频检测导致的 CPU 100% 停机
+
+用户反馈：开启视频广告检测后插件容易 CPU 占用 100% 导致停机。主因是视频审核的
+**并发失控**：多视频同时审核（`_audit_all_videos` 硬编码并发 2）+ 每个视频帧识别并发 4
+（`IMAGE_WORKER_CONCURRENCY`），且 `ocr_engine` 默认 local（RapidOCR），本地 OCR/抽帧
+多路并发时 CPU 打满。
+
+改进（`video_audit.py`）：
+
+- **新增配置 `video_audit_concurrency`**（int，默认 1，范围 1-4）：同时审核的视频数，
+  帧识别路数也受其约束（多视频 + 多帧不再无上限并发）；低配服务器保持默认 1；
+- **帧识别改逐帧串行 + 高置信短路**（`_recognize_video_frames`）：每视频帧数少（默认 3、
+  硬上限 10），串行可接受；任一一帧识别出「广告：」（`video_ad_visual` 广告判定）或
+  短视频二维码引流快命中（`_video_short_qr_hit`）时**跳过剩余帧**——更快更省，
+  也进一步降低本地 RapidOCR/视觉调用的 CPU 峰值。
+
+> 其它 CPU 热点说明：本地 RapidOCR（`ocr_engine=local`）是 CPU 密集识别，开启
+> `ocr_enabled`（图片）/ `video_audit_enabled`（视频）时会显著增加 CPU；
+> 可在设置中改 `ocr_engine=llm`（云端视觉）或调低 `llm_max_concurrency` 进一步降负载。
+
+测试：`tests/test_video_audit.py` 新增 4 项——并发默认 1 / 配置生效 / 帧识别广告短路 /
+非广告帧全识别。
+
+## v2.36.5 - 2026-08-19
+
+### 修复：WebUI「确认广告」报 `'Main' object has no attribute '_recall_ad_review_message'`
+
+原因：`_recall_ad_review_message` / `_ban_ad_review_user` 原定义于 `CommandsMixin`，但
+**`Main` 类不继承 `CommandsMixin`**（命令处理器是显式 `CommandsMixin.xxx(self, event)`
+委托调用），WebUI 确认广告（`WebMixin._web_ad_review_confirm`）执行 `self._recall_...`
+时在 `Main` 实例上找不到该方法。
+
+修复：把两个方法迁移到 `WebMixin`（`web.py`），`Main` 继承链包含 `WebMixin`，确认/放行
+按钮正常执行「撤回 + 禁言 + 学习」。本地已按 `Main` 的 mixin 组合模拟验证确认流程返回成功。
+
+## v2.36.4 - 2026-08-19
+
+### 修复：审核日志「待复核」记录的「人工复核」按钮对旧日志也生效
+
+v2.36.3 的按钮依赖日志 reason 中的「编号 #N」（由 `_submit_ad_review` 新写入），
+**升级前产生的旧「待复核（疑似广告）」日志没有编号**，因此不显示按钮。
+
+修复（`web.py` `_web_get_logs`）：编号解析失败时，回退按「群号 + 用户 + 消息内容」
+匹配仍处于 pending 的 `ad_reviews` 记录，同样返回 `ad_review_id` / `ad_review_status`，
+前端即显示「确认广告/放行」按钮；已被处理的记录不显示按钮（状态非 pending）。
+
+> 提示：若更新后仍看不到按钮，请在 WebUI 按 **Ctrl+F5 强制刷新**（Dashboard 的
+> `index.html` 会被浏览器缓存）。
+
+## v2.36.3 - 2026-08-19
+
+### 功能：审核日志每条加入「人工复核」按钮，列表长度增加（用户需求）
+
+- **WebUI 广告后台**（`pages/dashboard/index.html` + `web.py`）：新增「待确认疑似广告
+  （后台审核日志）」卡片——文本/图片/视频/群名片统一列出（默认 200 条，上限 500），
+  每条显示 编号/来源/群/用户/内容/时间 + **「确认广告」「放行」人工复核按钮**；
+- **审核日志 tab**：待复核（疑似广告）的日志每条显示「确认广告/放行」按钮（编号由
+  `_submit_ad_review` 写进日志 reason，`_web_get_logs` 解析并关联 `ad_reviews` 状态后返回）；
+  已处罚记录保留「标记误判/确认违规」；列表长度 50 → 默认 100、上限 500（前端请求 300）；
+- **API**：`/ad_backend/ad_reviews` 默认 200 条（上限 500），`/logs` 默认 100 条（上限 500）。
+
+测试：`tests/test_ad_review.py` 新增「日志 reason 含复核编号」断言（供前端提取按钮编号）。
+
+## v2.36.2 - 2026-08-19
+
+### 功能：疑似视频广告并入统一后台审核日志（群名片/视频/图片全部可在后台查看审核）
+
+v2.36.1 起消息文本/图片（source=text/image）与群名片（source=card）已统一进 `ad_reviews`
+后台审核日志；本版把**视频广告**也并入统一队列：
+
+- **视频路由**（`moderation.py`）：新增 `_route_video_ad_review`——`ad_review_enabled` 开启时，
+  疑似视频广告进 `ad_reviews`（source=video），与文本/图片/群名片同一后台
+  （WebUI 广告后台 → 广告审核 → 待确认疑似广告）查看并确认/放行；确认后按 msg_id 撤回原视频
+  消息 + 禁言 + 学习文本指纹与视频指纹；
+- `ad_review_enabled` 关闭时回退 v2.23.0 `video_ad_review_enabled` 旧流程（`video_ad_reviews` 表），
+  两套配置互不冲突，均默认关闭。
+
+> 至此所有疑似广告来源（消息文本/图片/视频/群名片）统一进入 `ad_reviews` 后台审核日志，
+> 管理员只在一个后台完成「确认广告 → 撤回+禁言+学习」或「放行 → 学习为正常」。
+
+测试：`tests/test_ad_review.py` 新增 `_route_video_ad_review` 路由断言（ad_review 优先、旧流程回退、
+两者都关不路由）。
+
+## v2.36.1 - 2026-08-19
+
+### 调整：疑似广告确认改为「后台审核日志确认」，私聊管理员仅通知，群里不通知（用户需求）
+
+v2.36.0 的交互为「私聊管理员回复命令确认 + 群内提示」，本版按用户要求调整：
+
+- **确认/放行统一在后台**（WebUI 广告后台-待确认疑似广告「确认广告/放行」，`web.py`），
+  移除私聊/管理群回复「确认广告 #编号 / 放行广告 #编号」命令对通用广告复核队列的处理
+  （`commands.py` 删除 `_review_ad_cmd_target` / `_review_ad_common`，命令仅保留 v2.23.0
+  视频广告管理群复核）；
+- **私聊管理员仅通知**：疑似广告（消息/图片/视频/群名片）入 `ad_reviews` 队列后仍私信
+  插件管理员（`ad_review_admin_ids` → `admin_list` → 该群管理员/群主），文案改为
+  「已记入后台审核日志，请到 WebUI 广告后台 → 广告审核 → 待确认疑似广告处理」；
+- **群里不通知**：`_submit_ad_review` 移除管理群转发（`ad_review_forward_group`）与群内
+  提示（`ad_review_notice`），群名片入队后也不再群内通知；确认前消息仍保留在群内不撤回；
+- **配置**：移除 `ad_review_forward_group`、`ad_review_notice` 两项；保留
+  `ad_review_enabled` / `ad_review_admin_private` / `ad_review_admin_ids` /
+  `ad_review_learn_text`，并更新文案。
+
+测试：`tests/test_ad_review.py` 新增 schema 断言（`ad_review_notice` /
+`ad_review_forward_group` 已移除）与「入队不再发送群内通知」断言。
+
+## v2.36.0 - 2026-08-18
+
+### 新功能：疑似广告先私聊管理员确认再处罚，确认后学习，下次相似内容直接处罚（用户需求，与 astrbot_plugin_adguard 合并思路）
+
+背景：用户要求「任何疑似广告的内容先私聊发给插件管理员审核确认再撤回禁言，机器人学习，
+在下一次相似内容直接禁言撤回，群名片也算广告」。
+
+实现（统一广告人工复核 + 文本指纹学习）：
+
+- **新配置**（均可按群覆盖）：`ad_review_enabled`（疑似广告先人工确认，默认关）、
+  `ad_review_admin_private`（入队即私信插件管理员，默认开）、`ad_review_admin_ids`
+  （指定复核管理员 QQ）、`ad_review_forward_group`（转发管理群）、`ad_review_notice`
+  （群内通知）、`ad_review_learn_text`（确认后学习文本指纹，默认开）；
+- **消息广告改道**（`moderation.py`）：`ad_review_enabled` 开启时，规则 ad 命中、
+  LLM 判定广告（含广告/推广/引流）、图片/视频广告**不再直接处罚**，改为落 `ad_reviews`
+  复核队列 + 私信插件管理员（`ad_review_admin_ids` → `admin_list` → 该群管理员/群主），
+  群内提示编号；确认前消息保留（不撤回）；
+- **管理员确认**（私聊或管理群回复「确认广告 #编号 / 放行广告 #编号」，或 WebUI
+  广告后台-待确认疑似广告）：
+  - **确认广告** → 撤回原消息（按 msg_id）+ 禁言发送者 + **学习文本指纹**；
+  - **放行广告** → 不处罚，学习为正常；
+- **学习命中直接处罚**：管理员确认广告后，文本指纹（归一化 sha256）入库，**之后相同/
+  相似文本再次出现时直接撤回+禁言**，不再人工确认；放行后相似内容自动跳过；
+- **群名片广告**（`card_monitor.py`）：`ad_review_enabled` 开启时，疑似广告名片不再
+  直接还原，落 `ad_reviews`（source=card）私信管理员，确认后还原原名片 + 禁言 + 学习；
+- **存储**（`storage.py`）：新增 `ad_reviews` 表（含 msg_id/image_urls/source，
+  提供 create/list/get/resolve CAS）与 `ad_text_fingerprints` 表（学习库，learn/hit/
+  list/clear，重复覆盖）；「确认广告/放行广告」命令优先处理通用队列、回退旧视频复核；
+- **WebUI**：广告后台新增「待确认疑似广告」列表与确认/放行入口。
+
+> 说明：本版与 `astrbot_plugin_adguard` 的「二次审核 + 学习库」思路对齐并合并进群守护者：
+> 判定（规则/LLM）→ 人工确认 → 处罚 + 学习 → 下次自动。adguard 的评分检测可作为后续
+> 增量（`adguard_score_enabled` 预留），当前复用群守护者既有 ad 判定链路。
+
+测试：新增 `tests/test_ad_review.py` 8 项——ad_reviews 表 CRUD（含 msg_id/CAS）、
+文本指纹学习库（ad/ok、覆盖、清空）、指纹归一化、路由判定（未开启/命中/已学习/非广告）。
+
+## v2.35.0 - 2026-08-18
+
+### 功能：广告审核与其他违规审核开关完全独立（用户需求）
+
+此前 `scan_swear` / `scan_ad` 只控制**内置正则**匹配（`_swear_matcher` / `_is_ad_pattern`），
+而 **lexicon.db 词库中的 swear / ad 分类恒启用**（`_lexicon_switch_map` 中 swear 未返回
+= 默认启用、ad 恒为 True），导致关闭脏话/广告开关后对应词库分类命中**仍然生效**，
+「广告」与「其他违规」无法真正分开控制。
+
+修复（`utils.py` `_lexicon_switch_map`）：
+
+- `swear` 分类跟随 `scan_swear`：关闭脏话审核 = 内置正则 + 脏话词库全部失效；
+- `ad` 分类跟随 `scan_ad`：关闭广告审核 = 内置正则 + 广告词库（含视频广告复核队列）全部失效；
+- 其它词库分类（政治/色情/暴恐/武器/贪腐/非法网址/other 等）仍由各自 `lexicon_*_enabled`
+  独立控制，与 `scan_swear` / `scan_ad` 互不影响；
+- 支持按群覆盖：某群单独关闭 `scan_ad`，其它群广告审核不受影响（名片监控/入群审核的
+  词库匹配同样受控，符合「审核开关」语义）。
+
+效果：现在可以**只开广告审核、关闭所有其他违规**（`scan_ad=true` + 各 `lexicon_*_enabled=false`），
+或**只开其他违规、关闭广告**（`scan_ad=false`），互不干扰。
+
+测试：新增 `tests/test_audit_switch_separation.py` 共 6 项——默认全开 / 关广告仅广告失效 /
+关脏话仅脏话失效 / 词库分类独立 / other 跟随 / 按群覆盖。
+
+## v2.34.0 - 2026-08-18
+
+### 修复：误报率过高——LLM 不可用时广告泛词 fail-closed 反复误禁言/误踢正常用户（用户反馈）
+
+背景：用户导出 08-18 审核日志（991 条）分析发现，**13 条被「撤回+禁言/踢出」的广告规则直判几乎全部是误报**——
+「微信支付宝」「熟悉环境，交资料」「是和校园网绑定的吗」「办了卡再办网优惠不」「这机器人挺忙的」
+「已经是黑名单了」「计算机网络技术」「医学解剖讨论」等**校园日常聊天**被 ad 词库命中后直接处罚。
+
+根因（两个因素叠加）：
+
+1. **ad 词库过宽**：包含「微信」「支付宝」「校园网」「交资料」「优惠」「绑定」「机器人」等
+   校园/日常泛词，命中率高；
+2. **fail-closed 放大误报**：用户开启 `llm_fallback_mode=block_on_error`（或
+   `moderation_llm_fail_closed`），而生产环境 LLM **频繁超时**（日志 158/991 条「LLM调用或排队超时」），
+   LLM 失败时任意 ad 规则命中都走 `_llm_failure_requires_rule_penalty` 直判处罚（撤回+禁言/踢出）。
+   广告判定高度依赖上下文，按泛词硬判必然大规模误伤。
+
+修复（`moderation.py`）：
+
+- **广告泛词不再 fail-closed**：`_llm_failure_requires_rule_penalty` 中，LLM 不可用时
+  **仅广告泛词命中（无强广告证据）的 ad 直判改为放行**——除非文本同时包含强广告证据
+  （联系方式/链接/群号/扫码/加V/加微信/进群等）或同时命中其它高置信类别（swear/political 等）。
+  真广告（QQ群号引流、加微信、外链、扫码、手机号）在 LLM 不可用时仍 fail-closed 拦截；
+- 新增 `_AD_STRONG_EVIDENCE_RE` + `_ad_hit_has_strong_evidence`：识别明确引流要素，
+  校验案例覆盖日志全部 14 类弱命中与 13 类真广告；
+- 行为不变：LLM 正常时 ad 命中仍走 LLM 复核（未改动审核主流程）。
+
+测试：`tests/test_nested_forward.py` `LlmFallbackModeTests` 新增 3 项——
+弱泛词命中放行（微信支付宝/校园网/优惠/机器人/黑名单）、强证据仍 fail-closed（QQ群号/加V/
+加微信/链接/手机号）、ad+swear 并存仍 fail-closed。
+
+> 建议（可选）：若本群广告词库仍需进一步收紧，可在 WebUI「规则/词库」页删除 ad 分类中的
+> 校园泛词（微信/支付宝/校园网/交资料/优惠/绑定等），或用「AI误判复盘」把误判样本批量标记后
+> 生成修正规则。
+
+## v2.33.0 - 2026-08-18
+
+### 修复：发送消息失败导致 AstrBot 进程反复崩溃（用户反馈「还是容易自动崩溃」）
+
+背景：生产日志显示 AstrBot 进程在短时间内反复被整进程级 traceback 打崩并容器重启
+（08-18 04:48 / 05:25 / 05:27 / 05:28 共 4 次）。4 次崩溃的现场完全一致——
+
+```
+[ERRO] respond.stage:287: 发送消息链失败: chain = MessageChain([Plain(text='[群管] 春晚庭(...) 检测到广告，撤回+禁言；该群广告违规第1次')]), error = <ActionFailed ... retcode=1200 ... 'EventChecker Failed: NTEvent ...'>
+Traceback (most recent call last):
+  ...
+> File ".../respond/stage.py", line 285, in process
+  await event.send(chain)
+  ...
+asyncio.run(main_async(...))  # 进程级崩溃，容器重启
+```
+
+根因（AstrBot v4.24.2 核心缺陷，插件无法直接修复）：NapCat/OneBot 发送群消息
+动作**超时**（retcode=1200，`EventChecker Failed: NTEvent ...`，同一时间段的撤回
+动作也大量超时）时，`RespondStage.process` 的 `event.send()` 抛 `ActionFailed`，
+AstrBot 记录「发送消息链失败」后**重新抛出**，异常穿透消息处理任务直达
+`asyncio.run()` 顶层，整个 AstrBot 进程退出。插件全部 `event.plain_result` 回复
+都走这条管线，NapCat 一抖就会把机器人整个打崩。
+
+修复（插件侧安全壳，治标但彻底）：
+
+- **`event.send` 安全壳**（`moderation.py` 新增 `_harden_event_send`）：
+  在 `main._handle_message` 消息入口把 `event.send` 替换为安全版本——发送失败仅
+  记 `WARN` 日志并返回 `None`，不向上抛异常。一次注入即可覆盖插件全部
+  `plain_result` 回复路径（审核通知/防刷屏/黑名单/命令/申诉/防刷屏提示等）；
+- **新配置 `safe_send_enabled`**（默认开，可按群覆盖）：关闭则恢复原行为；
+- **LLM 返回空值修复**：`review_chunk` 中 `llm_response` 为 `None` 时显式返回
+  「LLM无返回」降级，不再误报 `'NoneType' object has no attribute 'strip'`
+  （此前该错误被通用兜底捕获、按 pass_on_error 放行，日志误导排障）。
+
+> 说明：`retcode=1200` 的发送超时本身源于 NapCat/OneBot 侧或网络抖动，插件无法
+> 消除；本版保证此类失败**只丢消息、不崩进程**。若需彻底根治可检查 NapCat 配置
+> 与网络稳定性。
+
+测试：新增 `tests/test_safe_send.py` —— 安全壳注入/幂等、发送失败被吞并返回
+`None`、关闭开关时不注入、LLM 返回 None 走「LLM无返回」降级；全量回归通过。
+
+## v2.32.0 - 2026-08-18
+
+### 新功能：不确定内容 → 私信当群全部管理员重新审核（用户需求）
+
+背景：审核遇到「不确定」的内容时（视频广告疑似、文本/图片 LLM 无法确认），
+此前仅群内通知或转发管理群，管理员需主动去 WebUI/管理群处理。本版新增：
+**不确定内容立即私信该群全部管理员（群主+管理员），发送内容信息供重新审核**，
+管理员可直接在私聊回复命令完成复核，形成闭环。
+
+改动：
+
+- **通用不确定复核队列**（`storage.py`）：新增 `uncertain_reviews` 表
+  （group/user/内容/来源 text|image/状态/复核人），提供 create / list_pending /
+  get / resolve（CAS 防并发），与 `video_ad_reviews` 并列；
+- **LLM 三态判定**（`moderation.py`）：
+  - `_normalize_llm_moderation_result` 支持 `violation: "unknown"` /
+    「疑似/无法判断/无法确认/不确定/无法判定」→ 标记 `uncertain`；
+  - `_call_llm_for_moderation` 两处 prompt 的 JSON 输出约束改为
+    `{"violation": true/false/"unknown", ...}`，仅无法判断时才输出 `unknown`；
+  - `_handle_message` 在 LLM 判定后增加 uncertain 分支：开启
+    `uncertain_review_enabled` 时落复核队列 + 私信管理员 + 群内通知，不直接处罚；
+- **私信该群全部管理员**（`moderation.py`）：
+  - `_fetch_group_admin_ids`：`get_group_member_list` 过滤群主/管理员；
+  - `_send_private_message`：OneBot `send_private_msg`；
+  - `_notify_uncertain_admins_private`：逐个私信发送「群号/发送者/内容/编号/命令」，
+    视频广告用「确认广告/放行广告」，文本/图片用「确认复核/放行复核」；
+  - `_submit_video_ad_review` 新增 `video_ad_review_private_admin`（默认关）——
+    疑似视频广告入队时同样私信全部管理员；
+- **复核命令**（`commands.py` + `main.py`）：「确认复核 #N / 放行复核 #N」，
+  私聊或管理群均可；权限校验＝插件管理员 或 该记录所在群的管理员/群主；
+  确认/放行均写入审核日志；
+- **新配置**（均可按群覆盖）：`uncertain_review_enabled`（默认关）、
+  `uncertain_review_private_admin`（默认关）、`uncertain_review_notice`
+  （默认开）、`video_ad_review_private_admin`（默认关）。
+
+测试：新增 `tests/test_uncertain_review.py` 16 项——storage 复核队列 CRUD、
+LLM 三态归一化（unknown/同义词/正常布尔/垃圾值）、群管理员过滤、私信内容与
+命令、`_submit_uncertain_review` 落队+私信+通知、确认/放行命令（插件管理员/
+群管理员/非管理员拒绝/编号无效）、schema 默认值与 prompt 三态断言。
+
+## v2.31.0 - 2026-08-18
+
+### 移除：独立广告后台页面入口（面板清理，用户反馈「广告后台已无用则删除」）
+
+v2.21.0 起广告后台已完整并入 AstrBot Dashboard 主面板「广告后台」页签
+（总览统计/违规记录/黑名单/指纹/分级/配置/视频复核，接口走 `/api/plug/` 下的
+`/ad_backend/*`）。独立页面 `pages/ad_backend/index.html` 是 v2.10.x 时代的重复
+遗留入口——v2.30.0 定位「广告后台无法正常显示」时确认其旧 API 路径 404 是三个
+根因之一，且该页面与主面板页签功能完全重叠，保留只会继续造成混淆，故直接删除。
+
+改动：
+
+- **删除 `pages/ad_backend/index.html`**：AstrBot 插件页面列表不再出现独立的
+  「广告后台」页面，广告后台统一通过主面板页签访问；
+- **`ad_backend.py`**：删除 `BACKEND_PAGE_REL` / `BACKEND_PAGE_CACHE_TTL` /
+  `_ad_backend_page_cache` 与无用的 `_init_ad_backend` / `_stop_ad_backend`
+  （v2.21.0 起即为空操作遗留）及 `import os`；全部 `/ad_backend/*` API 与
+  `AdBackendMixin` 保留（主面板页签仍在使用）；
+- **`main.py`**：删除 `_init_ad_backend()` / `_stop_ad_backend()` 调用；
+- **`README.md`**：功能表/配置表删除 v2.10.x 独立 HTTP 后台（端口 8765）的过时
+  描述与 `ad_backend_enabled/port/token` 配置条目，改为说明广告后台已并入主面板；
+  `_conf_schema.json` 中的 `ad_backend_*` 三项按 v2.21.0 约定保留为旧配置兼容项。
+
+测试：`test_video_ad_review.py` 的 `AdBackendReviewHandlerTests` /
+`AdBackendStatsTests` 全部通过（handler 与 stats 接口未受影响），全量回归
+通过。
+
+## v2.30.0 - 2026-08-18
+
+### 修复：广告后台无法正常显示（用户反馈）
+
+背景：主面板「广告后台」总览的**累计拦截/今日图片/今日视频**三个卡片显示
+`undefined`，且独立广告后台页面所有接口请求失败。三个根因：
+
+1. **主面板字段与后端不匹配**（v2.21.0 迁移遗留）：`_ad_backend_stats` 返回
+   `today_video_blocked` / `today_image_blocked`，主面板 `loadAdBackend` 却读取
+   `total_blocked` / `today_img` / `today_video`——字段一直不存在，卡片显示
+   `undefined`；
+2. **独立广告后台页面请求旧路径**（v2.21.0 迁移遗留）：`pages/ad_backend/index.html`
+   仍请求 `/api/stats` 等根路径，v2.21.0 起接口已挂载到 AstrBot Dashboard 的
+   `/api/plug/astrbot_plugin_group_guardian/ad_backend/` 下，全部 404；
+3. **`_ad_backend_stats` 统计口径**：`blocked` 未按今日过滤（“今日拦截”实际是全部）、
+   action 含「放行」的记录被误计为拦截。
+
+改动（`ad_backend.py` + `pages/dashboard/index.html` + `pages/ad_backend/index.html`）：
+
+- `_ad_backend_stats` 补充 `total_blocked` / `today_img` / `today_video` 字段并保留旧
+  字段名（`today_blocked` / `today_image_blocked` / `today_video_blocked`）兼容；
+- `today_*` 按今日起始时间过滤，`blocked`（累计）为最近 2000 条内广告拦截总数；
+- 「放行」不再是拦截动作，不计入拦截；图片判定补充 `msg` 含「图片」检查，与视频
+  判定对称；
+- 主面板广告后台卡片字段缺失时显示 `--`（防御旧后端）；
+- 独立广告后台页面 `api()` 统一映射到 `/api/plug/astrbot_plugin_group_guardian/
+  ad_backend` 前缀，全部接口恢复可用。
+
+测试：`tests/test_video_ad_review.py` 新增 3 项——主面板字段存在且与旧字段一致 /
+「放行」不计入拦截 / 今日与累计正确拆分；`test_video_ad_review` 全量 25 项通过。
+
+## v2.29.0 - 2026-08-18
+
+### 修复：分享 QQ 群链接的广告无法处置（消息撤回 + 名片还原，用户反馈）
+
+背景：广告以「QQ 群链接」形式出现——成员发 qm.qq.com 群邀请链接消息拉人、
+或把名片改成群链接。此前消息侧群链接检测受 `invite_link_recall_enabled`
+（默认关）控制，不开则不拦截；名片侧 `_SHOP_LINK_RE` 虽覆盖 `https?://`
+但去链化（无协议前缀）与纯文字「群链接」不被识别。
+
+改动：
+
+- **消息侧（`advanced_audit.py`）**：QQ 群邀请链接（`qm.qq.com` / `jq.qq.com` /
+  `qun.qq.com` / `pd.qq.com`）升级为**无条件拦截**——不依赖
+  `invite_link_recall_enabled` 开关，命中即撤回 + 记录 + 群内提示；
+  新增 `_find_qq_group_link` 支持去链化（无 `https://` 前缀也命中）；
+  Telegram / Discord 等其他平台链接仍由原开关控制。
+- **名片侧（`card_monitor.py`）**：`_SHOP_LINK_RE` 增加 QQ 群链接域名
+  （名片含 `qm.qq.com` 等直接还原）；`_PROMO_SUSPECT_RE` 增加
+  「群链接 / 拉群」（送 LLM 二判，避免误伤正常「进群」类文字）。
+
+测试：新增 `tests/test_group_link.py` 共 9 项——QQ 群链接全 URL / 去链化 /
+四域名命中 / 正常文本不命中 / `_detect_link_violation` 在开关关闭时仍无条件命中 /
+名片 `_is_shop_link_card` 命中 qm.qq.com / `_PROMO_SUSPECT_RE` 命中群链接/拉群。
+
+## v2.28.0 - 2026-08-18
+
+### 修复：识别到名片广告但「无法撤回」（用户反馈）
+
+背景：防刷屏/名片监控识别到广告名片（如含网址/店铺/引流词），但无法处置。
+
+说明：名片不是消息，**不能走「撤回消息」API**；广告名片的正确处置是**还原名片**
+（`set_group_card` 改回旧名片或清空）。此前还原失败（`set_group_card` 因 Bot 权限
+不足或协议端拒绝）时只记日志、不通知管理员，管理员无从得知。
+
+改动（`card_monitor.py`）：
+
+- **违规名片还原失败时通知管理员**：`_process_card_values` 的违规还原失败分支在
+  `card_monitor_notify` 开启时，向群内发送「广告名片违规（原因），还原为「目标」失败，
+  请检查 Bot 是否有群管理权限，或手动处理」；
+- **保护名片还原失败同样通知**：保护名单成员名片被改且还原失败时，群内提示检查
+  权限或手动改回；
+- 还原失败仍保留目标快照，周期同步会在下一轮继续重试（原有机制不变）。
+
+测试：`tests/test_card_monitor.py` 新增 `test_failed_restore_notifies_admin`——还原
+失败时向群发送含「失败/请检查」的通知；其余 30 项回归通过。
+
+排查提示（如果仍无法还原）：
+- 确认开启了违规名片审核：`card_audit_link_only`（仅拦网址/店铺）或
+  `card_audit_enabled`（全量：词库/正则初筛 + LLM，拦引流词「加V/微信/招代理」等）；
+- 确认 Bot 有**群管理权限**（`set_group_card` 需要管理员权限）；
+- 若协议端不支持 `set_group_card` 空串清空，可把「旧名片也违规」时还原目标改为空串。
+
+## v2.27.0 - 2026-08-18
+
+### 修复：广告后台总览不显示已识别的视频/图片广告（用户反馈）
+
+背景：AstrBot 已识别到视频/图片广告（日志中有处理记录），但插件「广告后台-总览」
+的拦截统计不显示。两个根因：
+
+1. **图片广告判定用 msg/action 文字**：`_ad_backend_stats` 用「msg/action 含"广告"
+   或"视频"字样」判断广告——图片广告的 OCR 识别文本通常不含这些字样，导致
+   `is_ad=False`，识别到的图片广告不计入拦截统计；
+2. **统计源用内存缓存**：遍历 `_moderation_logs`（deque maxlen=500），重启后丢失，
+   且只覆盖最近 500 条。
+
+改动（`ad_backend.py`）：
+
+- `_ad_backend_stats` 数据源改为 **SQLite**（`storage.list_logs`，最近 2000 条，
+  持久化、重启不丢）；
+- 广告判定补充 **reason 类别**（`"ad" in reason` / `"广告" in reason`）+ action
+  含「复核」等，覆盖图片广告 OCR 文本无广告字样、疑似广告复核队列（撤回+待复核/
+  放行）等场景；
+- 图片/视频归类：`img_blocked` 也接受 action/reason 含「图片」、`video_blocked`
+  也接受 reason 含「视频」；
+- 「待复核 / 放行」计入 `is_blocked`（复核队列中的疑似广告可见）。
+
+测试：`tests/test_video_ad_review.py` 新增 AdBackendStatsTests 2 项——图片广告按
+reason 计入 / 复核队列（撤回+待复核）计入；其余 20 项回归通过。
+
+## v2.26.0 - 2026-08-18
+
+### 新功能：内存自动回收机制（用户反馈：机器人因内存溢出崩溃）
+
+背景：群聊机器人长时间运行后因内存持续增长被 OOM 杀死。此前排查确认插件内所有
+缓存均有上限、无单一泄漏点，但仍缺少主动回收手段；本版新增周期性内存守护。
+
+改动：
+
+- **新增 `memory_guard.py`（MemoryGuardMixin）**：
+  - 零依赖跨平台读取进程 RSS 内存：优先 psutil（可选安装），其次 Linux
+    `/proc/self/statm`，再其次 Windows `ctypes`+`psapi`，全部失败返回 -1；
+  - `_run_memory_guard`：强制 `gc.collect()` + 清理可重建缓存 + 裁剪视频指纹缓存；
+  - 缓存清理清单：审核期媒体哈希/视频指纹缓存、DB 查询缓存、WebUI 慢接口缓存、
+    管理员角色缓存、名片快照、当日统计明细（保留 today_start 基准）；
+  - 视频指纹缓存裁剪至最近 100 条；**不清理视频临时目录**（即用即删，避免中断在途审核）。
+- **后台调度**（`scheduler.py`）：`_start_scheduler` 启动独立 `_memory_guard_loop`
+  （低频，默认 60s 检查一次），`_stop_scheduler` 安全取消；`main.py` 挂载
+  `MemoryGuardMixin`。
+- **新增配置**（全局）：`memory_guard_enabled`（默认 true）、
+  `memory_guard_threshold_mb`（默认 0=每周期都回收）、`memory_guard_interval_sec`
+  （默认 60，范围 30-3600）。
+
+测试：新增 `tests/test_memory_guard.py` 共 11 项——内存读取、缓存清理（含 today_start
+保留）、指纹裁剪（含小缓存跳过）、阈值触发/跳过/不限、schema 默认值、scheduler 集成、
+main 继承、不清理临时目录断言。
+
+## v2.25.0 - 2026-08-17
+
+### 新功能：短视频+引流二维码快速强信号 & OCR 同音/形近字归一化（用户需求）
+
+背景：外部同类方案（auto-withdraw-advideo 等）的「短视频二维码」与「OCR 模糊匹配」
+思路值得借鉴；本项目此前视频二维码文本需并入正文走完整审核、词库匹配为精确关键词。
+
+改动：
+
+- **短视频+引流二维码快速强信号**（`video_audit.py` + `moderation.py`）：
+  - 新增配置 `video_short_qr_fast_hit`（默认关）与 `video_short_qr_max_sec`（默认 10 秒）；
+  - `_audit_one_video` 记录视频时长，`_recognize_video_frames` 在二维码解码分支调用
+    `_maybe_set_short_qr_signal`：短视频（≤ 阈值）且解码出任一「引流二维码」
+    （网址 / 微信 / VX / QQ / 加群 / 扫码）时置位 `_video_short_qr_hit`；
+  - moderation 层检测到该强信号后直接把 `hit_types["ad"]` 置 True（高置信，跳过 LLM 复核），
+    专门打击「半夜短视频二维码引流」。
+- **OCR 识别文本同音/形近字归一化**（`moderation.py`）：
+  - 新增配置 `ocr_normalize_variants`（默认关）；
+  - 新增 `_OCR_NORMALIZE_RULES` 与 `_normalize_ocr_text`：常见 OCR 误读变体
+    （薇信/威信/v信/VX → 微信，薇→微，佰→百 等）在做词库匹配前统一归一化；
+  - `_initial_screening` 匹配时用归一化文本（`_is_ad_pattern`/`_check_lexicon`/脏话匹配），
+    **LLM 判定仍使用原文**，避免误伤正常文本。
+
+测试：`test_video_audit.py` 新增 V225ShortQrSignalTests（引流判定 / 短视频命中 / 长视频不命中 /
+非引流不命中 / 开关关闭）；`test_video_ad_review.py` 新增 OcrNormalizeTests（薇信/VX 归一化 /
+正常文本不受影响）与 schema 新配置断言。
+
+## v2.24.0 - 2026-08-17
+
+### 新功能：疑似视频广告转发 QQ 管理群确认（用户需求）
+
+背景：v2.23.0 的「不确定视频广告复核」仅支持 WebUI 操作；用户希望在 QQ 群里直接完成
+确认/放行，管理员无需打开面板。本版新增：疑似视频广告先撤回（可选）→ 转发到配置的
+QQ 管理群 → 管理员在群里回复命令确认（学习指纹并禁言）或放行。
+
+改动：
+
+- **新增配置** `video_ad_review_forward_group`（string，默认空=不转发）：疑似视频广告
+  进入复核队列时，把「群号/发送者/识别内容/编号」转发到该 QQ 管理群。
+- **转发**（`moderation.py`）：`_submit_video_ad_review` 在落队后调用 `_send_group_message`
+  向管理群发送复核提示与命令格式；群内通知文案同步补充管理群命令说明。
+- **群内命令**（`commands.py` + `main.py`）：
+  - `/确认广告 #编号`：校验「发送群=管理群 + 发送者为插件管理员」后，确认违规——
+    复用 WebUI 同一套动作（学习视频指纹 + 禁言 + 记录）；
+  - `/放行广告 #编号`：标记放行（确认正常）；
+  - 校验不通过（非管理群 / 非管理员 / 编号无效 / 已处理）给出明确回复。
+- **动作复用**（`ad_backend.py`）：抽取 `_apply_video_ad_review_confirmed(item)` 公共方法，
+  WebUI 确认接口与群内确认命令共用学习指纹 + 禁言 + 记录逻辑，行为保持一致。
+
+测试：`tests/test_video_ad_review.py` 新增 5 项——确认命令 / 放行命令 / 非管理群拒绝 /
+非管理员拒绝 / main.py 命令注册断言，新增 `video_ad_review_forward_group` schema 断言。
+
+## v2.23.0 - 2026-08-17
+
+### 新功能：不确定的视频广告提交管理员复核（用户需求）
+
+背景：视频广告检测对「疑似广告」（LLM 广告专用判定输出「疑似广告：」、无法明确确认）
+仍直接按广告处罚，可能误伤正常视频；希望先由管理员人工复核再决定处置。
+
+改动：
+
+- **新增配置**（均可按群覆盖）：`video_ad_review_enabled`（总开关，默认关闭）、
+  `video_ad_review_recall`（复核前先撤回消息，默认开启）、`video_ad_review_notice`
+  （复核入队时群内通知管理员，默认开启）。
+- **检测触发**（`video_audit.py`）：`_apply_video_audit` 在识别文本含「疑似广告」
+  （`video_ad_visual_enabled` 广告专用判定输出）时设置 `_video_ad_review_signal` 信号，
+  并携带视频指纹与来源。
+- **复核流程**（`moderation.py`）：开启 `video_ad_review_enabled` 时，疑似视频广告
+  不再直接处罚，改为落 `video_ad_reviews` 待复核队列（可选先撤回消息），记录审核日志，
+  群内通知管理员前往 WebUI 处理；同时 `event.stop_event()` 阻断后续回复。
+- **存储**（`storage.py`）：新增 `video_ad_reviews` 表（group/user/识别文本/视频指纹/来源/
+  状态/复核人/复核时间），提供 `create_video_ad_review` / `list_pending_video_ad_reviews` /
+  `get_video_ad_review` / `resolve_video_ad_review`（仅 pending 可确认，CAS 防并发）。
+- **WebUI**（`ad_backend.py` + `web.py` + `pages/ad_backend/index.html`）：
+  广告后台新增「视频复核」页签与 3 个接口——列表 / 确认违规（学习视频指纹 + 禁言 +
+  记录）/ 放行；列表页展示识别内容、视频指纹、群号、QQ 与操作按钮。
+
+测试：新增 `tests/test_video_ad_review.py`（storage CRUD / 疑似信号 / 确认违规与放行
+handler / schema 默认值 / 路由注册静态断言），共 12 项。
+
+## v2.22.0 - 2026-08-15
+
+### 修复：图片广告被录屏成视频后无法拦截（用户反馈）
+
+背景：广告是静态图片，被手机录屏转成视频后在群里发送，现有视频检测
+（下载 → 抽帧 → OCR / 二维码 / 视觉判定）拦截不住。三个根因：
+
+1. **无效帧占名额**：录屏首尾的黑屏/过渡帧占满 `video_max_frames`，中间的广告画面抽不到；
+2. **相似帧重复**：录屏画面静止，首/中/尾抽出的帧内容几乎相同，重复识别浪费预算且无增益；
+3. **哈希亮度敏感**：感知哈希为「16 位亮度阈值 + 48 位结构」，录屏导致整体亮度变化时整串汉明距离超阈值，命不中「原图广告黑名单」。
+
+改动：
+
+- **抽帧无效帧过滤**（`_is_meaningful_frame` / `_filter_meaningful_frames`）：纯黑/纯白过渡帧直接跳过，保证有效内容帧不被挤掉；`interval` / `spans` / `scene` 三种模式统一生效。
+- **识别前相似帧去重**（`_dedup_video_frames`）：同一画面（结构段 dHash 距离 ≤ 6）只保留代表帧，静止录屏视频只检测唯一画面，避免重复视觉调用。
+- **hash 黑名单分段匹配**（`_check_hash_blacklist`）：亮度段差异 ≤ 8 且结构段差异 ≤ max(distance-4, 2) 时仍视为命中——图片广告被录屏后仍能命中原图黑名单（命中走 LLM 复核兜底，不直接处罚）。
+
+测试：`test_video_audit.py` 新增无效帧过滤 / 过滤保序 / 相似帧去重 / 无 phash 兜底 / 黑屏抽帧用例，并适配既有合成视频抽帧断言；`test_hash_audit.py` 新增「亮度轻微变化但结构一致命中」与「亮度极端变化不兜底」用例；`test_video_audit` 的 astrbot shim 补全 `astrbot.core` 链，消除与其它测试模块的 sys.modules 污染。
+
+## v2.21.0 - 2026-08-14
+
+### PR #69 审查修复：安全加固 + 测试结构修复 + 完整 CI
+
+针对上游审查的 5 个阻断项逐一修复（功能方向保留，不删功能）：
+
+**1. 修复 `tests/test_web_approvals.py` 文件结构损坏（阻断项）**
+- 原文件在 `_run()` 处被截断（`try:` 后直接出现测试方法、`test_migration_is_idempotent` 函数体为空），`python -m compileall -q .` 报 `IndentationError`；
+- 整文件重写：`_run()` 完整、三个测试类与全部测试方法结构正确。
+
+**2. 操作者身份只来自服务端绑定，不信任请求体自报 QQ（阻断项）**
+- `_resolve_operator_from_bindings`：**忽略请求体直接携带的 `operator_qq`**，操作者身份只能由
+  AstrBot Dashboard 已认证登录用户名（`/api/plug/` 路由由 AstrBot JWT 保护）经 `web_operator_bindings`
+  服务端绑定推导；未绑定用户名返回空 QQ，由授权校验拒绝；
+- `web.py` 远程执行与双管理员审批入口不再读取请求体 `operator_qq`；
+- 前端只携带/记忆操作者用户名（不再自报 QQ），`getOperatorIdentity` 改为仅管理 `gg_operator_name`；
+- 新增 `_parse_operator_bindings` 抽取绑定解析。
+
+**3. 独立后台默认仅回环监听 + 强制 token（阻断项）**
+- 新增 `ad_backend_host`（默认 `127.0.0.1`），不再固定 `0.0.0.0`；
+- **非回环监听必须配置 ≥8 位 `ad_backend_token`**，否则拒绝启动（避免无认证网络管理面）；
+- `_ad_backend_auth_ok`：**禁用 URL `?token=` 传参**（防令牌泄漏进日志/浏览器历史），仅接受 `X-Token` 请求头；
+  未配置 token 时仅回环地址放行；前端不再从 URL 读取 token。
+
+**4. float 配置支持按群覆盖（阻断项）**
+- `_group_overridable_keys()` 的 `supported_types` 增加 `float`（此前 schema 标注“可按群覆盖”的浮点配置
+  不会出现在 WebUI 多群配置中）。
+
+**5. `local_ocr_auto_install` 默认关闭（阻断项）**
+- 不再默认在运行期 `pip install rapidocr_onnxruntime`（避免版本漂移/启动延迟/失败恢复问题）；
+- 改为显式安装：`pip install rapidocr_onnxruntime`（schema hint 给出指引）。
+
+**6. 补齐完整 CI**
+- `.github/workflows/ci.yml`：Python 3.10/3.12 矩阵、`python -m compileall -q .` 全量语法检查
+  （可捕获此前 `IndentationError`）、schema JSON 校验、`unittest` 全量测试、支持 `workflow_dispatch` 手动触发。
+
+**测试**
+- `test_web_approvals.py` 重建修复；`test_web_remote_audit.py` 更新绑定测试
+  （`test_bindings_explicit_qq_ignored`：请求体自报 QQ 一律忽略）。
+
+## v2.20.0 - 2026-08-14
+
+### 视频广告识别增强：无文字广告判定 + 首中尾抽帧 + 字幕带放大 + 多帧鲁棒指纹
+
+**背景**：现有视频广告检测（下载 → 抽帧 → 视觉识别 + 二维码解码）已覆盖常规文字广告，但存在四个盲区：纯品牌/产品画面的**无文字广告**识别不了；等间隔抽帧漏掉开头品牌露出与结尾促销信息；小字号硬字幕易漏；指纹仅取首帧，同一广告被裁剪/改时长就漏命中。
+
+**1. 无文字广告判定（`video_ad_visual_enabled`，默认关闭）**
+- LLM 视觉识别视频帧时改用**广告专用判定 prompt**（`image_audit._VIDEO_AD_SYSTEM_PROMPT`）：
+  不只 OCR 文字，还判断画面是否含广告元素——品牌Logo、产品图、促销横幅、联系方式（电话/微信/QQ/二维码/网址）、引流话术；
+- 输出「广告：理由」「疑似广告：理由」「正常画面」结构化结论，无文字广告也能判。
+
+**2. 首/中/尾分段抽帧（`video_frame_mode` 新增 `spans`）**
+- 广告信息集中在开头（品牌露出/引流字幕）与结尾（联系方式/下单提示）；`spans` 模式按首/中/尾三段各取约 1/3 帧数，关键画面不遗漏；
+- 帧位置先收集去重再统一 seek，极短视频自动退化为顺序读帧。
+
+**3. 字幕带放大增强（`video_subtitle_boost`，默认关闭）**
+- 对每帧画面下方 1/3 的字幕带裁剪放大 1.5 倍后补做一次识别（本地引擎/LLM 路径均支持），
+  小字号硬字幕（价格/联系方式滚动字幕）不易漏；结果带 `[字幕增强]` 标记。
+
+**4. 多帧鲁棒指纹（`_video_fingerprint` 升级）**
+- 指纹从「首帧哈希 + 总帧数」升级为「首/中/尾三帧哈希 + 30 帧时长桶」；
+- 缓存命中从整串精确匹配升级为「**任一帧哈希相同即命中**」，同一广告被裁剪/拼接/改时长仍能命中；
+- 旧格式缓存（`phash_total`）自动兼容：整串精确命中或首帧哈希匹配均生效，无需迁移。
+
+**测试**
+- `test_video_audit.py` 扩展：spans 抽帧合成视频验证、字幕带增强返回 JPEG/坏数据兜底、多帧指纹四段格式断言、
+  指纹缓存精确/裁剪匹配/旧格式兼容/不匹配/短指纹、静态检查（`_VIDEO_AD_SYSTEM_PROMPT`、schema 新配置）。
+
+## v2.19.0 - 2026-08-14
+
+### WebUI 远程操作安全增强：二次确认 + 详细审计 + 双管理员审批
+
+**1. 高风险操作二次确认弹窗（前端）**
+- 远程操作（踢人/批量踢人/全体禁言等高风险 action）执行前弹「高风险操作确认」对话框，默认勾选「我确认需要执行此高风险操作」，未勾选无法确认，防止误点；
+- 新增 `web_remote_confirm_required`（bool，默认 `true`）：关闭后高风险操作直接执行（不弹确认）。
+
+**2. 更详细的操作审计日志**
+- `web_audit_logs` 表自动补列（旧库幂等迁移）：`operator_ip`（操作人 IP，优先 `X-Forwarded-For` 再取 `remote_addr`）、`before_value`（修改前值，设/取消管理员时取目标当前角色）、`after_value`（修改后值/操作摘要）；
+- 拒绝路径同样记录 IP；新增 `_request_ip()` 工具方法；
+- WebUI「权限管理」页新增「远程操作审计日志」区块，展示操作人/QQ/IP、操作时间、目标群、操作、参数、修改前后值、结果。
+
+**3. 高敏感操作双管理员审批（`web_remote_dual_approval_enabled`，默认关闭）**
+- 开启后，`web_remote_approval_actions`（默认 `set_admin,unset_admin,whole_ban`）指定的高敏感操作在 WebUI 远程执行时**先落待审批队列、不立即执行**；
+- 新增 `pending_web_operations` 表 + 三个接口：`GET /approvals/list`（待审批列表）、`POST /approvals/approve`（第二名管理员确认并执行）、`POST /approvals/reject`（驳回）；
+- 安全约束：**发起人不能自我确认**（须第二名管理员）、确认人需具备目标群远程操作授权、CAS 并发保护（仅一人可确认成功）、**10 分钟超时自动过期**；
+- WebUI「权限管理」页新增「待审批操作（双管理员）」区块：确认执行 / 驳回按钮，确认前同样二次确认弹窗。
+
+**测试**
+- 新增 `tests/test_web_approvals.py`：storage 审批 CRUD（创建/列出/确认/驳回/过期/执行标记）、审批规则（发起人不可自确认、状态互斥、过期拒绝）、审计新字段落库（IP/前后值）、schema 新配置、路由注册静态检查。
+
+## v2.18.0 - 2026-08-14
+
+### 权限收敛：AstrBot 全局管理员继承可配置 + WebUI 双名单排查
+
+**背景**：`_get_all_admin_ids` 此前无条件合并插件管理员名单与 AstrBot 全局 `admin_id`，形成隐式交叉污染——AstrBot 全局配置变动会反向影响插件权限。
+
+**1. 可配置继承开关（`inherit_astrbot_admins`，默认 `true` 保持原行为）**
+- 开启：AstrBot 全局 `admin_id` 自动成为插件全局管理员（历史行为不变）；
+- 关闭：插件权限**仅认插件管理员名单**，AstrBot 全局配置不再影响插件权限，消除隐式信任关系；
+- 可按群覆盖。
+- 实现：`onebot.py` 抽出 `_get_astrbot_admin_ids()`（读取 `context.astrbot_config['admin_id']`），
+  `_get_all_admin_ids()` 按开关决定是否合并。
+
+**2. WebUI 双名单展示（`GET /admin/lists`）**
+- 返回 `plugin_admins`（插件管理员）、`astrbot_admins`（AstrBot 全局管理员）、`inherited`（继承开关）、`effective_admins`（实际生效名单）；
+- 前端「权限管理」页分两区展示：插件管理员（可移除）+ AstrBot 全局管理员（继承生效/已关闭不生效均有标注），便于排查"为什么这个人能/不能操作"；
+- 设置页新增 `inherit_astrbot_admins` 开关。
+
+**测试**
+- 新增 `tests/test_admin_inherit.py`：默认继承合并、关闭后排除、`_get_astrbot_admin_ids` 读取、无 context 降级、去重；web.py 双名单接口与 schema 静态检查。
+
+## v2.17.0 - 2026-08-14
+
+### LLM 审核失败降级策略：fail-close 可配置 + 管理员告警
+
+**1. 可配置 fallback 行为（`llm_fallback_mode`，默认 `pass_on_error`）**
+- `pass_on_error`（默认，兼容旧行为）：LLM 不可用时，真实规则/词库命中按规则处罚（fail-closed），无命中则降级放行；
+- `block_on_error`（fail-close）：LLM 不可用时，进入 LLM 审核的可疑消息**一律撤回拦截**（不升级禁言，避免降级期间误封扩大），真实规则命中同样按规则处罚——相当于 `moderation_llm_fail_closed` 的超集；
+- 可按群覆盖。
+
+**2. 回退到纯正则审核结果（不直接放行）**
+- 无论哪种模式，只要存在真实规则/词库命中（广告/政治/色情等，`_llm_failure_requires_rule_penalty`），LLM 失败时一律按规则处罚，杜绝"LLM 全挂导致审核开天窗"；
+- 自适应学习词（learned_ad/learned_swear）与语义候选标签保持原有策略：不因 LLM 失效未经确认就撤回。
+
+**3. 记录 LLM 不可用告警日志 + 通知管理员（`llm_failure_notify_enabled`，默认关）**
+- LLM 不可用时 `logger.warning` 记录告警（含命中类别、原因、当前降级策略）；
+- 开启 `llm_failure_notify_enabled` 后，在当前群发送"⚠️ LLM 审核服务暂不可用，本次可疑消息已按降级策略处理（已拦截/已放行）"通知管理员；
+- 新增 `_send_group_message` / `_notify_llm_failure` / `_handle_llm_fallback_block`（fail-close 拦截：撤回+记录+可选提示）。
+
+**测试**
+- `test_nested_forward.py` 新增 `LlmFallbackModeTests`：默认 pass、block_on_error 判定、真实命中 fail-closed、语义候选不触发规则处罚、pass 模式兼容回归。
+
+## v2.16.0 - 2026-08-14
+
+### 性能优化：同步 DB 操作线程化 + 统计结果 TTL 缓存 + 高频查询组合索引
+
+**1. 耗时的同步数据库操作改为后台线程执行（asyncio.to_thread）**
+- storage 新增 `run_in_thread`（`asyncio.to_thread` 包装），供 async 调用方在线程池执行同步 SQLite 操作；
+- `activity.py`：`_record_activity` 改为 async，每条发言的 `record_group_activity` INSERT 在线程执行；
+  `/群活跃度` 命令的聚合查询与 `_active_user_count` 同样走线程池；
+- `moderation.py`：违规积分判断的 `get_user_violation_count` COUNT 聚合走 `asyncio.to_thread`；
+- `web.py`：Dashboard 四个统计接口（趋势/分布/时段/群排行）全部改 `asyncio.to_thread`，聚合查询不再阻塞事件循环。
+
+**2. 统计结果带 TTL 的内存缓存（storage `_query_cached`）**
+- 报表类统计（`get_daily_trend` / `get_violation_distribution` / `get_group_activity_ranking` / `get_hourly_distribution`）TTL 30s；
+- 群活跃度（`get_group_activity_summary` / `get_group_activity_top_users`）TTL 10s；
+- 违规积分计数（`get_user_violation_count`）TTL 5s，且 `add_log` 写日志时按 `violation:` 前缀**主动失效**，保证积分升级判断相对实时；
+- 缓存自动清理过期项，上限 256 条；提供 `invalidate_query_cache` 供数据变更时失效。
+
+**3. 高频查询组合索引（`_create_tables` 幂等创建，旧库升级自动补建）**
+- `idx_logs_group_user_ts ON moderation_logs(group_id, user_id, ts)` → 违规积分 COUNT 查询；
+- `idx_activity_group_ts_user ON group_activity(group_id, ts, user_id)` → 群活跃用户排行 GROUP BY；
+- `idx_web_audit_group_ts ON web_audit_logs(group_id, ts)` → 按群倒序查审计日志。
+
+**测试**
+- 新增 `tests/test_db_perf.py`：组合索引存在性与持久化、TTL 缓存命中/过期/前缀失效、`run_in_thread` 执行、`add_log` 联动失效违规计数缓存。
+
+## v2.15.0 - 2026-08-14
+
+### 安全增强：Web 后台远程操作的权限模型、身份绑定与审计日志
+
+**1. Dashboard 用户与 QQ 身份绑定（`web_operator_bindings`）**
+- 新增配置 `web_operator_bindings`（格式 `用户名:QQ号,用户名2:QQ2`）：把 AstrBot Dashboard 登录用户名映射到 QQ 身份；
+- WebUI 远程操作时前端携带操作者身份，服务端 `_resolve_operator_from_bindings` 完成用户名 → QQ 的解析。
+
+**2. 远程写操作授权校验（`web_remote_require_operator`，默认关闭）**
+- `_remote_execute` 新增 `_check_remote_operator`：操作者（QQ 身份）对目标群的授权自上而下校验——
+  全局插件管理员（admin_list / AstrBot 全局 admin_id / 绑定用户）可操作**所有群**；
+  群超管、群主、群管理员仅可操作其授权群；其余拒绝；
+- 开启 `web_remote_require_operator` 后，未绑定身份或非授权用户的远程写操作一律拒绝；
+  关闭时依赖 AstrBot Dashboard 登录鉴权（默认兼容原有行为）。
+
+**3. 审计日志（新增 `web_audit_logs` 表 + `GET /audit_logs` 接口）**
+- 所有远程写操作**无论成功/拒绝都记录**：操作者姓名、QQ、目标群、操作、目标成员、参数、结果、时间；
+- storage 新增 `record_web_audit` / `list_web_audit_logs`；旧 moderation_logs 记录同步附带操作者身份。
+
+**4. 文档明确权限模型**
+- README 新增「Web 后台远程操作权限模型」章节：明确"全局插件管理员可操作所有群"是产品设计的全局管理模型，
+  并给出安全部署建议（勿暴露公网、开启强制校验、配置身份绑定）。
+
+**前端**
+- pages/dashboard 远程操作（单操作/批量）请求携带 `operator_qq`/`operator_name`（本地记忆，首次提示输入）。
+
+**修复（CI py_compile 发现）**
+- `advanced_audit.py`：修复 `_find_risk_url` 被截断导致的 SyntaxError（`return` 带值出现在 async generator `_handle_link_violation` 中）；URL 风险匹配循环复位到 `_find_risk_url` 尾部。
+- `video_audit.py`：`_strip_file_prefix` 对 `file:///` 前缀剥离时保留前导 `/`（`file:///tmp/a.mp4` → `/tmp/a.mp4`）。
+- 测试：`test_nested_forward.py` harness 补 `_record_activity`；`test_hash_audit.py` `test_window_resets` 用 `setdefault` 初始化 escalation 键；`test_web_remote_audit.py` setUpClass 改用 `type()` 组合 harness 基类。
+
+## v2.14.0 - 2026-08-14
+
+### 新增：违规积分累进制（`violation_points_enabled`，默认关闭）
+
+- 按「窗口内累计违规次数」升级处罚：**首次警告（仅撤回+记录，不禁言）→ 达到禁言阈值禁言 → 达到踢出阈值踢出**；
+- 数据源复用 `moderation_logs`（新增 storage 方法 `get_user_violation_count`），无需新表，窗口外历史不计入；
+- 新配置（均可按群覆盖）：
+  - `violation_points_enabled`（默认 false）；
+  - `violation_points_window_days`（默认 30，统计窗口天数）；
+  - `violation_points_thresholds`（默认 `2,5`：第 2 次起禁言、第 5 次起踢出，未达为警告）；
+- 接入规则命中（`_execute_rule_penalty`）与 LLM 审核（`_execute_llm_penalty`）两条处罚路径；与广告分级处置互不冲突、均默认关闭。
+
+## v2.13.0 - 2026-08-14
+
+### 新增：五项增强审核/统计功能（均默认关闭）
+
+**1. 外链邀请撤回（`invite_link_recall_enabled`，默认关闭）**
+- 检测消息中的外部群邀请链接（QQ `qm.qq.com`/`jq.qq.com`/`qun.qq.com`/`pd.qq.com`、Telegram `t.me`、Discord `discord.gg`/`discord.com/invite`）及明文"群号+数字"特征，命中即撤回并记录；高置信文本特征，不经 LLM，可按群覆盖。
+
+**2. 链接安全检测（`url_safety_enabled`，默认关闭）**
+- 提取消息中全部 URL → 解析域名 → 与「内置短链域名（t.cn/dwz.cn/bit.ly 等）+ `url_risk_domains` 自定义域名 + `url_risk_patterns` 自定义正则」比对，命中即撤回并记录，用于拦截赌博/诈骗/引流链接，可按群覆盖。
+
+**3. GIF 帧级拆分审核（`gif_frame_audit_enabled`，默认关闭）**
+- 对 GIF 动图下载后用 OpenCV 逐帧拆解（帧数上限 `gif_max_frames`，默认 15），每帧做本地 OCR（复用多识别引擎）并把各帧文字并入审核正文，避免中间帧违规漏检；失败自动降级为整体图审核，可按群覆盖。
+
+**4. 语音消息审核（`voice_audit_enabled`，默认关闭）**
+- 收集语音消息段 → 下载音频 → 调通用 HTTP ASR 接口（`voice_asr_url`，POST multipart `audio` 到 `{url}/api/asr`，期望返回 JSON `{text}`）转文字并入审核正文；ASR 为外部自建服务（如 whisper/云 ASR），默认关闭，可按群覆盖。
+
+**5. 群活跃度统计（`group_activity_enabled`，默认关闭）**
+- 记录每群每条发言到 SQLite 新表 `group_activity`（storage.py 新增 `record_group_activity`/`get_group_activity_summary`/`get_group_activity_top_users`）；
+- 新增 `/群活跃度 [天数]` 命令：展示今日/近7天/近30天发言条数与活跃人数、活跃用户 Top10。
+
+**实现说明**
+- 新增 `advanced_audit.py`（`AdvancedAuditMixin`）与 `activity.py`（`ActivityMixin`），均接入 `Main` 继承链；
+- 审核管线（`moderation._handle_message`）：外链邀请/风险链接在 LLM 审核前以高置信特征直接撤回+记录；GIF 帧级与语音 ASR 的识别文本并入正文走统一审核；群活跃度在消息入口统一记录；
+- 全部功能默认关闭，纯增量，不影响既有审核行为。
+
+## v2.12.0 - 2026-08-13
+
+### 新增：按角色分权限完善 + 多协议适配升级（Telegram/Discord 群管操作）
+
+**按角色分权限（在 QQ 全量基础上完善，并跨平台生效）**
+
+- 新增 `role_ban_require` 配置：`/禁言` `/解禁` 指令的发起者最低角色独立可配（admin/owner/plugin_admin），与已有的 `role_high_require`（高危操作）、`role_kick_require`（踢人）共同构成三级角色分级；
+- 「按角色分权限」跨平台生效：`_get_member_role` 增加平台路由，Telegram/Discord 受限模式下同样能查询群角色（member/admin/owner），群主/群管理员审核豁免与 `role_*_require` 分级在受限平台与 QQ 行为一致。
+
+**多协议适配升级（`platform_ops.py` 新增，受限模式从"仅文本关键词"升级为"文本关键词 + 群管操作"）**
+
+- 新增 `platform_ops.py`（`PlatformOpsMixin`）：Telegram / Discord 群管操作平台路由，全部 **duck typing** 实现（不强制 import python-telegram-bot / discord.py，纯 QQ 部署零影响），带统一超时与失败降级：
+  - Telegram：撤回 `delete_message`、禁言=临时 ban（`until_date` 到时自动解封）、解禁 `unban_chat_member`、踢人=ban+unban、角色 `get_chat_member.status`（creator/administrator）；
+  - Discord：撤回（频道 `fetch_message` + `delete`）、禁言=timeout、解禁=取消 timeout、踢人 `member.kick`、角色（群主 / `guild_permissions.administrator`）；
+- `onebot.py` 群管方法（`_recall_msg` / `_kick_member` / `_mute_member` / `_unban_member` / `_get_member_role`）非 AIOCQHTTP 平台时自动委托平台路由，QQ 全量行为零变化；
+- 受限模式升级（`_handle_message_limited`）：命中违规后撤回走平台路由（此前 `call_action` 对 Telegram/Discord 无效）；新增 `multi_protocol_ban_enabled`（默认关闭）可开启违规自动禁言；群主/群管理员按角色豁免；
+- `platforms.py` 能力表更新：telegram/discord 的 `recall/ban/kick` 标记为可用；`metadata.yaml` 的 `support_platforms` 加入 `telegram`、`discord`。
+
+### 兼容性说明
+
+- 默认行为不变：`multi_protocol_enabled` 默认关闭，纯 QQ 部署不受影响；开启后 Telegram/Discord 受限模式默认仅"撤回+记录"，禁言需显式开启 `multi_protocol_ban_enabled`。
+
+## v2.11.0 - 2026-08-13
+
+### 新增：多广告识别引擎（Umi-OCR / 第三方云API / 本地RapidOCR，不再默认智谱）
+
+- **识别引擎可配置**（`ocr_engine`，默认改为 `local`）：
+  - `local`（默认）：本地 RapidOCR，模型**不随插件打包**——首次启用时自动 `pip install rapidocr_onnxruntime`（含模型约30MB），关闭引擎**不卸载**模型；
+  - `umi`：接入 **Umi-OCR（Rapid 引擎版）** 本地 HTTP 服务（默认 `http://127.0.0.1:1224`），通过 `/api/ocr` 识别图片/视频帧文字，专门为广告检测服务；
+  - `cloud`：接入**第三方云广告检测 API**（如阿里云内容安全，通用 JSON 协议 `{image_base64}→{is_ad,score,reason}`），可配 `cloud_audit_url` / `cloud_audit_api_key` / `cloud_audit_threshold`；
+  - `llm`：云端视觉模型（智谱等）保留为**可选**，不再默认使用；
+  - `auto`：本地优先，识别不到再回退云端视觉。
+- `local_ocr.py` 重构：新增 `_umi_ocr_text`（Umi-OCR HTTP）、`_cloud_audit_image`（云API）、`_ensure_local_ocr`（模型按需安装）、`_detect_media_text`（统一入口）、`_ad_engine`（引擎选择）。
+- 图片（`_ocr_images`）与视频帧（`_recognize_video_frames`）均按引擎识别；云 API 命中返回 `[云API] 广告：xxx` 标记。
+- 新配置：`local_ocr_auto_install` / `umi_ocr_url` / `cloud_audit_url` / `cloud_audit_api_key` / `cloud_audit_threshold`。
+- `requirements.txt` 移除 `rapidocr_onnxruntime` 硬依赖（模型不打包，按需安装）。
+
+## v2.10.1 - 2026-08-13
+
+### 新增：本地 RapidOCR 识别引擎（低配/离线方案）
+
+接入 `rapidocr_onnxruntime` 本地 OCR 模型（ONNX 版 ~30MB，常驻 ~300MB），2 核 2G 服务器可跑，不依赖智谱等云端视觉 API：
+
+- **`local_ocr.py`（`LocalOCRMixin`）**：RapidOCR 单例懒加载、全局复用（避免冷启动），同步调用放入线程池不阻塞事件循环；
+- 图片（`_ocr_images`）与视频帧（`_recognize_video_frames`）均可使用本地 OCR 识别广告文字；
+- 新配置 `ocr_engine`：`llm`（默认，云端视觉）/ `local`（本地 RapidOCR）/ `auto`（本地优先，识别不到回退云端），可按群覆盖；
+- `requirements.txt` 加入可选依赖 `rapidocr_onnxruntime`（缺失时自动回退云端引擎）；
+- 本地二维码仍用 OpenCV 解码（免费），识别文字同样进入统一审核流程。
+
+## v2.10.0 - 2026-08-13
+
+### 新增：独立 Web 管理后台（服务端浏览器直接访问）
+
+- **`ad_backend.py`（`AdBackendMixin`）**：插件内置独立 Quart HTTP 服务（独立端口，不依赖 AstrBot 管理面板），服务端启动后浏览器直接访问。
+- 页面：总览（今日拦截/图片/视频/累计 + 最近拦截 + 用户排行，15s 自动刷新）、违规记录（按操作筛选/分页/图片证据放大）、广告黑名单（感知哈希样本查看/删除）、视频指纹缓存（查看/清空）、分级处置记录（查看/重置）、配置状态（只读）。
+- 鉴权：`ad_backend_token` 可设访问令牌（URL `?token=` 或请求头 `X-Token`），留空不鉴权（仅建议内网）。
+- 新配置项：`ad_backend_enabled` / `ad_backend_port`（默认 8765）/ `ad_backend_token`。
+- 数据全部来自插件本地（SQLite 审核日志 + JSON 黑名单/指纹/分级），不上传任何第三方。
+- 新教程：`使用教程-Web后台.md`。
+
+## v2.9.2 - 2026-08-13
+
+### 优化：视频广告检测实时性（智能抽帧 + 快速预检 + 指纹缓存）
+
+针对 LLM 视觉逐帧检测的延迟与费用，参考「场景切换抽帧 + 两级流水线 + 缓存」方案优化：
+
+- **场景切换抽帧**（`video_frame_mode=scene`）：不再均匀抽帧，仅在画面明显变化时保留帧（帧间平均像素差异 > `video_scene_threshold`），广告核心信息多在关键画面；不足 3 帧时自动补足前几帧，避免空结果。
+- **快速预检**（`video_quick_precheck`）：每帧先用本地轻量特征打分（HSV 饱和度 + Canny 边缘密度 + MSER 文字区域，全部 OpenCV 实现，<50ms/帧），得分低于 `video_precheck_threshold` 的帧直接跳过视觉 API 调用——正常视频 70% 左右的帧可在预检阶段被过滤，广告帧平均只需 2~3 次视觉调用。
+- **视频指纹缓存**（`video_fingerprint_cache`）：整段视频按「首帧感知哈希 + 总帧数」生成指纹；广告确认后写入指纹缓存（`video_fingerprint_cache.json`，LRU 500 条），同一广告视频被群发时直接命中并跳过检测，零视觉调用。
+- 新增配置项（均可按群覆盖）：`video_frame_mode` / `video_scene_threshold` / `video_quick_precheck` / `video_precheck_threshold` / `video_fingerprint_cache`。
+- 新测试：快速预检打分、视频指纹生成、指纹缓存学习/命中/持久化/LRU 上限。
+
+## v2.9.1 - 2026-08-13
+
+### 新增：感知哈希广告图黑名单 + 广告分级处置
+
+参考 AstrBot 社区常用方案（本地粗筛 + LLM 复核）补充两个降低误伤/成本的增强：
+
+- **感知哈希（pHash）广告图黑名单**：
+  - 新增 `hash_audit.py`（`HashAuditMixin`），用 OpenCV 实现 pHash（缩放→DCT→低频→中值→64bit），**不新增 imagehash/Pillow 依赖**；
+  - 图片（`_ocr_images`）与视频帧（`_recognize_video_frames`）识别前先比对黑名单，命中直接标记「已知广告」并**跳过视觉 API 调用**（省 GLM-4V 费用）；
+  - 命中黑名单不直接处罚，作为强信号进入统一流程（LLM 文本复核兜底防误杀）；
+  - 广告被确认违规后自动把本次媒体哈希学习入黑名单（`ad_hash_auto_learn`），支持去重计数、上限裁剪（5000 条）、JSON 持久化。
+- **广告分级处置**：
+  - 按窗口内广告违规次数升级：警告（撤回）→ 禁言 → 踢出，阈值与窗口可配（`ad_escalation_*`），默认关闭保持原有行为；
+  - 独立于防刷屏冷却，仍与禁言计划/通知开关联动。
+- **新配置项**（均可按群覆盖，自动出现在 WebUI Schema 面板）：
+  `ad_hash_blacklist_enabled` / `ad_hash_distance` / `ad_hash_auto_learn` /
+  `ad_escalation_enabled` / `ad_escalation_warn_at` / `ad_escalation_ban_at` /
+  `ad_escalation_kick_at` / `ad_escalation_window_seconds`。
+- **WebUI**：「功能开关」新增「广告图黑名单」「广告分级处置」两个开关。
+- **测试**：新增 `tests/test_hash_audit.py`（pHash 相似度/汉明距离/黑名单学习去重/持久化/分级计数窗口）。
+
+## v2.9.0 - 2026-08-12
+
+### 新增：视频广告检测
+
+在原有文字/图片/二维码审核基础上新增「识别广告视频」能力：
+
+- **视频消息接入审核**：`video` 消息段不再被忽略，`_should_scan_message` 与 `_handle_message`
+  全链路支持视频；纯视频消息也会进入审核流程。
+- **新模块 `video_audit.py`（`VideoAuditMixin`）**：
+  - `_collect_video_components`：从消息链（含 Reply 引用）收集 video 段并去重；
+  - `_resolve_video_source`：四级解析视频源（`convert_to_file_path` → url/path/file 字段 →
+    `file://` 前缀剥离 → 协议端 `get_file` API 兜底）；
+  - `_download_video`：复用 `_download_bytes` 的 SSRF 防护（逐跳校验重定向、拒绝内网）与
+    插件级 I/O 并发许可，仅放宽体积上限（默认 30MB）；
+  - `_extract_video_frames`：OpenCV 等间隔抽帧（复用已随插件安装的
+    `opencv-python-headless`，不新增依赖），抽帧放入线程池并限时；
+  - `_recognize_video_frames`：逐帧复用现有 LLM 视觉 OCR（`_call_llm_ocr`，data URL 传图）
+    + 本地二维码解码（`_decode_qr_from_bytes`），识别文本以 `[视频第N帧]` 标记并入正文，
+    统一走「正则初筛 + LLM 二次判断 + 处罚」流程。
+- **安全与降级**：默认关闭（`video_audit_enabled`）；受单视频体积（`video_max_size_mb`）、
+  下载超时（`video_download_timeout`）、抽帧超时、总超时（`video_audit_timeout`）多重上限
+  保护；任一环节失败静默降级，不误杀正常消息；临时文件用完即删、卸载时清理。
+- **新配置项**（均可按群覆盖）：`video_audit_enabled` / `video_max_frames` /
+  `video_frame_interval_sec` / `video_max_size_mb` / `video_download_timeout` /
+  `video_audit_timeout`，自动出现在 WebUI「设置」的 Schema 面板。
+- **测试**：新增 `tests/test_video_audit.py`（组件收集/源解析/抽帧/合并审核/开关降级）。
+
 ## v2.8.3 - 2026-08-15
 
 ### 修复：AI 误判复盘规则覆盖（Issue #70）

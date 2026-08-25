@@ -30,6 +30,7 @@ _SHOP_LINK_RE = re.compile(
     r"(?:https?://|www\.)|"                                  # 任意网址
     r"(?:taobao|tmall|jd|pinduoduo|pdd|1688|xiaohongshu|douyin|kuaishou|weidian|youzan)\.|"  # 电商域名
     r"(?:\.(?:com|cn|net|org|shop|top|xyz|vip)\b)|"          # 裸域名
+    r"(?:qm\.qq\.com|jq\.qq\.com|qun\.qq\.com|pd\.qq\.com)|"  # v2.29.0 QQ 群链接
     r"(?:淘宝|天猫|拼多多|京东|微店|有赞|旗舰店|专卖店|扫码|二维码|领券|优惠券)",  # 明确店铺/扫码
     re.IGNORECASE,
 )
@@ -39,7 +40,7 @@ _SHOP_LINK_RE = re.compile(
 _PROMO_SUSPECT_RE = re.compile(
     r"(?:加我|加个?[微薇威]|加[vV]|[vV][xX]|微信|薇信|威信|企[鹅Q]|私聊|私我|滴我|联系我)|"
     r"(?:代购|代练|代刷|接单|承接|出售|批发|招收?代理|招募|招商|收徒|带练|上分|刷单)|"
-    r"(?:免费领|福利|优惠|折扣|低价|特价|秒杀|兼职|日结|月入|引流|推广|广告)",
+    r"(?:免费领|福利|优惠|折扣|低价|特价|秒杀|兼职|日结|月入|引流|推广|广告|群链接|拉群)",
     re.IGNORECASE,
 )
 
@@ -291,6 +292,12 @@ class CardMonitorMixin:
                     protection_failed = True
                     # 快照记录应有值，使下一轮看到实际违规值时能再次尝试。
                     effective_card = str(protected or "")
+                    if self._cfg("card_monitor_notify", True, group_id=group_id):
+                        await self._notify_card_group(
+                            group_id,
+                            f"[名片监控] {user_id} 的受保护名片被改为「{card_new}」，"
+                            f"还原失败——请检查 Bot 是否有群管理权限，或手动改回。",
+                        )
 
             # C 违规名片审核。两档模式：链接直接拦，其余严格模式走初筛+LLM。
             link_only = self._cfg("card_audit_link_only", False, group_id=group_id)
@@ -308,6 +315,7 @@ class CardMonitorMixin:
                     and (link_only or full_audit) and not audit_exempt):
                 is_violation = False
                 reason = ""
+                hit_types = {}
                 if self._is_shop_link_card(card_new):
                     is_violation = True
                     reason = "含链接/店铺"
@@ -319,26 +327,65 @@ class CardMonitorMixin:
                             group_id, user_id, card_new, hit_types, allow_promo=False)
                         reason = "、".join(hit_types.keys()) if hit_types else "LLM 判定"
                 if is_violation:
-                    target = card_old
-                    if self._is_shop_link_card(card_old) or (
-                        full_audit and self._card_lexicon_hit(group_id, card_old)
-                    ):
-                        target = ""
-                    if await self._restore_card(group_id, user_id, target):
-                        action = "违规还原"
-                        restored = True
-                        effective_card = str(target or "")
-                        if self._cfg("card_monitor_notify", True, group_id=group_id):
-                            shown = target if target else "(空名片)"
-                            await self._notify_card_group(
-                                group_id,
-                                f"[名片监控] {user_id} 的新名片「{card_new}」违规（{reason}），"
-                                f"已还原为「{shown}」",
-                            )
+                    # v2.36.x 重做（安全修复）：只有「广告类」名片违规才进入广告复核
+                    # （链接/店铺命中，或词库命中 ad/promo 引流类）；辱骂/政治/色情等
+                    # 非广告违规仍走原有「直接还原」流程，避免误用广告复核。
+                    ad_like = (
+                        self._is_shop_link_card(card_new)
+                        or bool(hit_types.get("ad"))
+                        or bool(hit_types.get("promo"))
+                    )
+                    if self._cfg("ad_review_enabled", False, group_id=group_id) and ad_like:
+                        # v2.36.0：疑似广告名片 → 先提交管理员确认（不直接还原），
+                        # 确认后还原名片 + 禁言 + 学习文本指纹。
+                        # 安全修复：msg_id 传空（名片复核没有消息 ID），
+                        # 要还原的名片值写入独立字段 restore_value（确认时只还原名片，
+                        # 不会把名片值当消息 ID 误撤回无关消息）。
+                        review_id = self._storage.create_ad_review(
+                            group_id, user_id, user_name,
+                            f"[群名片] {card_new}", "",
+                            [], "card", restore_value=str(card_old or ""),
+                        )
+                        if (review_id and self._cfg(
+                                "ad_review_admin_private", True, group_id=group_id)):
+                            try:
+                                await self._notify_ad_admins_private(
+                                    group_id, user_id, user_name,
+                                    f"[群名片] {card_new}", review_id, "card",
+                                )
+                            except Exception as exc:
+                                logger.debug(f"[GroupMgr] 私信名片广告复核失败: {exc}")
+                        action = "待复核（疑似广告名片）"
+                        # v2.36.1：群里不通知，仅私信管理员 + 后台审核日志确认
                     else:
-                        action = "违规还原失败"
-                        # 与保护还原相同，保留目标快照以便周期同步重试。
-                        effective_card = str(target or "")
+                        target = card_old
+                        if self._is_shop_link_card(card_old) or (
+                            full_audit and self._card_lexicon_hit(group_id, card_old)
+                        ):
+                            target = ""
+                        if await self._restore_card(group_id, user_id, target):
+                            action = "违规还原"
+                            restored = True
+                            effective_card = str(target or "")
+                            if self._cfg("card_monitor_notify", True, group_id=group_id):
+                                shown = target if target else "(空名片)"
+                                await self._notify_card_group(
+                                    group_id,
+                                    f"[名片监控] {user_id} 的新名片「{card_new}」违规（{reason}），"
+                                    f"已还原为「{shown}」",
+                                )
+                        else:
+                            action = "违规还原失败"
+                            # 与保护还原相同，保留目标快照以便周期同步重试。
+                            effective_card = str(target or "")
+                            if self._cfg("card_monitor_notify", True, group_id=group_id):
+                                shown = target if target else "(清空名片)"
+                                await self._notify_card_group(
+                                    group_id,
+                                    f"[名片监控] {user_id} 的广告名片「{card_new}」违规（{reason}），"
+                                    f"还原为「{shown}」失败——请检查 Bot 是否有群管理权限，"
+                                    f"或手动处理。",
+                                )
 
             if self._cfg("card_log_enabled", True, group_id=group_id):
                 self._log_card_change("card", group_id, user_id, user_name, card_old, card_new, action)

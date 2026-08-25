@@ -70,17 +70,23 @@
         "default": true,
         "hint": "开启后，消息被自动撤回/处罚时在群内发送提示（内容见 ban_notice 模板）。关闭则静默处理，不打扰群聊。统一管控三条撤回路径：规则命中撤回、LLM审核撤回、QQ收藏撤回"
     },
+    "safe_send_enabled": {
+        "description": "消息发送安全壳（防止发送失败导致 AstrBot 进程崩溃）",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.33.0。AstrBot 管线在 event.send 发送群消息失败（如 NapCat 发送动作超时 retcode=1200）时会记录日志后重新抛出，异常会穿透到顶层导致整个 AstrBot 进程退出（容器自动重启）。开启后给 event.send 加安全壳：发送失败仅记日志、不再导致进程崩溃。可按群覆盖"
+    },
     "scan_swear": {
         "description": "辱骂脏话检测开关",
         "type": "bool",
         "default": true,
-        "hint": "关闭后不使用正则匹配辱骂/脏话内容"
+        "hint": "脏话审核总开关（v2.35.0）：同时控制内置脏话正则与脏话词库分类，关闭后脏话审核彻底不生效，不影响广告/其他违规审核。可按群覆盖"
     },
     "scan_ad": {
         "description": "广告推广检测开关",
         "type": "bool",
         "default": true,
-        "hint": "关闭后不使用正则匹配广告/推广/引流内容"
+        "hint": "广告审核总开关（v2.35.0）：同时控制内置广告正则与广告词库分类（含视频广告复核队列），关闭后广告审核彻底不生效，不影响脏话/其他违规审核。可按群覆盖"
     },
     "custom_swear_keywords": {
         "description": "自定义脏话关键词（追加到脏话检测规则）",
@@ -135,6 +141,36 @@
         "type": "int",
         "default": 12,
         "hint": "消息、OCR、入群和名片审核共享的并发上限，范围 1-32；修改后需重载插件。OCR 内部最多占 4 路，避免阻塞正文审核"
+    },
+    "sync_server_url": {
+        "description": "云同步服务端地址",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.8。独立后台服务端（gg_server，可宝塔部署）地址，如 http://你的域名:9000。填写后开启同步功能：误判复盘/已确认违规/审核信息自动上传服务器保存，更换服务器后可快速恢复。留空不启用"
+    },
+    "sync_username": {
+        "description": "云同步服务端账号",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.8。服务端管理员账号（owner/admin），插件用它登录并同步数据"
+    },
+    "sync_password": {
+        "description": "云同步服务端密码",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.8。服务端管理员密码"
+    },
+    "sync_auto": {
+        "description": "云同步自动开启",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.36.8。开启后插件启动即同步一次，之后按 sync_interval 分钟周期双向同步（上传本地数据 + 拉取服务器数据恢复 + 拉取执行服务端管理员操作）"
+    },
+    "sync_interval": {
+        "description": "云同步周期（分钟）",
+        "type": "int",
+        "default": 10,
+        "hint": "v2.36.8。自动同步间隔，范围 1-1440 分钟"
     },
     "llm_moderation_ban": {
         "description": "LLM 审核违规后自动禁言",
@@ -221,6 +257,25 @@
         "default": false,
         "hint": "开启后 /禁言 /踢人 /设置名片 等群管指令要求操作者本群角色为群主或群管理员，即使是插件全局管理员在其非群管的群里也不能通过指令操作（防止跨群乱踢人）。查询指令与 WebUI 远程执行不受此限制"
     },
+    "role_high_require": {
+        "description": "高危群管操作所需角色",
+        "type": "string",
+        "default": "admin",
+        "hint": "设置/取消管理员、全体禁言、修改群名、设置头衔等操作的发起者最低角色：admin=群管理员及以上（默认，与原行为一致），owner=仅群主或插件管理员，plugin_admin=仅插件管理员。可按群覆盖"
+    },
+    "role_kick_require": {
+        "description": "踢人所需角色",
+        "type": "string",
+        "default": "admin",
+        "hint": "/踢人 指令与 LLM 踢人工具的操作者最低角色：admin=群管理员及以上（默认），owner=仅群主或插件管理员，plugin_admin=仅插件管理员。可按群覆盖"
+    },
+    "role_ban_require": {
+        "description": "禁言/解禁所需角色",
+        "type": "string",
+        "default": "admin",
+        "hint": "/禁言 /解禁 指令的操作者最低角色：admin=群管理员及以上（默认，与原行为一致），owner=仅群主或插件管理员，plugin_admin=仅插件管理员。可按群覆盖"
+    },
+
     "kick_recall_enabled": {
         "description": "踢人时自动撤回该成员最近消息",
         "type": "bool",
@@ -700,6 +755,12 @@
         "default": true,
         "hint": "保持历史行为：白名单内（或未设白名单且非黑名单）群的群主/管理员默认可用群管命令（仅本群，非插件全局管理员）。若只想用F5按群精细授权，可关闭此项"
     },
+    "inherit_astrbot_admins": {
+        "description": "继承 AstrBot 全局管理员为插件管理员",
+        "type": "bool",
+        "default": true,
+        "hint": "默认开启（保持历史行为）：AstrBot 全局 admin_id 自动成为插件全局管理员（可跨群管理插件）。关闭后插件权限仅认插件管理员名单，避免 AstrBot 全局配置变动反向影响插件权限（消除隐式交叉污染）。关闭后 WebUI「权限管理」会标注 AstrBot 全局管理员不再生效"
+    },
     "card_monitor_enabled": {
         "description": "名片监控总开关",
         "type": "bool",
@@ -778,6 +839,19 @@
         "default": false,
         "hint": "默认关：LLM 全部不可用时，除超长内容和高置信度脏话外的命中会放行，避免 Provider 抖动导致误封。开启后，只要命中任一规则/词库类别，LLM 降级时也一律按规则处罚"
     },
+    "llm_fallback_mode": {
+        "description": "LLM 不可用时的降级策略",
+        "type": "string",
+        "default": "pass_on_error",
+        "options": ["pass_on_error", "block_on_error"],
+        "hint": "pass_on_error=LLM失败时真实规则/词库命中按规则处罚（fail-closed），无命中则降级放行（默认，兼容旧行为）；block_on_error=LLM失败时进入 LLM 审核的可疑消息一律撤回拦截（fail-close），真实规则命中同样按规则处罚。block_on_error 相当于 moderation_llm_fail_closed 的超集。可按群覆盖"
+    },
+    "llm_failure_notify_enabled": {
+        "description": "LLM 不可用时通知管理员",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后每次 LLM 审核不可用时，在当前群发送一条告警提示（含当前降级策略），并在日志记录告警。可按群覆盖"
+    },
     "lexicon_learn_enabled": {
         "description": "自适应上下文学习总开关",
         "type": "bool",
@@ -844,5 +918,433 @@
         "type": "list",
         "default": [],
         "hint": "列在此处的词永远不会被学成违禁词，用于保护本群常用词/正常商品名，避免误伤"
+    },
+    "video_audit_enabled": {
+        "description": "视频广告检测开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后自动下载群内视频、抽帧并送视觉模型识别广告内容（识别帧内引流文字/二维码/画面）。成本较高（下载+多次视觉调用），默认关闭。可按群覆盖"
+    },
+    "video_audit_concurrency": {
+        "description": "视频审核并发数（视频数与帧识别共用）",
+        "type": "int",
+        "default": 1,
+        "hint": "v2.36.6。视频广告检测的并发上限（1-4，默认 1）：同时审核的视频数、以及每个视频帧识别路数。调高可加快批量审核，但本地 RapidOCR/抽帧等多路并发会显著拉高 CPU（低配服务器尤其明显），默认保持 1。可按群覆盖"
+    },
+    "video_max_frames": {
+        "description": "每个视频最多抽帧数",
+        "type": "int",
+        "default": 3,
+        "hint": "从视频中等间隔抽取最多多少帧做识别，范围 1-10（超过 10 按 10 截断）。帧越多识别越全面但视觉调用越多。可按群覆盖"
+    },
+    "video_frame_interval_sec": {
+        "description": "视频抽帧间隔（秒）",
+        "type": "float",
+        "default": 5.0,
+        "hint": "每间隔多少秒抽一帧，范围 0.1-60。间隔越短帧越密集，覆盖短视频内短暂出现的广告画面。可按群覆盖"
+    },
+    "video_max_size_mb": {
+        "description": "单个视频最大体积（MB）",
+        "type": "int",
+        "default": 30,
+        "hint": "超过该体积的视频不下载识别，避免机器人流量/存储被耗尽，范围 1-200。可按群覆盖"
+    },
+    "video_download_timeout": {
+        "description": "视频下载超时（秒）",
+        "type": "int",
+        "default": 25,
+        "hint": "单个视频下载的最大耗时，范围 5-120。可按群覆盖"
+    },
+    "video_audit_timeout": {
+        "description": "单条消息视频审核总超时（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "包含下载、抽帧和逐帧识别的总时长上限，超过则放弃本次审核，范围 10-300。可按群覆盖"
+    },
+    "ad_hash_blacklist_enabled": {
+        "description": "广告图黑名单（感知哈希）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后图片/视频帧识别前先与历史广告样本（pHash）比对，命中直接标记「已知广告」并跳过视觉 API 调用（省费用）。命中仍走 LLM 复核防误杀。可按群覆盖"
+    },
+    "ad_hash_distance": {
+        "description": "广告图黑名单相似度阈值",
+        "type": "int",
+        "default": 10,
+        "hint": "感知哈希汉明距离 0-64，越小越严格（仅内容近似才命中），越大越宽松。默认 10。可按群覆盖"
+    },
+    "ad_hash_auto_learn": {
+        "description": "广告确认后自动学习黑名单",
+        "type": "bool",
+        "default": true,
+        "hint": "广告被确认违规后，自动把本次图片/视频帧的感知哈希加入黑名单，下次同图直接命中。关闭后黑名单只增不学。可按群覆盖"
+    },
+    "ad_escalation_enabled": {
+        "description": "广告分级处置（警告→禁言→踢出）",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后按窗口内广告违规次数升级处罚：未达禁言阈值仅撤回+警告，达禁言阈值禁言，达踢出阈值踢出。默认关闭（保持原有直接撤回+禁言）。可按群覆盖"
+    },
+    "ad_escalation_warn_at": {
+        "description": "广告第几次仅警告",
+        "type": "int",
+        "default": 1,
+        "hint": "广告违规次数小于该值仅撤回+警告，范围 1-100。可按群覆盖"
+    },
+    "ad_escalation_ban_at": {
+        "description": "广告第几次禁言",
+        "type": "int",
+        "default": 2,
+        "hint": "广告违规次数达到该值禁言，范围 1-100。可按群覆盖"
+    },
+    "ad_escalation_kick_at": {
+        "description": "广告第几次踢出",
+        "type": "int",
+        "default": 3,
+        "hint": "广告违规次数达到该值踢出群聊，范围 1-100。可按群覆盖"
+    },
+    "ad_escalation_window_seconds": {
+        "description": "广告分级统计窗口（秒）",
+        "type": "int",
+        "default": 604800,
+        "hint": "窗口内累计广告违规次数，窗口外重置，默认 604800（7天），范围 60-31536000。可按群覆盖"
+    },
+    "video_frame_mode": {
+        "description": "视频抽帧模式",
+        "type": "string",
+        "default": "interval",
+        "hint": "interval=等间隔抽帧（默认）；scene=场景切换抽帧，仅在画面明显变化时保留帧，广告信息多在关键画面，可减少无效帧与视觉调用；spans=首/中/尾三段分段采样（v2.20.0），保证品牌露出（开头）与促销信息（结尾）不遗漏。可按群覆盖"
+    },
+    "video_ad_visual_enabled": {
+        "description": "视频帧广告专用视觉判定",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，LLM 视觉识别视频帧时改用广告专用判定 prompt：不只 OCR 文字，还判断画面是否含广告元素（品牌Logo/产品图/促销横幅/联系方式/引流话术），无文字广告视频也能识别。默认关闭（沿用普通 OCR prompt）。可按群覆盖"
+    },
+    "video_subtitle_boost": {
+        "description": "视频字幕带放大增强",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，对每帧画面下方 1/3 的字幕带裁剪放大 1.5 倍后补做一次识别，小字号硬字幕（价格/联系方式滚动字幕）不易漏。默认关闭。可按群覆盖"
+    },
+    "video_scene_threshold": {
+        "description": "场景切换抽帧阈值",
+        "type": "float",
+        "default": 30.0,
+        "hint": "帧间平均像素差异超过该值才保留该帧（scene 模式生效），越大越少抽帧。可按群覆盖"
+    },
+    "video_quick_precheck": {
+        "description": "视频帧快速预检",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后每帧先用本地轻量特征（饱和度/纹理/文字区域）预检，得分低于阈值的帧跳过视觉 API 调用（省 GLM-4V 费用）。可按群覆盖"
+    },
+    "video_precheck_threshold": {
+        "description": "快速预检可疑度阈值",
+        "type": "float",
+        "default": 0.5,
+        "hint": "预检得分低于该值的帧跳过视觉 API（0-1），越高过滤越多但漏检风险增大。可按群覆盖"
+    },
+    "video_fingerprint_cache": {
+        "description": "视频指纹缓存",
+        "type": "bool",
+        "default": false,
+        "hint": "广告确认过的整段视频（首帧哈希+时长指纹）下次直接命中并跳过检测，群发同一广告视频时零视觉调用。可按群覆盖"
+    },
+    "video_ad_review_enabled": {
+        "description": "不确定视频广告提交管理员复核",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，视频广告检测判定为「疑似广告」（LLM 广告专用判定输出疑似、无法明确确认）时，不直接处罚，改为进入待复核队列，由管理员在 WebUI「广告后台-视频复核」确认违规或放行；需 video_ad_visual_enabled 与 video_audit_enabled 均开启。可按群覆盖"
+    },
+    "video_ad_review_recall": {
+        "description": "复核前先撤回疑似广告消息",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，疑似广告视频进入待复核队列的同时先撤回消息，防止广告继续传播；关闭则消息保留在群里，仅停止机器人响应并等待管理员复核。可按群覆盖"
+    },
+    "video_ad_review_notice": {
+        "description": "复核入队时群内通知管理员",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，疑似广告视频进入待复核队列时在群内发送一条提示，提醒管理员前往 WebUI 复核。可按群覆盖"
+    },
+    "video_ad_review_forward_group": {
+        "description": "视频复核 QQ 管理群号（留空不转发）",
+        "type": "string",
+        "default": "",
+        "hint": "填写一个 QQ 群号后，疑似视频广告进入复核队列时会把「群号/发送者/识别内容/编号」转发到该管理群，管理员在群里回复「确认广告 #编号」确认违规（学习指纹并禁言）或「放行广告 #编号」放行。留空则仅通过 WebUI 广告后台-视频复核处理"
+    },
+    "video_ad_review_private_admin": {
+        "description": "疑似视频广告私信该群全部管理员",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.32.0。开启后，疑似视频广告进入复核队列时，立即私信该群全部管理员（群主+管理员），发送「群号/发送者/识别内容/编号」供重新审核，管理员可直接在私聊回复「确认广告 #编号」或「放行广告 #编号」完成复核。可按群覆盖"
+    },
+    "uncertain_review_enabled": {
+        "description": "LLM 无法确认的内容提交管理员复核",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.32.0。开启后，文本/图片审核中 LLM 无法确认是否违规（判定输出 unknown/疑似/无法确认）时，不再直接放行，改为提交人工复核队列，并可选私信该群全部管理员重新审核。可按群覆盖"
+    },
+    "uncertain_review_private_admin": {
+        "description": "不确定内容私信该群全部管理员",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.32.0。开启后，LLM 无法确认的内容进入复核队列时，立即私信该群全部管理员（群主+管理员），发送「群号/发送者/内容/编号」供重新审核，管理员可直接在私聊回复「确认复核 #编号」或「放行复核 #编号」。可按群覆盖"
+    },
+    "uncertain_review_notice": {
+        "description": "不确定内容入队时群内通知",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.32.0。开启后，LLM 无法确认的内容进入复核队列时在群内发送一条提示。可按群覆盖"
+    },
+    "ad_review_enabled": {
+        "description": "疑似广告先人工确认再处罚（学习后直接处罚）",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.36.0（与 adguard 合并）。开启后，任何疑似广告（消息文本/图片/视频/群名片）不再直接撤回禁言，统一记入后台广告审核日志（ad_reviews）并私信插件管理员通知；管理员在 WebUI 广告后台 → 广告审核 → 待确认疑似广告 查看并处理：「确认广告」→ 撤回原消息+禁言+学习文本指纹（下次相似内容直接撤回禁言），「放行」→ 放行并学习为正常。群里不通知。可按群覆盖"
+    },
+    "ad_review_admin_private": {
+        "description": "疑似广告私信插件管理员通知",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.36.0。开启后，疑似广告进入复核队列时立即私信插件管理员（admin_list 或 ad_review_admin_ids），发送「群号/发送者/内容/编号」提醒前往 WebUI 广告后台-待确认疑似广告处理（确认/放行均在后台完成）。可按群覆盖"
+    },
+    "ad_review_admin_ids": {
+        "description": "广告复核管理员QQ（逗号分隔）",
+        "type": "string",
+        "default": "",
+        "hint": "v2.36.0。指定接收广告复核私信的插件管理员 QQ（逗号分隔，如 10001,10002）。留空则使用插件管理员名单 admin_list，仍未配置时私信该群全部管理员/群主"
+    },
+    "ad_review_learn_text": {
+        "description": "确认后学习文本指纹（下次相似直接处罚）",
+        "type": "bool",
+        "default": true,
+        "hint": "v2.36.0。开启后，管理员确认某内容为广告时学习其文本指纹（归一化哈希），之后相同/相似文本再次出现时直接撤回+禁言，无需再次人工确认。可按群覆盖"
+    },
+    "video_short_qr_fast_hit": {
+        "description": "短视频+引流二维码快速强信号",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，时长不超过 video_short_qr_max_sec 的短视频若解码出引流类二维码（网址/微信号/QQ号/加群等），直接标记为高置信广告进入处罚，跳过 LLM 复核，专门打击「半夜短视频二维码引流」。可按群覆盖"
+    },
+    "video_short_qr_max_sec": {
+        "description": "短视频判定时长上限（秒）",
+        "type": "float",
+        "default": 10.0,
+        "hint": "与 video_short_qr_fast_hit 配合：视频时长不超过该值才启用快速强信号，避免误伤长视频。可按群覆盖"
+    },
+    "ocr_normalize_variants": {
+        "description": "OCR识别文本同音/形近字归一化",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，图片/视频帧 OCR 识别文本中的常见同音/形近变体（如「薇信/威信/v信」→「微信」、「VX/vx」→「微信」）在做词库匹配前统一归一化，降低 OCR 误字导致的广告漏检；LLM 判定仍使用原文。可按群覆盖"
+    },
+    "memory_guard_enabled": {
+        "description": "内存自动回收总开关",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后，后台定时检查进程内存，达到阈值或每个周期主动执行一次回收：强制 gc.collect() + 清理插件内可重建缓存（审核期媒体哈希/视频指纹、DB 查询缓存、角色缓存、名片快照、统计明细等）+ 裁剪视频指纹缓存，缓解长时间运行后内存持续增长被 OOM 杀死的问题。全局配置"
+    },
+    "memory_guard_threshold_mb": {
+        "description": "内存回收触发阈值（MB，0=每周期都回收）",
+        "type": "int",
+        "default": 0,
+        "hint": "进程 RSS 内存超过该值（MB）才触发回收；填 0 表示不按阈值限制、每个检查周期都回收一次。全局配置"
+    },
+    "memory_guard_interval_sec": {
+        "description": "内存回收检查周期（秒）",
+        "type": "int",
+        "default": 60,
+        "hint": "后台每隔该秒数检查一次内存并决定是否回收，范围 30-3600。全局配置"
+    },
+    "ad_backend_enabled": {
+        "description": "独立Web管理后台开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后插件内置一个独立 HTTP 后台（独立端口，不依赖 AstrBot 管理面板），浏览器直接访问查看广告检测统计/违规记录/黑名单/指纹/分级处置，并支持管理操作。默认关闭"
+    },
+    "ad_backend_port": {
+        "description": "独立后台端口",
+        "type": "int",
+        "default": 8765,
+        "hint": "独立后台监听的端口，范围 1-65535，默认 8765。请确保该端口未被占用且在防火墙放行"
+    },
+    "ad_backend_host": {
+        "description": "独立后台监听地址",
+        "type": "string",
+        "default": "127.0.0.1",
+        "hint": "默认 127.0.0.1（仅本机可访问，安全）。如需局域网/公网访问改为 0.0.0.0 或具体网卡 IP，但此时**必须**配置 ≥8 位 ad_backend_token，否则后台拒绝启动（避免无认证网络管理面）"
+    },
+    "ocr_engine": {
+        "description": "广告识别引擎",
+        "type": "string",
+        "default": "local",
+        "hint": "local=本地RapidOCR（默认，模型按需下载，开启后自动安装）；umi=Umi-OCR本地HTTP服务（默认127.0.0.1:1224）；cloud=第三方云广告检测API（如阿里云）；llm=云端视觉模型（可选，不再默认）；auto=本地优先回退云端视觉。可按群覆盖"
+    },
+    "local_ocr_auto_install": {
+        "description": "本地OCR自动安装（下载模型）",
+        "type": "bool",
+        "default": false,
+        "hint": "v2.21.0 起默认关闭：开启 local 引擎且本地未安装 RapidOCR 时，插件会在运行期 pip install rapidocr_onnxruntime（含模型约30MB），可能造成版本漂移/启动延迟/失败恢复问题。建议改为**显式安装**：在 AstrBot 所在 Python 环境执行 `pip install rapidocr_onnxruntime`（国内可用清华源），安装后 local 引擎直接可用"
+    },
+    "local_ocr_pip_mirror": {
+        "description": "本地OCR安装镜像源",
+        "type": "string",
+        "default": "https://pypi.tuna.tsinghua.edu.cn/simple",
+        "hint": "自动安装 RapidOCR 时使用的 pip 镜像源。国内/Docker 服务器建议用清华源（默认），官方 PyPI 连不上时更换为可用镜像或留空使用默认"
+    },
+    "umi_ocr_url": {
+        "description": "Umi-OCR 服务地址",
+        "type": "string",
+        "default": "http://127.0.0.1:1224",
+        "hint": "Umi-OCR（Rapid引擎版）的HTTP服务地址。需自行安装并运行 Umi-OCR，插件通过其 /api/ocr 接口识别图片/视频帧文字，专门为广告检测服务"
+    },
+    "cloud_audit_url": {
+        "description": "第三方云广告检测API地址",
+        "type": "string",
+        "default": "",
+        "hint": "如阿里云内容安全等第三方图片广告检测API（通用JSON协议：POST {image_base64} → {is_ad,score,reason}）。留空则禁用云检测。可按群覆盖"
+    },
+    "cloud_audit_api_key": {
+        "description": "云广告检测API Key",
+        "type": "string",
+        "default": "",
+        "hint": "调用云广告检测API时的认证Key（Authorization: Bearer）。留空则不携带"
+    },
+    "cloud_audit_threshold": {
+        "description": "云广告检测判定阈值",
+        "type": "float",
+        "default": 0.8,
+        "hint": "云API返回的广告分数达到该阈值即判定为广告（0-1），越大越严格"
+    },
+    "ad_backend_token": {
+        "description": "独立后台访问令牌",
+        "type": "string",
+        "default": "",
+        "hint": "访问后台需在请求头携带 X-Token（v2.21.0 起不再支持 URL ?token= 传参，避免令牌泄漏进日志/浏览器历史）。默认留空，此时后台仅监听 127.0.0.1 可访问；若 ad_backend_host 改为非回环地址则**必须**配置 ≥8 位高强度令牌，否则后台拒绝启动"
+    },
+    "multi_protocol_enabled": {
+        "description": "多协议适配开关",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后支持 Telegram/Discord/QQ官方等非 OneBot 平台的「受限模式」审核：文本关键词（脏话/广告）检测 + 撤回 + 违规记录，群主/群管理员按角色豁免。Telegram/Discord 额外支持禁言/解禁/踢人（平台路由实现，需群内操作开关）。图片/视频/转发审核、OCR/LLM 与任免管理员仍仅 AIOCQHTTP(QQ) 可用。默认关闭，仅 QQ 全量工作"
+    },
+    "multi_protocol_platforms": {
+        "description": "受限模式启用的平台列表",
+        "type": "list",
+        "default": ["telegram", "discord"],
+        "invisible": true,
+        "hint": "逗号分隔的平台名（telegram/discord/qq_official），仅列出的平台进入受限模式。请在 WebUI 或配置文件中维护"
+    },
+    "multi_protocol_ban_enabled": {
+        "description": "受限模式违规自动禁言",
+        "type": "bool",
+        "default": false,
+        "hint": "受限平台（Telegram/Discord）文本命中违规时，除撤回外在执行禁言（时长取 moderation_ban_duration）。默认关闭：跨平台规则判定依赖本地关键词，置信度低于 QQ 全量审核，先仅撤回记录避免误伤"
+    },
+    "invite_link_recall_enabled": {
+        "description": "外链邀请撤回",
+        "type": "bool",
+        "default": false,
+        "hint": "检测消息中的外部群邀请链接（QQ qm.qq.com/jq.qq.com/qun.qq.com/pd.qq.com、Telegram t.me、Discord discord.gg 等）并自动撤回。高置信文本特征，不经 LLM。可按群覆盖"
+    },
+    "url_safety_enabled": {
+        "description": "链接安全检测",
+        "type": "bool",
+        "default": false,
+        "hint": "提取消息中的 URL，命中内置短链域名、url_risk_domains 自定义风险域名或 url_risk_patterns 正则时自动撤回。用于拦截赌博/诈骗/引流链接。可按群覆盖"
+    },
+    "url_risk_domains": {
+        "description": "自定义风险域名列表",
+        "type": "string",
+        "default": "",
+        "hint": "逗号分隔的域名，如 888.com,example-bet.com。命中即判定为风险链接并撤回（内置已含 t.cn/dwz.cn/bit.ly 等短链域名）。可按群覆盖"
+    },
+    "url_risk_patterns": {
+        "description": "自定义风险链接正则（每行一条）",
+        "type": "string",
+        "default": "",
+        "hint": "每行一个正则表达式（忽略大小写），命中即判定为风险链接并撤回。以 # 开头的行视为注释"
+    },
+    "gif_frame_audit_enabled": {
+        "description": "GIF 帧级拆分审核",
+        "type": "bool",
+        "default": false,
+        "hint": "对 GIF 动图下载后用 OpenCV 逐帧拆解，每帧做本地 OCR 识别文字并入审核，避免中间帧违规漏检。帧数上限取 gif_max_frames，失败自动降级为整体图审核。可按群覆盖"
+    },
+    "gif_max_frames": {
+        "description": "GIF 最大拆分帧数",
+        "type": "int",
+        "default": 15,
+        "hint": "GIF 帧级拆分审核最多识别的帧数（范围 1-60）。帧越多越全但越慢、越耗资源。可按群覆盖"
+    },
+    "voice_audit_enabled": {
+        "description": "语音消息审核",
+        "type": "bool",
+        "default": false,
+        "hint": "把语音消息下载后调用通用 HTTP ASR 接口（voice_asr_url）转文字，并入审核正文。需自行部署 ASR 服务，默认关闭。可按群覆盖"
+    },
+    "voice_asr_url": {
+        "description": "语音 ASR 接口地址",
+        "type": "string",
+        "default": "",
+        "hint": "通用 ASR 服务地址，插件会 POST {audio}（multipart，字段名 audio）到 {url}/api/asr，期望返回 JSON {text}。留空则语音审核不生效"
+    },
+    "group_activity_enabled": {
+        "description": "群活跃度统计",
+        "type": "bool",
+        "default": false,
+        "hint": "记录每群每条发言到 SQLite，供 /群活跃度 命令查询今日/近7天/近30天发言条数与活跃人数、活跃用户排行。默认关闭，开启后开始记录新消息"
+    },
+    "violation_points_enabled": {
+        "description": "违规积分累进制",
+        "type": "bool",
+        "default": false,
+        "hint": "按窗口内累计违规次数升级处罚：首次警告（仅撤回记录）→ 达到禁言阈值禁言 → 达到踢出阈值踢出。次数取 violation_points_thresholds 档位，窗口取 violation_points_window_days。与广告分级处置互不冲突，均默认关闭。可按群覆盖"
+    },
+    "violation_points_window_days": {
+        "description": "违规积分统计窗口（天）",
+        "type": "int",
+        "default": 30,
+        "hint": "统计该天数内的违规次数（范围 1-365），窗口外的历史违规不计入。可按群覆盖"
+    },
+    "violation_points_thresholds": {
+        "description": "违规积分档位阈值（禁言,踢出）",
+        "type": "string",
+        "default": "2,5",
+        "hint": "逗号分隔两个数字：达到第 1 个数字的次数起禁言，达到第 2 个数字的次数起踢出；未达第 1 个数字为警告。示例：1,3 = 首次警告、第2次禁言、第3次起踢出。可按群覆盖"
+    },
+    "web_operator_bindings": {
+        "description": "Dashboard用户与QQ身份绑定（用户名:QQ,用户名2:QQ2）",
+        "type": "string",
+        "default": "",
+        "hint": "把 AstrBot Dashboard 登录用户名绑定到 QQ 身份，用于远程写操作的授权校验与审计。格式：用户名:QQ号,用户名2:QQ号2（分号/逗号分隔均可）。示例：admin:10001,zhangsan:10002。开启 web_remote_require_operator 后，未绑定身份的用户远程操作会被拒绝"
+    },
+    "web_remote_require_operator": {
+        "description": "远程写操作强制校验操作者授权",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，WebUI 远程执行群管操作（禁言/踢人/设名片等）必须校验操作者的目标群授权：全局插件管理员（admin_list / AstrBot 全局 admin_id / web_operator_bindings 绑定用户）可操作所有群；群超管、群主、群管理员仅可操作其授权群。关闭时依赖 AstrBot Dashboard 登录鉴权（不校验操作者，仍记录审计日志）。详见 README「Web后台远程操作权限模型」"
+    },
+    "web_remote_confirm_required": {
+        "description": "高风险远程操作默认需要二次确认",
+        "type": "bool",
+        "default": true,
+        "hint": "开启后（默认），WebUI 执行高风险远程操作（设置/取消管理员、批量踢人、全体禁言等）前弹出二次确认对话框且默认勾选「需要确认」，防止误点。可按群覆盖"
+    },
+    "web_remote_dual_approval_enabled": {
+        "description": "高敏感操作双管理员审批",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后，web_remote_approval_actions 指定的高敏感操作在 WebUI 远程执行时先进入待审批队列，必须由【第二名】管理员在 WebUI「待审批操作」中确认后才真正执行；发起人不能自我确认，超时（10分钟）自动过期。默认关闭（直接执行）。可按群覆盖"
+    },
+    "web_remote_approval_actions": {
+        "description": "需要双管理员审批的操作列表",
+        "type": "string",
+        "default": "set_admin,unset_admin,whole_ban",
+        "hint": "逗号分隔的远程操作 action 名：set_admin=设置管理员、unset_admin=取消管理员、whole_ban=全体禁言、kick=踢人、batch_kick=批量踢人。仅 web_remote_dual_approval_enabled 开启时生效。可按群覆盖"
     }
+
 }

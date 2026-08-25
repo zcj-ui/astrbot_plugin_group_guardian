@@ -73,7 +73,7 @@ class LlmToolsMixin:
             user_id(string): 要踢出的用户QQ号
         '''
         try:
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "kick_enabled", "踢人", user_id, precheck_action="kick")
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "kick_enabled", "踢人", user_id, precheck_action="kick", require_role=self._cfg_str("role_kick_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -98,7 +98,7 @@ class LlmToolsMixin:
             enable(boolean): true开启全体禁言，false关闭全体禁言
         '''
         try:
-            ok, err, client, gid = await self._prepare_group_action(event, "whole_ban_enabled", "全体禁言")
+            ok, err, client, gid = await self._prepare_group_action(event, "whole_ban_enabled", "全体禁言", require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -195,7 +195,7 @@ class LlmToolsMixin:
                 yield event.plain_result(op_err)
                 return
             action = "set_admin" if enable else "unset_admin"
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id, precheck_action=action)
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_admin_enabled", "设置管理员", user_id, precheck_action=action, require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -214,7 +214,7 @@ class LlmToolsMixin:
             group_name(string): 新的群名称
         '''
         try:
-            ok, err, client, gid = await self._prepare_group_action(event, "set_group_name_enabled", "修改群名称")
+            ok, err, client, gid = await self._prepare_group_action(event, "set_group_name_enabled", "修改群名称", require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -234,7 +234,7 @@ class LlmToolsMixin:
             title(string): 专属头衔
         '''
         try:
-            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置专属头衔", user_id, precheck_action="set_title")
+            ok, err, client, gid, uid = await self._prepare_group_member_action(event, "set_title_enabled", "设置专属头衔", user_id, precheck_action="set_title", require_role=self._cfg_str("role_high_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return
@@ -545,7 +545,7 @@ class LlmToolsMixin:
             user_ids(list[string]): 要踢出的用户QQ号列表
         '''
         try:
-            ok, err, client, gid = await self._prepare_group_action(event, "kick_enabled", "批量踢人")
+            ok, err, client, gid = await self._prepare_group_action(event, "kick_enabled", "批量踢人", require_role=self._cfg_str("role_kick_require", "admin"))
             if not ok:
                 yield event.plain_result(err)
                 return

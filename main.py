@@ -21,18 +21,25 @@ from .lexicon_learn import LexiconLearnMixin
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
 from .llm_tools import LlmToolsMixin
 from .membership import MembershipMixin
+from .memory_guard import MemoryGuardMixin
 from .moderation import ModerationMixin
 from .moderation_review import ModerationReviewMixin
 from .onebot import OneBotMixin
+from .platform_ops import PlatformOpsMixin
+from .platforms import DEFAULT_LIMITED_PLATFORMS, get_platform_name, is_aiocqhttp, log_startup_support
 from .remote import RemoteMixin
 from .scheduler import SchedulerMixin
 from .storage import SQLiteStorage
+from .sync_client import SyncClientMixin
 from .utils import UtilitiesMixin
 from .web import WebMixin
+from .ad_backend import AdBackendMixin
+from .activity import ActivityMixin
+from .advanced_audit import AdvancedAuditMixin
 
 
 @register(PLUGIN_NAME, "zhaisir", "QQ群智能守护者 - AI审核+群管工具集", PLUGIN_VERSION, "https://github.com/zcj-ui/astrbot_plugin_group_guardian")
-class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, RemoteMixin, LlmToolsMixin, WebMixin, OneBotMixin, UtilitiesMixin, Star):
+class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, MembershipMixin, CardMonitorMixin, LexiconLearnMixin, SchedulerMixin, MemoryGuardMixin, RemoteMixin, LlmToolsMixin, AdvancedAuditMixin, ActivityMixin, AdBackendMixin, WebMixin, PlatformOpsMixin, OneBotMixin, UtilitiesMixin, SyncClientMixin, Star):
     """插件主类。所有 AstrBot 装饰器注册入口，业务逻辑委托给 mixin 模块。"""
 
     def __init__(self, context: Context, config: AstrBotConfig = None):
@@ -87,6 +94,9 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         # 审核上下文独立于防刷屏队列，并负责合并/限流群历史请求。
         self._init_moderation_context_resources(llm_concurrency)
         self._init_image_audit_resources(llm_concurrency)
+        self._init_video_audit_resources(llm_concurrency)
+        self._init_hash_audit_resources()
+        self._init_local_ocr()
         self._init_moderation_review()
         # 防刷屏追踪数据结构
         self._init_anti_flood()
@@ -103,8 +113,93 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         # 后台调度器（F3 定时解禁 + F2 申诉超时清理）
         self._init_scheduler()
         self._start_scheduler()
+        # 多协议支持日志（AIOCQHTTP 全量 / 其他平台受限）
+        log_startup_support()
+        # v2.36.7：启动自检——plugins 目录是否存在多个本插件目录（重复加载）
+        self._check_duplicate_plugin_dirs()
+        # v2.36.8：云同步客户端（与独立后台服务端双向同步：误判复盘/已确认违规/审核信息）
+        self._init_sync_client()
+        self._sync_task = None
+        self._start_sync_task()
+
+    def _start_sync_task(self) -> None:
+        """启动云同步后台循环（仅当配置了服务端地址且开启 sync_auto）。"""
+        try:
+            if not self._cfg("sync_auto", False):
+                return
+            if not self._sync_enabled():
+                return
+            if getattr(self, "_sync_task", None) and not self._sync_task.done():
+                return
+            self._sync_task = asyncio.create_task(self._sync_loop())
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 启动云同步任务失败: {exc}")
+
+    async def _sync_loop(self) -> None:
+        """周期同步：启动立即跑一次，之后按 sync_interval 分钟。"""
+        try:
+            await self._sync_run()
+        except Exception:
+            pass
+        while True:
+            try:
+                interval = max(1, min(self._cfg_int("sync_interval", 10), 1440))
+                await asyncio.sleep(interval * 60)
+                await self._sync_run()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.debug(f"[GroupMgr] 云同步周期任务异常: {exc}")
+                await asyncio.sleep(60)
+
+    def _check_duplicate_plugin_dirs(self) -> None:
+        """v2.36.7：启动自检——plugins 目录下是否存在多个本插件目录。
+
+        上传安装 + 手动解压（GitHub zip）等混用时，plugins 目录可能残留两个
+        group_guardian 目录（不同版本/目录名），AstrBot 会全部加载，表现为
+        「重启后两个版本同时存在（如 2.36.1 与 2.36.4）」。
+        发现多于一个目录时醒目告警并列出路径，供管理员手动清理。
+        """
+        try:
+            import os
+            import re
+
+            cur = os.path.dirname(os.path.abspath(__file__))
+            plugins_root = os.path.dirname(cur)
+            plugin_name = PLUGIN_NAME
+            pattern = re.compile(
+                r"^\s*name\s*:\s*" + re.escape(plugin_name) + r"\s*(#.*)?$", re.M
+            )
+            dupes = []
+            for entry in os.listdir(plugins_root):
+                meta = os.path.join(plugins_root, entry, "metadata.yaml")
+                if not os.path.isfile(meta):
+                    continue
+                try:
+                    with open(meta, encoding="utf-8") as f:
+                        head = f.read(2048)
+                except Exception:
+                    continue
+                if pattern.search(head):
+                    dupes.append(os.path.join(plugins_root, entry))
+            if len(dupes) > 1:
+                logger.error(
+                    "[GroupMgr] 检测到本插件目录重复（共 %d 个），AstrBot 会同时加载"
+                    "导致版本冲突（如同时出现两个版本号）。请只保留最新版本目录、"
+                    "删除其它目录后重启 AstrBot：\n%s",
+                    len(dupes),
+                    "\n".join("  - " + d for d in dupes),
+                )
+        except Exception as exc:
+            logger.debug(f"[GroupMgr] 重复插件目录自检失败: {exc}")
 
     async def terminate(self):
+        if getattr(self, "_sync_task", None) and not self._sync_task.done():
+            self._sync_task.cancel()
+            try:
+                await self._sync_task
+            except asyncio.CancelledError:
+                logger.debug("[GroupMgr] 云同步任务已取消")
         if self._rebuild_task and not self._rebuild_task.done():
             self._rebuild_task.cancel()
             try:
@@ -114,6 +209,7 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         await self._stop_scheduler()
         await self._close_moderation_context_resources()
         await self._close_image_audit_resources()
+        await self._close_video_audit_resources()
         logger.info("[GroupMgr] 插件卸载，SQLite 存储已自动持久化")
 
     def _set_rebuild_status(self, state: str, target: str = "", message: str = "") -> None:
@@ -246,12 +342,43 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         async for item in CommandsMixin.group_stats(self, event):
             yield item
 
+    @filter.command("群活跃度")
+    async def group_activity(self, event: AstrMessageEvent):
+        '''群活跃度统计：日活/周活/月活 + 活跃用户排行'''
+        async for item in ActivityMixin.cmd_group_activity(self, event):
+            yield item
+
     # 管理命令注册区：权限校验由插件内部 _is_admin / _is_plugin_admin 统一处理，
     # 不使用框架级 @filter.permission_type(ADMIN)，否则会阻断插件管理员/群主/群超管等非 AstrBot 全局管理员。
     @filter.command("搜索成员")
     async def search_member(self, event: AstrMessageEvent):
         '''按昵称或QQ号搜索群成员'''
         async for item in CommandsMixin.search_member(self, event):
+            yield item
+
+    @filter.command("确认广告")
+    async def cmd_review_confirm(self, event: AstrMessageEvent):
+        '''管理群内确认疑似视频广告违规。用法: /确认广告 #编号'''
+        async for item in CommandsMixin.cmd_review_confirm(self, event):
+            yield item
+
+    @filter.command("放行广告")
+    async def cmd_review_clear(self, event: AstrMessageEvent):
+        '''管理群内放行疑似视频广告。用法: /放行广告 #编号'''
+        async for item in CommandsMixin.cmd_review_clear(self, event):
+            yield item
+
+    # v2.32.0 不确定内容（LLM 无法确认）人工复核：私聊或管理群回复确认/放行
+    @filter.command("确认复核")
+    async def cmd_review_uncertain_confirm(self, event: AstrMessageEvent):
+        '''确认「LLM 无法确认」的内容违规（私聊或管理群）。用法: /确认复核 #编号'''
+        async for item in CommandsMixin.cmd_review_uncertain_confirm(self, event):
+            yield item
+
+    @filter.command("放行复核")
+    async def cmd_review_uncertain_clear(self, event: AstrMessageEvent):
+        '''放行「LLM 无法确认」的内容（私聊或管理群）。用法: /放行复核 #编号'''
+        async for item in CommandsMixin.cmd_review_uncertain_clear(self, event):
             yield item
 
     @filter.command("撤回最新消息")
@@ -606,11 +733,42 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
 
     # 消息监听注册区：审核主流程由 moderation.py 实现，这里只负责注册事件入口。
     # moderation._handle_message 是 async generator，必须用 async for/yield 转发，不能 await。
+    # 多协议适配：不再限定 AIOCQHTTP 平台，非 QQ 平台（Telegram/Discord 等）在开启
+    # multi_protocol_enabled 后进入「受限模式」审核：文本关键词 + 撤回 + 可选禁言 +
+    # 违规记录，群主/群管理员按角色豁免（_is_admin 经 PlatformOpsMixin 平台路由查询群角色）。
     @filter.event_message_type(filter.EventMessageType.ALL)
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    async def _handle_message(self, event: AiocqhttpMessageEvent):
+    async def _handle_message(self, event: AstrMessageEvent):
+        # v2.33.0：给 event.send 加安全壳，防止 NapCat 发送动作超时等失败
+        # 经 AstrBot RespondStage 重新抛出导致整个进程崩溃（见 _harden_event_send）。
+        self._harden_event_send(event)
+        platform = get_platform_name(event)
+        if not is_aiocqhttp(platform):
+            # 受限模式：仅当开关开启且该平台在启用列表时处理，否则静默忽略
+            if not self._multi_protocol_active(platform):
+                return
+            async for item in ModerationMixin._handle_message_limited(self, event, platform):
+                yield item
+            return
         async for item in ModerationMixin._handle_message(self, event):
             yield item
+
+    def _multi_protocol_active(self, platform: str) -> bool:
+        """多协议受限模式是否对该平台生效（总开关 + 平台启用列表）。"""
+        try:
+            if not self._cfg("multi_protocol_enabled", False):
+                return False
+            raw = self.config.get(
+                "multi_protocol_platforms",
+                list(DEFAULT_LIMITED_PLATFORMS),
+            )
+            if isinstance(raw, str):
+                allowed = [p.strip().lower() for p in raw.split(",") if p.strip()]
+            else:
+                allowed = [str(p).strip().lower() for p in (raw or []) if str(p).strip()]
+            return platform in allowed
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 多协议开关判定失败: {e}")
+            return False
 
     # F1 入群自动审核：监听加群申请事件（与 _handle_message 共用 ALL 监听，互不干扰）。
     @filter.event_message_type(filter.EventMessageType.ALL)

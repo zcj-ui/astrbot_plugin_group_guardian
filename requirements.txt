@@ -3,3 +3,6 @@ pyahocorasick>=2.1.0
 # headless 版无 GUI/系统依赖，纯 pip 跨平台安装，体积较小。
 opencv-python-headless>=4.5.0
 numpy>=1.21.0
+# 本地 OCR（RapidOCR）模型【不随插件打包】：ocr_engine=local/auto 首次启用时插件自动
+# pip install rapidocr_onnxruntime（含模型约30MB）；关闭引擎不会卸载模型，仅停止自动安装。
+# Umi-OCR / 第三方云API 为外部服务，无需此依赖。

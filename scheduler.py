@@ -29,6 +29,7 @@ class SchedulerMixin:
         self._learn_task = None
         self._moderation_review_task = None
         self._moderation_review_wakeup = asyncio.Event()
+        self._memory_guard_task = None
         self._scheduler_stop = False
 
     def _start_scheduler(self) -> None:
@@ -48,6 +49,11 @@ class SchedulerMixin:
             if callable(getattr(self, "_run_moderation_feedback_review", None)):
                 self._moderation_review_task = asyncio.create_task(
                     self._moderation_review_loop()
+                )
+            # v2.26.0：内存自动回收独立低频 loop（MemoryGuardMixin）
+            if callable(getattr(self, "_memory_guard_loop", None)):
+                self._memory_guard_task = asyncio.create_task(
+                    self._memory_guard_loop()
                 )
         except RuntimeError:
             # 无运行中的事件循环（极少见），放弃后台任务，不影响其它功能
@@ -81,6 +87,12 @@ class SchedulerMixin:
                 await self._moderation_review_task
             except asyncio.CancelledError:
                 logger.debug("[GroupMgr] 误判复盘任务已取消")
+        if self._memory_guard_task and not self._memory_guard_task.done():
+            self._memory_guard_task.cancel()
+            try:
+                await self._memory_guard_task
+            except asyncio.CancelledError:
+                logger.debug("[GroupMgr] 内存回收任务已取消")
 
     async def _scheduler_loop(self) -> None:
         consecutive_errors = 0

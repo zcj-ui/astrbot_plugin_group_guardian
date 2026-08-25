@@ -6,6 +6,7 @@ import sys
 import tempfile
 import types
 import unittest
+from contextlib import closing
 from pathlib import Path
 
 
@@ -46,7 +47,7 @@ class StorageMigrationTests(unittest.TestCase):
     def test_old_scheduled_unbans_table_is_migrated_and_retried(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = storage_module.SQLiteStorage(Path(temp_dir), str(ROOT))
-            with sqlite3.connect(store.db_path) as conn:
+            with closing(sqlite3.connect(store.db_path)) as conn, conn:
                 conn.execute(
                     "CREATE TABLE scheduled_unbans ("
                     "id INTEGER PRIMARY KEY AUTOINCREMENT, "
