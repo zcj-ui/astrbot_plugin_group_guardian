@@ -64,6 +64,12 @@
         "default": true,
         "hint": "管理员可通过 /auto_moderate on/off 命令随时启停"
     },
+    "moderation_admin_exempt": {
+        "description": "管理员豁免消息内容审核",
+        "type": "bool",
+        "default": false,
+        "hint": "关闭时群主、群管理员和插件管理员也会进入消息内容审核，便于测试且避免管理员账号成为广告绕过通道；防刷屏仍始终豁免管理员。可按群覆盖"
+    },
     "auto_moderate_notice": {
         "description": "撤回提示开关（撤回后是否在群内发说明消息）",
         "type": "bool",

@@ -939,9 +939,19 @@ let CURRENT_GROUP = null;
 let CURRENT_MEMBERS = [];
 let CACHED_GROUP_ID = null;
 let REBUILD_STATUS_TIMER = null;
-var SETTINGS_SECTION = 'core';
-var CONFIG_PROMISE = null;
-var API_TIMEOUT_MS = 12000;
+  var SETTINGS_SECTION = 'core';
+  var CONFIG_PROMISE = null;
+  var CONFIG_REQUEST_EPOCH = 0;
+  var API_TIMEOUT_MS = 12000;
+  var LOAD_EPOCH = Object.create(null);
+
+  function beginLoad(name) {
+    LOAD_EPOCH[name] = (LOAD_EPOCH[name] || 0) + 1;
+    return LOAD_EPOCH[name];
+  }
+  function isCurrentLoad(name, epoch) {
+    return LOAD_EPOCH[name] === epoch;
+  }
 
 function $(sel, ctx) { ctx = ctx || document; return ctx.querySelector(sel); }
 function $$(sel, ctx) { ctx = ctx || document; return [].slice.call(ctx.querySelectorAll(sel)); }
@@ -976,18 +986,171 @@ function cssAttr(s) {
   return v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-function isApiError(r) {
-  return !!(r && typeof r === 'object' && r.status === 'error');
-}
+  function responseStatus(r) {
+    return r && typeof r === 'object' && typeof r.status === 'string'
+      ? r.status.trim().toLowerCase() : '';
+  }
 
-function withTimeout(promise, label, timeoutMs) {
-  timeoutMs = timeoutMs || API_TIMEOUT_MS;
-  return Promise.race([
-    promise,
-    new Promise(function(_, reject) {
-      setTimeout(function() { reject(new Error((label || '请求') + '超时')); }, timeoutMs);
-    })
-  ]);
+  function responseMessage(r, fallback) {
+    var depth = arguments.length > 2 ? (arguments[2] || 0) : 0;
+    if (depth > 4) return fallback || '';
+    if (r instanceof Error && r.message) return String(r.message);
+    if (r && typeof r === 'object') {
+      var message = r.message || r.msg || r.wording;
+      if (message && typeof message !== 'object') return String(message);
+      if (r.error) {
+        if (typeof r.error === 'string') return r.error;
+        var nestedError = responseMessage(r.error, '', depth + 1);
+        if (nestedError) return nestedError;
+      }
+      for (var i = 0; i < 4; i++) {
+        var key = ['data', 'result', 'payload', 'response'][i];
+        if (r[key] && typeof r[key] === 'object') {
+          var nested = responseMessage(r[key], '', depth + 1);
+          if (nested) return nested;
+        }
+      }
+      if (r.retcode !== undefined && r.retcode !== null && String(r.retcode) !== '0') {
+        return '错误码: ' + String(r.retcode);
+      }
+      if (Object.prototype.hasOwnProperty.call(r, 'code') && isErrorCode(r.code)) {
+        return '错误码: ' + String(r.code);
+      }
+      if (r.statusText) return String(r.statusText);
+    }
+    return fallback || '请求失败';
+  }
+
+  function isNonzeroRetcode(value) {
+    if (value === null || value === undefined || value === '') return false;
+    if (typeof value === 'number') return value !== 0;
+    var text = String(value).trim().toLowerCase();
+    return text !== '' && text !== '0' && text !== 'ok' && text !== 'success';
+  }
+
+  function isErrorCode(value) {
+    if (value === null || value === undefined || value === '') return false;
+    if (typeof value === 'number') {
+      return value !== 0 && (value < 200 || value >= 300);
+    }
+    var text = String(value).trim().toLowerCase();
+    if (text === '' || text === '0' || text === 'ok' || text === 'success') return false;
+    if (/^\d{3}$/.test(text)) {
+      var numeric = Number(text);
+      return numeric < 200 || numeric >= 300;
+    }
+    return true;
+  }
+
+  function isHttpErrorStatus(value) {
+    if (typeof value === 'number') {
+      return value !== 0 && ((value >= 100 && value < 200) || value >= 300);
+    }
+    if (typeof value === 'string' && /^\d{3}$/.test(value.trim())) {
+      var numeric = Number(value);
+      return numeric < 200 || numeric >= 300;
+    }
+    return false;
+  }
+
+  function isSuccessfulTransportCode(value) {
+    if (typeof value === 'number') {
+      return value === 0 || (value >= 200 && value < 300);
+    }
+    if (typeof value !== 'string') return false;
+    var text = value.trim().toLowerCase();
+    if (text === '0' || text === 'ok' || text === 'success') return true;
+    return /^\d{3}$/.test(text) && Number(text) >= 200 && Number(text) < 300;
+  }
+
+  function isApiError(r, depth) {
+    if (!r || typeof r !== 'object') return false;
+    if (r instanceof Error) return true;
+    depth = depth || 0;
+    if (isHttpErrorStatus(r.status) || isHttpErrorStatus(r.statusCode)) return true;
+    var status = responseStatus(r);
+    if (status === 'error' || status === 'failed' || status === 'fail' || status === 'failure') return true;
+    if (r.ok === false || r.ok === 'false' || r.success === false || r.success === 'false') return true;
+    if (Object.prototype.hasOwnProperty.call(r, 'retcode') && isNonzeroRetcode(r.retcode)) return true;
+    if (typeof r.error === 'string' && r.error.trim()) return true;
+    if (r.error && typeof r.error === 'object' && depth < 4 &&
+        (isApiError(r.error, depth + 1) || responseMessage(r.error, '', depth + 1))) return true;
+    if (Object.prototype.hasOwnProperty.call(r, 'code') && isErrorCode(r.code)) return true;
+    if (depth < 4) {
+      for (var i = 0; i < 4; i++) {
+        var key = ['data', 'result', 'payload', 'response'][i];
+        var nested = r[key];
+        if (!nested || typeof nested !== 'object') continue;
+        if ((Object.prototype.hasOwnProperty.call(nested, 'status') ||
+             Object.prototype.hasOwnProperty.call(nested, 'retcode') ||
+             Object.prototype.hasOwnProperty.call(nested, 'ok') ||
+             Object.prototype.hasOwnProperty.call(nested, 'success') ||
+             Object.prototype.hasOwnProperty.call(nested, 'code') ||
+             Object.prototype.hasOwnProperty.call(nested, 'error')) &&
+            isApiError(nested, depth + 1)) return true;
+      }
+    }
+    return false;
+  }
+
+  function isApiSuccessStatus(status) {
+    return status === 'success' || status === 'ok' || status === 'warning';
+  }
+
+  function apiMetaBoolean(value) {
+    return value === true || value === 1 ||
+      (typeof value === 'string' && /^(?:1|true|yes|on)$/i.test(value.trim()));
+  }
+
+  function mergeApiMeta(meta, envelope) {
+    var next = meta || { stale: false, message: '' };
+    if (!envelope || typeof envelope !== 'object') return next;
+    if (apiMetaBoolean(envelope.stale)) next.stale = true;
+    var message = envelope.message || envelope.msg || envelope.wording;
+    if (!next.message && message !== null && message !== undefined &&
+        typeof message !== 'object') {
+      next.message = String(message);
+    }
+    return next;
+  }
+
+  function hasDataEnvelopeMetadata(r) {
+    if (!r || typeof r !== 'object' ||
+        !Object.prototype.hasOwnProperty.call(r, 'data')) return false;
+    var keys = [
+      'stale', 'message', 'msg', 'wording', 'meta', 'requestId',
+      'request_id', 'traceId', 'trace_id', 'headers', 'config',
+      'request', 'statusText'
+    ];
+    return keys.some(function(key) {
+      return Object.prototype.hasOwnProperty.call(r, key);
+    });
+  }
+
+  function isTransportResponse(r) {
+    if (!r || typeof r !== 'object' || !Object.prototype.hasOwnProperty.call(r, 'data')) return false;
+    if (isSuccessfulTransportCode(r.status) ||
+        isSuccessfulTransportCode(r.statusCode) ||
+        isSuccessfulTransportCode(r.code)) return true;
+    if (r.ok === true || r.ok === 'true' || r.success === true || r.success === 'true') return true;
+    if (r.headers || r.config || r.request || r.response || r.statusText) return true;
+    var keys = Object.keys(r);
+    return keys.length === 1 && keys[0] === 'data';
+  }
+
+  function withTimeout(promise, label, timeoutMs) {
+    timeoutMs = timeoutMs || API_TIMEOUT_MS;
+    var timer = null;
+    var timeout = new Promise(function(_, reject) {
+      timer = setTimeout(function() { reject(new Error((label || '请求') + '超时')); }, timeoutMs);
+    });
+    return Promise.race([Promise.resolve(promise), timeout]).then(function(value) {
+      if (timer !== null) clearTimeout(timer);
+      return value;
+    }, function(error) {
+      if (timer !== null) clearTimeout(timer);
+      throw error;
+    });
 }
 
 function parseIntOrDefault(value, fallback) {
@@ -1044,27 +1207,116 @@ function fmtTime(ts) {
 
 var ROLE_NAME = { owner: '群主', admin: '管理员', member: '成员' };
 
-function unwrapApiResponse(r) {
-  if (r && r.status === 'success' && Object.prototype.hasOwnProperty.call(r, 'data')) {
-    var data = r.data;
-    if (data && typeof data === 'object') {
-      try {
-        Object.defineProperty(data, '_api_meta', { value: { stale: !!r.stale, message: r.message || '' }, configurable: true });
-      } catch(e) {
-        data._api_meta = { stale: !!r.stale, message: r.message || '' };
-      }
+  function attachApiMeta(data, meta) {
+    if (!data || typeof data !== 'object' || !meta) return data;
+    try {
+      Object.defineProperty(data, '_api_meta', { value: meta, configurable: true });
+    } catch(e) {
+      try { data._api_meta = meta; } catch(e2) {}
     }
     return data;
   }
-  return r;
-}
+
+  function unwrapApiResponse(r) {
+    var current = r;
+    var meta = null;
+    for (var depth = 0; depth < 4; depth++) {
+      if (typeof current === 'string') {
+        var serialized = current.trim();
+        if (!serialized) break;
+        try {
+          var parsed = JSON.parse(serialized);
+          if (parsed !== current) {
+            current = parsed;
+            continue;
+          }
+        } catch(e) {}
+      }
+      if (isApiError(current)) {
+        return { status: 'error', message: responseMessage(current) };
+      }
+      if (!current || typeof current !== 'object') break;
+      var status = responseStatus(current);
+      var hasData = Object.prototype.hasOwnProperty.call(current, 'data');
+      if (isApiSuccessStatus(status) && hasData) {
+        meta = mergeApiMeta(meta, current);
+        current = current.data;
+        continue;
+      }
+      // Some compatible bridges expose the underlying HTTP response, e.g.
+      // {status: 200, data: payload}, instead of returning payload directly.
+      if (isTransportResponse(current)) {
+        meta = mergeApiMeta(meta, current);
+        current = current.data;
+        continue;
+      }
+      // A few bridge versions add stale/message fields without a status code:
+      // {data: payload, stale: true, message: "..."}. Preserve the payload
+      // shape so object endpoints (not only array endpoints) keep working.
+      if (hasData && hasDataEnvelopeMetadata(current)) {
+        meta = mergeApiMeta(meta, current);
+        current = current.data;
+        continue;
+      }
+      // Accept an extra transport wrapper such as {data:{status,data}}.
+      if (hasData && current.data && typeof current.data === 'object') {
+        var innerStatus = responseStatus(current.data);
+        if (isApiError(current.data) || isApiSuccessStatus(innerStatus)) {
+          meta = mergeApiMeta(meta, current);
+          current = current.data;
+          continue;
+        }
+      }
+      break;
+    }
+    return attachApiMeta(current, meta);
+  }
+
+  function normalizeApiPayload(value, label) {
+    var r = value;
+    if (typeof r === 'string') {
+      var text = r.trim();
+      if (!text) return { status: 'error', message: (label || '接口') + '返回为空' };
+      try { r = JSON.parse(text); }
+      catch(e) { return { status: 'error', message: (label || '接口') + '返回了非 JSON 数据' }; }
+    }
+    if (r === null || r === undefined) {
+      return { status: 'error', message: (label || '接口') + '返回为空' };
+    }
+    var normalized = unwrapApiResponse(r);
+    if (normalized instanceof Error) {
+      return { status: 'error', message: responseMessage(normalized) };
+    }
+    if (normalized === null || normalized === undefined) {
+      return { status: 'error', message: (label || '接口') + '返回为空' };
+    }
+    return normalized;
+  }
+
+  function payloadFailure(value, label) {
+    if (isApiError(value)) return responseMessage(value, (label || '接口') + '请求失败');
+    return (label || '接口') + '返回格式无效';
+  }
+
+  function arrayPayload(value, label) {
+    if (isApiError(value)) return value;
+    if (Array.isArray(value)) return value;
+    if (value && typeof value === 'object' && Array.isArray(value.data)) return value.data;
+    return { status: 'error', message: (label || '接口') + '返回格式无效' };
+  }
+
+  function objectPayload(value, label) {
+    if (isApiError(value)) return value;
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? value
+      : { status: 'error', message: (label || '接口') + '返回格式无效' };
+  }
 
 async function safeGet(path, params) {
   try {
     if (!apiGet) return { status: 'error', message: 'API 不可用' };
     var r = await withTimeout(apiGet(path, params), 'GET ' + path);
-    if (typeof r === 'string') { try { r = JSON.parse(r); } catch(e2) {} }
-    return unwrapApiResponse(r);
+    return normalizeApiPayload(r, 'GET ' + path);
   } catch(e) {
     console.error('[safeGet]', path, e);
     return { status: 'error', message: String(e) };
@@ -1074,8 +1326,7 @@ async function safePost(path, body, timeoutMs) {
   try {
     if (!apiPost) return { status: 'error', message: 'API 不可用' };
     var r = await withTimeout(apiPost(path, body), 'POST ' + path, timeoutMs || API_TIMEOUT_MS);
-    if (typeof r === 'string') { try { r = JSON.parse(r); } catch(e2) {} }
-    return unwrapApiResponse(r);
+    return normalizeApiPayload(r, 'POST ' + path);
   } catch(e) {
     console.error('[safePost]', path, e);
     return { status: 'error', message: String(e) };
@@ -1084,7 +1335,23 @@ async function safePost(path, body, timeoutMs) {
 async function safeDownload(path, params, filename) {
   try {
     if (!apiDownload) return { status: 'error', message: '下载 API 不可用' };
-    await withTimeout(apiDownload(path, params || {}, filename), 'DOWNLOAD ' + path, 30000);
+    var result = await withTimeout(apiDownload(path, params || {}, filename), 'DOWNLOAD ' + path, 30000);
+    // Most bridges throw for non-2xx downloads, but compatible bridges may
+    // resolve an HTTP/JSON error envelope instead.  Do not report success in
+    // that case; Blob/ArrayBuffer/undefined remain valid successful results.
+    if (typeof result === 'string') {
+      var serialized = result.trim();
+      if (serialized) {
+        try { result = JSON.parse(serialized); } catch(e) {}
+      }
+    }
+    if (isApiError(result)) {
+      return { status: 'error', message: responseMessage(result, '下载接口返回失败') };
+    }
+    if (result && typeof result === 'object') {
+      var normalized = normalizeApiPayload(result, 'DOWNLOAD ' + path);
+      if (isApiError(normalized)) return normalized;
+    }
     return { status: 'success' };
   } catch(e) {
     console.error('[safeDownload]', path, e);
@@ -1094,14 +1361,18 @@ async function safeDownload(path, params, filename) {
 
 async function loadConfigCached(force) {
   if (!force && CONFIG_PROMISE) return CONFIG_PROMISE;
-  CONFIG_PROMISE = safeGet('config').then(function(res) {
-    if (!isApiError(res)) CONFIG = Object.assign({}, CONFIG, res);
+  var epoch = ++CONFIG_REQUEST_EPOCH;
+  var request = safeGet('config').then(function(res) {
+    if (epoch === CONFIG_REQUEST_EPOCH && !isApiError(res) && res && typeof res === 'object' && !Array.isArray(res)) {
+      CONFIG = Object.assign({}, CONFIG, res);
+    }
     return res;
   }).catch(function(e) {
     return { status: 'error', message: String(e) };
   });
-  var out = await CONFIG_PROMISE;
-  if (isApiError(out)) CONFIG_PROMISE = null;
+  CONFIG_PROMISE = request;
+  var out = await request;
+  if (CONFIG_PROMISE === request && isApiError(out)) CONFIG_PROMISE = null;
   return out;
 }
 
@@ -1110,7 +1381,7 @@ function apiCallFailed(r) {
 }
 
 function apiErrMsg(r, fallback) {
-  return (r && r.message) ? r.message : (fallback || '操作失败');
+  return responseMessage(r, fallback || '操作失败');
 }
 
 async function postOrToast(path, body, successMsg, errorPrefix, successType) {
@@ -1225,8 +1496,10 @@ async function loadCardMonitor() {
 }
 
 async function loadCardMonConfig() {
+  var epoch = beginLoad('card-mon-config');
   var box = $('#cardMonConfig');
-  var res = await safeGet('card_monitor/config');
+  var res = objectPayload(await safeGet('card_monitor/config'), '名片配置');
+  if (!isCurrentLoad('card-mon-config', epoch)) return;
   if (isApiError(res)) { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
   var order = ['card_monitor_enabled','card_sync_enabled','card_sync_interval','card_log_enabled','card_protect_enabled','card_audit_link_only','card_audit_enabled','card_audit_admin_exempt','card_audit_llm_always','admin_change_notify_enabled','card_monitor_notify'];
   var html = order.map(function(k) {
@@ -1272,10 +1545,11 @@ async function loadCardMonConfig() {
 }
 
 async function loadCardProtected() {
+  var epoch = beginLoad('card-protected');
   var c = $('#cardProtList');
-  var res = await safeGet('card_monitor/protected');
-  if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('card_monitor/protected'), '受保护成员');
+  if (!isCurrentLoad('card-protected', epoch)) return;
+  if (isApiError(list)) { c.innerHTML = '<p class="empty">' + esc(list.message) + '</p>'; return; }
   if (!list.length) { c.innerHTML = '<p class="empty">暂无受保护成员</p>'; return; }
   var rows = list.map(function(r) {
     return '<tr><td>' + esc(r.group_id) + '</td><td>' + esc(r.user_id) + '</td><td>' + esc(r.protected_card || '(空名片)') +
@@ -1291,15 +1565,16 @@ async function loadCardProtected() {
 }
 
 async function loadCardRecords() {
+  var epoch = beginLoad('card-records');
   var c = $('#cardRecList');
   c.innerHTML = '<p class="empty">加载中...</p>';
   var params = {};
   var g = ($('#cardRecGroup').value || '').trim(); if (g) params.group_id = g;
   var k = $('#cardRecKind').value; if (k) params.kind = k;
   params.limit = 200;
-  var res = await safeGet('card_monitor/records', params);
-  if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('card_monitor/records', params), '名片记录');
+  if (!isCurrentLoad('card-records', epoch)) return;
+  if (isApiError(list)) { c.innerHTML = '<p class="empty">' + esc(list.message) + '</p>'; return; }
   if (!list.length) { c.innerHTML = '<p class="empty">暂无记录</p>'; return; }
   var rows = list.map(function(r) {
     var kindBadge = r.kind === 'admin'
@@ -1327,8 +1602,10 @@ async function loadLexiconLearn() {
 }
 
 async function loadLearnConfig() {
+  var epoch = beginLoad('learn-config');
   var box = $('#learnConfig');
-  var res = await safeGet('lexicon_learn/config');
+  var res = objectPayload(await safeGet('lexicon_learn/config'), '学习配置');
+  if (!isCurrentLoad('learn-config', epoch)) return;
   if (isApiError(res)) { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
   var order = ['lexicon_learn_enabled','lexicon_learn_auto_apply','lexicon_learn_verify_llm','lexicon_learn_interval','lexicon_learn_min_confidence','lexicon_learn_min_occurrences','lexicon_learn_min_length','lexicon_learn_max_per_run','lexicon_learn_sample_size','lexicon_learn_provider_id'];
   var html = order.map(function(k) {
@@ -1367,14 +1644,15 @@ async function loadLearnConfig() {
 }
 
 async function loadLearnCandidates() {
+  var epoch = beginLoad('learn-candidates');
   var c = $('#learnList');
   c.innerHTML = '<p class="empty">加载中...</p>';
   var params = { status: ($('#learnStatus').value || 'pending') };
   var g = ($('#learnGroup').value || '').trim(); if (g) params.group_id = g;
   params.limit = 300;
-  var res = await safeGet('lexicon_learn/candidates', params);
-  if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  var list = (res && res.data) ? res.data : (res || []);
+  var list = arrayPayload(await safeGet('lexicon_learn/candidates', params), '候选词');
+  if (!isCurrentLoad('learn-candidates', epoch)) return;
+  if (isApiError(list)) { c.innerHTML = '<p class="empty">' + esc(list.message) + '</p>'; return; }
   if (!list.length) { c.innerHTML = '<p class="empty">暂无候选词</p>'; return; }
   var rows = list.map(function(r) {
     var catBadge = r.category === 'swear'
@@ -1407,7 +1685,9 @@ async function loadLearnCandidates() {
 }
 
 async function loadOverview() {
+  var epoch = beginLoad('overview');
   var pair = await Promise.all([safeGet('stats'), safeGet('today_stats')]);
+  if (!isCurrentLoad('overview', epoch)) return;
   var res = pair[0];
   var todayRes = pair[1];
   var d = res;
@@ -1432,13 +1712,16 @@ async function loadOverview() {
     renderRanking('userRanking', todayRes.user_ranking, function(item) {
       return '<span class="ranking-name">' + esc(item.user_name || item.user_id) + '</span><span class="ranking-count">' + item.count + '</span>';
     });
+  } else if (todayRes) {
+    $('#groupRanking').innerHTML = '<p class="empty">' + esc(payloadFailure(todayRes, '今日统计')) + '</p>';
+    $('#userRanking').innerHTML = '<p class="empty">' + esc(payloadFailure(todayRes, '今日统计')) + '</p>';
   }
   loadDashboard();
 }
 
 function renderRanking(containerId, list, renderFn) {
   var c = $('#' + containerId);
-  if (!list || !list.length) { c.innerHTML = '<p class="empty">暂无数据</p>'; return; }
+  if (!Array.isArray(list) || !list.length) { c.innerHTML = '<p class="empty">暂无数据</p>'; return; }
   c.innerHTML = list.map(function(item, i) {
     var cls = i === 0 ? 'top1' : i === 1 ? 'top2' : i === 2 ? 'top3' : 'normal';
     return '<div class="ranking-item"><div class="ranking-num ' + cls + '">' + (i + 1) + '</div>' + renderFn(item) + '</div>';
@@ -1453,21 +1736,28 @@ function setDashRange(days) {
 }
 
 async function loadDashboard() {
+  var epoch = beginLoad('dashboard');
   var days = DASH_DAYS;
   await Promise.all([
-    loadTrend(days),
-    loadDistribution(days),
-    loadHourly(),
-    loadGroupRankHistory(days),
+    loadTrend(days, epoch),
+    loadDistribution(days, epoch),
+    loadHourly(epoch),
+    loadGroupRankHistory(days, epoch),
   ]);
 }
 
-async function loadTrend(days) {
+async function loadTrend(days, epoch) {
+  epoch = epoch || beginLoad('dashboard');
   var c = $('#trendChart');
+  if (!isCurrentLoad('dashboard', epoch)) return;
   c.innerHTML = '<p class="dash-empty" style="opacity:.5">加载中...</p>';
   var res = await safeGet('dashboard/trend', { days: days });
-  var hasData = res && !isApiError(res) && res.length;
-  if (!hasData) {
+  if (!isCurrentLoad('dashboard', epoch)) return;
+  if (isApiError(res) || !Array.isArray(res)) {
+    c.innerHTML = '<p class="dash-empty">' + esc(payloadFailure(res, '趋势数据')) + '</p>';
+    return;
+  }
+  if (!res.length) {
     c.innerHTML = '<p class="dash-empty">近 ' + days + ' 天暂无趋势数据</p>';
     return;
   }
@@ -1495,11 +1785,15 @@ async function loadTrend(days) {
   c.innerHTML = html;
 }
 
-async function loadDistribution(days) {
+async function loadDistribution(days, epoch) {
+  epoch = epoch || beginLoad('dashboard');
   var c = $('#distChart');
+  if (!isCurrentLoad('dashboard', epoch)) return;
   c.innerHTML = '<p class="dash-empty" style="opacity:.5">加载中...</p>';
   var res = await safeGet('dashboard/distribution', { days: days });
-  if (!res || isApiError(res) || !res.length) { c.innerHTML = '<p class="dash-empty">近 ' + days + ' 天暂无违规分布数据</p>'; return; }
+  if (!isCurrentLoad('dashboard', epoch)) return;
+  if (isApiError(res) || !Array.isArray(res)) { c.innerHTML = '<p class="dash-empty">' + esc(payloadFailure(res, '违规分布')) + '</p>'; return; }
+  if (!res.length) { c.innerHTML = '<p class="dash-empty">近 ' + days + ' 天暂无违规分布数据</p>'; return; }
   var total = res.reduce(function(s, d) { return s + d.count; }, 0);
   var maxCount = res[0].count || 1;
   var html = '';
@@ -1517,11 +1811,15 @@ async function loadDistribution(days) {
   c.innerHTML = html;
 }
 
-async function loadHourly() {
+async function loadHourly(epoch) {
+  epoch = epoch || beginLoad('dashboard');
   var c = $('#hourlyChart');
+  if (!isCurrentLoad('dashboard', epoch)) return;
   c.innerHTML = '<p class="dash-empty" style="opacity:.5">加载中...</p>';
   var res = await safeGet('dashboard/hourly', { days: 7 });
-  if (!res || isApiError(res) || !res.length) { c.innerHTML = '<p class="dash-empty">近7天暂无时段数据</p>'; return; }
+  if (!isCurrentLoad('dashboard', epoch)) return;
+  if (isApiError(res) || !Array.isArray(res)) { c.innerHTML = '<p class="dash-empty">' + esc(payloadFailure(res, '时段数据')) + '</p>'; return; }
+  if (!res.length) { c.innerHTML = '<p class="dash-empty">近7天暂无时段数据</p>'; return; }
   var hourMap = {};
   res.forEach(function(d) { hourMap[d.hour] = d.count; });
   var maxCount = 0;
@@ -1542,11 +1840,15 @@ async function loadHourly() {
   c.innerHTML = html;
 }
 
-async function loadGroupRankHistory(days) {
+async function loadGroupRankHistory(days, epoch) {
+  epoch = epoch || beginLoad('dashboard');
   var c = $('#groupRankHistory');
+  if (!isCurrentLoad('dashboard', epoch)) return;
   c.innerHTML = '<p class="dash-empty" style="opacity:.5">加载中...</p>';
   var res = await safeGet('dashboard/group_ranking', { days: days, top: 10 });
-  if (!res || isApiError(res) || !res.length) { c.innerHTML = '<p class="dash-empty">近 ' + days + ' 天暂无群排行数据</p>'; return; }
+  if (!isCurrentLoad('dashboard', epoch)) return;
+  if (isApiError(res) || !Array.isArray(res)) { c.innerHTML = '<p class="dash-empty">' + esc(payloadFailure(res, '群排行')) + '</p>'; return; }
+  if (!res.length) { c.innerHTML = '<p class="dash-empty">近 ' + days + ' 天暂无群排行数据</p>'; return; }
   var maxCount = res[0].count || 1;
   var total = res.reduce(function(s, d) { return s + d.count; }, 0);
   var html = '';
@@ -1565,10 +1867,13 @@ async function loadGroupRankHistory(days) {
 }
 
 async function loadGroups(force) {
+  var epoch = beginLoad('groups');
   var grid = $('#groupGrid');
+  if (!isCurrentLoad('groups', epoch)) return;
   grid.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('groups', force ? { force: 1 } : undefined);
-  if (isApiError(res)) { grid.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  if (!isCurrentLoad('groups', epoch)) return;
+  if (isApiError(res) || !Array.isArray(res)) { grid.innerHTML = '<p class="empty">' + esc(payloadFailure(res, '群列表')) + '</p>'; return; }
   if (res && res._api_meta && res._api_meta.message) toast(res._api_meta.message, res._api_meta.stale ? 'warning' : 'info');
   CONFIG._groups = res;
   renderGroups(res);
@@ -1632,8 +1937,11 @@ function renderGroups(groups) {
 }
 
 async function openMemberPanel(gid, force) {
+  var epoch = beginLoad('group-members');
+  gid = String(gid);
   CURRENT_GROUP = gid;
   var panel = $('#memberPanel');
+  if (!isCurrentLoad('group-members', epoch)) return;
   panel.style.display = 'block';
   $('#memberPanelTitle').textContent = '群 ' + gid + ' 成员';
   $('#memberList').innerHTML = '<p class="empty">加载中...</p>';
@@ -1642,7 +1950,8 @@ async function openMemberPanel(gid, force) {
   var params = { group_id: gid };
   if (force) params.force = 1;
   var res = await safeGet('group_members', params);
-  if (isApiError(res)) { $('#memberList').innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  if (!isCurrentLoad('group-members', epoch)) return;
+  if (isApiError(res) || !Array.isArray(res)) { $('#memberList').innerHTML = '<p class="empty">' + esc(payloadFailure(res, '群成员')) + '</p>'; return; }
   if (res && res._api_meta && res._api_meta.message) toast(res._api_meta.message, res._api_meta.stale ? 'warning' : 'info');
   CURRENT_MEMBERS = res;
   CACHED_GROUP_ID = gid;
@@ -1779,7 +2088,9 @@ function renderMembers(members) {
 }
 
 async function loadAdmins() {
+  var epoch = beginLoad('admins');
   var res = await loadConfigCached();
+  if (!isCurrentLoad('admins', epoch)) return;
   if (isApiError(res)) return;
   renderAdmins();
 }
@@ -1800,10 +2111,13 @@ function renderAdmins() {
 }
 
 async function loadUsers() {
+  var epoch = beginLoad('users');
   var c = $('#userContainer');
+  if (!isCurrentLoad('users', epoch)) return;
   c.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('moderation_users');
-  if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
+  if (!isCurrentLoad('users', epoch)) return;
+  if (isApiError(res) || !Array.isArray(res)) { c.innerHTML = '<p class="empty">' + esc(payloadFailure(res, '用户列表')) + '</p>'; return; }
   renderUsers(res);
 }
 
@@ -1858,10 +2172,12 @@ function renderUsers(users) {
     action.addEventListener('click', async function(e) {
       e.stopPropagation();
       var lid = this.getAttribute('data-log-id');
+      var detailEpoch = beginLoad('log-detail');
       showModal('消息详情', '<p style="color:var(--text-muted)">加载中...</p>', '<button class="btn btn-ghost btn-sm" id="btnMsgClose2">关闭</button>');
       $('#btnMsgClose2').addEventListener('click', closeModal);
       try {
         var detail = await safeGet('log_detail', { id: lid });
+        if (!isCurrentLoad('log-detail', detailEpoch)) return;
         if (isApiError(detail)) { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(detail.message || '获取失败') + '</p>'; return; }
         var d = detail || {};
         var chunkCount = d.chunk_count || 0;
@@ -1869,6 +2185,8 @@ function renderUsers(users) {
         var parts = [];
         for (var ci = 0; ci < chunkCount; ci++) {
           var cr = await safeGet('log_chunk', { id: lid, chunk: ci });
+          if (!isCurrentLoad('log-detail', detailEpoch)) return;
+          if (isApiError(cr)) { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(cr.message || '获取失败') + '</p>'; return; }
           if (cr && cr.t) parts.push(cr.t);
         }
         renderMessageDetail(parts.join(''), imgUrls);
@@ -1878,15 +2196,34 @@ function renderUsers(users) {
 }
 
 async function loadLogs() {
+  var epoch = beginLoad('logs');
   var c = $('#logContainer');
+  if (!isCurrentLoad('logs', epoch)) return;
   c.innerHTML = '<p class="empty">加载中...</p>';
-  var res = await safeGet('logs');
-  if (isApiError(res)) { c.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  var logs = res || [];
-  if (!logs.length) { c.innerHTML = '<p class="empty">暂无日志</p>'; return; }
+  var res = await safeGet('logs', {
+    page: LOGS_STATE.page,
+    page_size: LOGS_STATE.pageSize,
+  });
+  if (!isCurrentLoad('logs', epoch)) return;
+  if (isApiError(res) || typeof res !== 'object' || !Array.isArray(res.items)) {
+    c.innerHTML = '<p class="empty">' + esc(payloadFailure(res, '日志')) + '</p>';
+    return;
+  }
+  var logs = res.items;
+  var total = res.total || 0;
+  var totalPages = Math.max(1, Math.ceil(total / LOGS_STATE.pageSize));
+  if (LOGS_STATE.page > totalPages) {
+    LOGS_STATE.page = totalPages;
+    return loadLogs();
+  }
+  if (!logs.length) {
+    c.innerHTML = '<p class="empty">暂无日志</p>' + renderPager(LOGS_STATE.page, LOGS_STATE.pageSize, total, 'logs');
+    bindPager(c);
+    return;
+  }
   var _msgStore = {};
   var _msgIdx = 0;
-  var rows = logs.slice(0, 100).map(function(l) {
+  var rows = logs.map(function(l) {
     var a = l.action || '';
     var cls = a.indexOf('撤回') !== -1 ? 'badge-danger' : a.indexOf('放行') !== -1 ? 'badge-success' : a.indexOf('提醒') !== -1 ? 'badge-warning' : 'badge-default';
     var msgFull = l.msg_text || l.msg_preview || '';
@@ -1912,7 +2249,9 @@ async function loadLogs() {
     }
     return '<tr><td>' + fmtTime(l.ts) + '</td><td>' + esc(l.group_id) + '</td><td>' + esc(l.user_name) + '<br><span style="font-size:10px;color:var(--text-muted)">' + esc(l.user_id) + '</span></td><td>' + msgHtml + '</td><td><span class="badge ' + cls + '">' + esc(a) + '</span></td><td class="reason-cell" title="' + escAttr(l.reason) + '">' + esc((l.reason || '').slice(0, 30)) + '</td><td>' + reviewHtml + '</td></tr>';
   }).join('');
-  c.innerHTML = '<table class="log-table"><thead><tr><th>时间</th><th>群号</th><th>用户</th><th>消息</th><th>操作</th><th>原因</th><th>人工复核</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  c.innerHTML = '<table class="log-table"><thead><tr><th>时间</th><th>群号</th><th>用户</th><th>消息</th><th>操作</th><th>原因</th><th>人工复核</th></tr></thead><tbody>' + rows + '</tbody></table>'
+    + renderPager(LOGS_STATE.page, LOGS_STATE.pageSize, total, 'logs');
+  bindPager(c);
   $$('[data-review-log]', c).forEach(function(btn) {
     btn.addEventListener('click', async function() {
       var verdict = btn.getAttribute('data-review-verdict');
@@ -1929,10 +2268,12 @@ async function loadLogs() {
     action.addEventListener('click', async function(e) {
       e.stopPropagation();
       var lid = this.getAttribute('data-log-id');
+      var detailEpoch = beginLoad('log-detail');
       showModal('消息详情', '<p style="color:var(--text-muted)">加载中...</p>', '<button class="btn btn-ghost btn-sm" id="btnMsgClose">关闭</button>');
       $('#btnMsgClose').addEventListener('click', closeModal);
       try {
         var detail = await safeGet('log_detail', { id: lid });
+        if (!isCurrentLoad('log-detail', detailEpoch)) return;
         if (isApiError(detail)) { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(detail.message || '获取失败') + '</p>'; return; }
         var d = detail || {};
         var chunkCount = d.chunk_count || 0;
@@ -1940,6 +2281,8 @@ async function loadLogs() {
         var parts = [];
         for (var ci = 0; ci < chunkCount; ci++) {
           var cr = await safeGet('log_chunk', { id: lid, chunk: ci });
+          if (!isCurrentLoad('log-detail', detailEpoch)) return;
+          if (isApiError(cr)) { $('#modalBody').innerHTML = '<p style="color:var(--text-muted)">' + esc(cr.message || '获取失败') + '</p>'; return; }
           if (cr && cr.t) parts.push(cr.t);
         }
         renderMessageDetail(parts.join(''), imgUrls);
@@ -1949,10 +2292,12 @@ async function loadLogs() {
 }
 
 async function loadModerationReview() {
+  var epoch = beginLoad('moderation-review');
   var summary = $('#reviewSummary');
   var box = $('#reviewSuggestions');
   var auditBox = $('#reviewAudit');
   if (!summary || !box || !auditBox) return;
+  if (!isCurrentLoad('moderation-review', epoch)) return;
   summary.textContent = '加载中...';
   var results = await Promise.all([
     loadConfigCached(true),
@@ -1960,22 +2305,34 @@ async function loadModerationReview() {
     safeGet('moderation_review/suggestions', { limit: 50 }),
     safeGet('moderation_review/audit', {})
   ]);
-  var feedback = isApiError(results[1]) ? [] : (results[1] || []);
-  var suggestions = isApiError(results[2]) ? [] : (results[2] || []);
-  var audits = isApiError(results[3]) ? [] : (results[3] || []);
-  var pendingCount = feedback.filter(function(item) { return item.review_status === 'pending'; }).length;
-  var guidance = CONFIG.llm_moderation_review_guidance || '';
-  summary.innerHTML = '<strong>待复盘误判：</strong>' + pendingCount + ' 条　<strong>历史候选：</strong>' + suggestions.length + ' 条' +
+  if (!isCurrentLoad('moderation-review', epoch)) return;
+  var configResult = results[0];
+  var feedback = Array.isArray(results[1]) ? results[1] : null;
+  var suggestions = Array.isArray(results[2]) ? results[2] : null;
+  var audits = Array.isArray(results[3]) ? results[3] : null;
+  var pendingCount = feedback ? feedback.filter(function(item) { return item.review_status === 'pending'; }).length : '--';
+  var guidance = !isApiError(configResult) ? (CONFIG.llm_moderation_review_guidance || '') : '';
+  var loadErrors = [];
+  if (isApiError(configResult)) loadErrors.push('配置: ' + payloadFailure(configResult, '配置'));
+  if (!feedback) loadErrors.push('误判样本: ' + payloadFailure(results[1], '误判样本'));
+  if (!suggestions) loadErrors.push('候选规则: ' + payloadFailure(results[2], '候选规则'));
+  if (!audits) loadErrors.push('审计记录: ' + payloadFailure(results[3], '审计记录'));
+  summary.innerHTML = '<strong>待复盘误判：</strong>' + pendingCount + ' 条　<strong>历史候选：</strong>' + (suggestions ? suggestions.length : '--') + ' 条' +
+    (loadErrors.length ? '<div style="margin-top:8px;color:var(--danger)">' + esc(loadErrors.join('；')) + '</div>' : '') +
     '<div style="margin-top:8px"><strong>当前已应用修正规则：</strong><pre style="white-space:pre-wrap;word-break:break-word;margin:6px 0 0;color:var(--text-primary)">' + esc(guidance || '无') + '</pre></div>';
 
   var autoEl = $('#reviewAutoEnabled');
   var intervalEl = $('#reviewInterval');
   var minEl = $('#reviewMinSamples');
-  if (autoEl) autoEl.checked = !!CONFIG.moderation_review_enabled;
-  if (intervalEl) intervalEl.value = CONFIG.moderation_review_interval || 86400;
-  if (minEl) minEl.value = CONFIG.moderation_review_min_samples || 3;
+  if (!isApiError(configResult)) {
+    if (autoEl) autoEl.checked = !!CONFIG.moderation_review_enabled;
+    if (intervalEl) intervalEl.value = CONFIG.moderation_review_interval || 86400;
+    if (minEl) minEl.value = CONFIG.moderation_review_min_samples || 3;
+  }
 
-  if (!suggestions.length) {
+  if (!suggestions) {
+    box.innerHTML = '<p class="empty">' + esc(payloadFailure(results[2], '候选规则')) + '</p>';
+  } else if (!suggestions.length) {
     box.innerHTML = '<p class="empty">暂无复盘候选</p>';
   } else {
     var statusLabels = { pending: '待确认', applied: '已应用', rejected: '已拒绝', rolled_back: '已回滚' };
@@ -2023,7 +2380,7 @@ async function loadModerationReview() {
   });
 
   auditBox.innerHTML = '<div style="font-size:12px;font-weight:600;margin-bottom:6px">最近审计记录</div>' +
-    (audits.length ? audits.slice(0, 10).map(function(item) {
+    (!audits ? '<span style="font-size:12px;color:var(--danger)">' + esc(payloadFailure(results[3], '审计记录')) + '</span>' : audits.length ? audits.slice(0, 10).map(function(item) {
       return '<div style="font-size:12px;color:var(--text-secondary);padding:3px 0">' + fmtTime(item.created_at) + ' · #' + esc(item.suggestion_id || '') + ' · ' + esc(item.action) + ' · ' + esc(item.detail || '') + '</div>';
     }).join('') : '<span style="font-size:12px;color:var(--text-muted)">暂无</span>');
 
@@ -2060,6 +2417,7 @@ var CORE_TOGGLES = [
 var AUDIT_TOGGLES = [
   { key: 'scan_swear', label: '脏话检测', desc: '使用正则检测脏话' },
   { key: 'scan_ad', label: '广告检测', desc: '使用正则检测广告' },
+  { key: 'moderation_admin_exempt', label: '管理员内容豁免', desc: '开启后管理员跳过内容审核；防刷屏始终豁免管理员' },
   { key: 'llm_moderation_enabled', label: 'AI审核', desc: '使用LLM进行深度审核' },
   { key: 'llm_moderation_always', label: '全量 AI 审核', desc: '所有消息带上下文送 LLM，并自动尝试识图和二维码解析' },
   { key: 'base_decode_enabled', label: 'Base 解码审核', desc: '解码 Base16/32/58/62/64/85 及双层编码后进入规则与 AI 审核' },
@@ -2124,6 +2482,7 @@ var FEATURE_TOGGLES = [
 ];
 var RULES_STATE = { category: 'swear', q: '', enabled: '', page: 1, pageSize: 20 };
 var KEYWORDS_STATE = { category: '', q: '', page: 1, pageSize: 50 };
+var LOGS_STATE = { page: 1, pageSize: 50 };
 
 function renderSegmented(name, value, items) {
   return '<div data-seg-name="' + escAttr(name) + '" style="display:inline-flex;gap:6px;flex-wrap:wrap">'
@@ -2172,6 +2531,7 @@ var MANUAL_SETTING_KEYS = {
   auto_moderate_notice: true,
   scan_swear: true,
   scan_ad: true,
+  moderation_admin_exempt: true,
   llm_moderation_enabled: true,
   llm_moderation_always: true,
   base_decode_enabled: true,
@@ -2273,7 +2633,9 @@ function updateLinDisclaimerStatus(agreed) {
 }
 
 async function loadSettings() {
+  var epoch = beginLoad('settings');
   var res = await loadConfigCached(true);
+  if (!isCurrentLoad('settings', epoch)) return;
   if (isApiError(res)) { toast('加载设置失败', 'error'); return; }
   var agreed = CONFIG.disclaimer_agreed ? true : false;
   var cb = $('#disclaimerAgreed');
@@ -2287,9 +2649,10 @@ async function loadSettings() {
   renderListSettings();
   renderAllSettings();
   await loadProviderList(true);
+  if (!isCurrentLoad('settings', epoch)) return;
   renderSettingsSectionTabs();
   applySettingsSection();
-  loadMigrationStatus();
+  loadMigrationStatus(false);
 }
 
 function renderSettingsSectionTabs() {
@@ -2415,7 +2778,9 @@ async function loadRuleCenter() {
 }
 
 async function loadRebuildStatus() {
+  var epoch = beginLoad('rebuild-status');
   var res = await safeGet('rules/rebuild_status');
+  if (!isCurrentLoad('rebuild-status', epoch)) return;
   if (!res || isApiError(res)) return;
   var d = res;
   var txt = '重建状态：' + (d.message || d.state || '--');
@@ -2430,6 +2795,8 @@ async function loadRebuildStatus() {
 }
 
 async function loadRules() {
+  var epoch = beginLoad('rules');
+  if (!isCurrentLoad('rules', epoch)) return;
   var res = await safeGet('rules', {
     category: RULES_STATE.category,
     enabled: RULES_STATE.enabled,
@@ -2439,8 +2806,9 @@ async function loadRules() {
   });
   var wrap = $('#rulesTableWrap');
   if (!wrap) return;
-  if (!res || isApiError(res)) { wrap.innerHTML = '<div class="empty">规则加载失败</div>'; return; }
-  var items = res.items || [];
+  if (!isCurrentLoad('rules', epoch)) return;
+  if (!res || isApiError(res) || typeof res !== 'object' || !Array.isArray(res.items)) { wrap.innerHTML = '<div class="empty">' + esc(payloadFailure(res, '规则')) + '</div>'; return; }
+  var items = res.items;
   var total = res.total || 0;
   var rows = items.map(function(item) {
     return '<tr>'
@@ -2561,18 +2929,20 @@ function openRuleEditor(rule) {
 }
 
 async function loadKeywordCategories() {
+  var epoch = beginLoad('keyword-categories');
   var res = await safeGet('lexicon/categories');
+  if (!isCurrentLoad('keyword-categories', epoch)) return;
   var input = $('#kwCategorySearch');
   var datalist = $('#kwCategoryList');
   var meta = $('#kwCategoryMeta');
   if (!input || !datalist) return;
-  if (!res || isApiError(res)) {
+  var items = arrayPayload(res, '分类');
+  if (isApiError(items)) {
     datalist.innerHTML = '';
     input.value = '';
-    if (meta) meta.textContent = '分类加载失败';
+    if (meta) meta.textContent = payloadFailure(items, '分类');
     return;
   }
-  var items = res || [];
   if (!KEYWORDS_STATE.category && items.length) KEYWORDS_STATE.category = items[0].name;
   datalist.innerHTML = items.map(function(item) {
     return '<option value="' + escAttr(item.name) + '">' + esc(item.name + ' (' + item.keyword_count + ')') + '</option>';
@@ -2596,6 +2966,7 @@ async function loadKeywordCategories() {
 }
 
 async function loadKeywords() {
+  var epoch = beginLoad('keywords');
   var wrap = $('#kwTableWrap');
   if (!wrap || !KEYWORDS_STATE.category) return;
   var res = await safeGet('lexicon/keywords', {
@@ -2604,8 +2975,9 @@ async function loadKeywords() {
     page: KEYWORDS_STATE.page,
     page_size: KEYWORDS_STATE.pageSize,
   });
-  if (!res || isApiError(res)) { wrap.innerHTML = '<div class="empty">关键词加载失败</div>'; return; }
-  var items = res.items || [];
+  if (!isCurrentLoad('keywords', epoch)) return;
+  if (!res || isApiError(res) || typeof res !== 'object' || !Array.isArray(res.items)) { wrap.innerHTML = '<div class="empty">' + esc(payloadFailure(res, '关键词')) + '</div>'; return; }
+  var items = res.items;
   var total = res.total || 0;
   wrap.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">分类 ' + esc(KEYWORDS_STATE.category) + '，共 ' + total + ' 个关键词</div>'
     + '<table class="log-table"><thead><tr><th><input type="checkbox" id="kwCheckAll" /></th><th>ID</th><th>关键词</th><th>操作</th></tr></thead><tbody>'
@@ -2716,6 +3088,9 @@ function bindPager(root) {
       } else if (prefix === 'keywords') {
         KEYWORDS_STATE.page = act === 'prev' ? Math.max(1, KEYWORDS_STATE.page - 1) : KEYWORDS_STATE.page + 1;
         loadKeywords();
+      } else if (prefix === 'logs') {
+        LOGS_STATE.page = act === 'prev' ? Math.max(1, LOGS_STATE.page - 1) : LOGS_STATE.page + 1;
+        loadLogs();
       }
     });
   });
@@ -2731,6 +3106,10 @@ function bindPager(root) {
         KEYWORDS_STATE.pageSize = size;
         KEYWORDS_STATE.page = 1;
         loadKeywords();
+      } else if (prefix === 'logs') {
+        LOGS_STATE.pageSize = size;
+        LOGS_STATE.page = 1;
+        loadLogs();
       }
     });
   });
@@ -2745,6 +3124,9 @@ function bindPager(root) {
       } else if (prefix === 'keywords') {
         KEYWORDS_STATE.page = Math.max(1, page);
         loadKeywords();
+      } else if (prefix === 'logs') {
+        LOGS_STATE.page = Math.max(1, page);
+        loadLogs();
       }
     });
   });
@@ -2824,6 +3206,7 @@ function renderAllSettings() {
 }
 
 async function loadMigrationStatus(showToast) {
+  var epoch = beginLoad('migration-status');
   var box = $('#migrationStatus');
   if (!box) return;
   var btn = $('#btnRefreshMigration');
@@ -2833,6 +3216,7 @@ async function loadMigrationStatus(showToast) {
   }
   box.textContent = '正在刷新迁移状态...';
   var res = await safeGet('migration/status');
+  if (!isCurrentLoad('migration-status', epoch)) return;
   if (btn) {
     btn.disabled = false;
     btn.textContent = '刷新状态';
@@ -3032,8 +3416,10 @@ function renderProviderOptions(selectedId, emptyLabel) {
 }
 
 async function loadProviderList(showErrorToast) {
+  var epoch = beginLoad('providers');
   try {
     var res = await safeGet('providers');
+    if (!isCurrentLoad('providers', epoch)) return;
     if (isApiError(res)) {
       PROVIDER_LIST = [];
       PROVIDER_LIST_READY = false;
@@ -3043,10 +3429,12 @@ async function loadProviderList(showErrorToast) {
       PROVIDER_LIST_READY = true;
     }
   } catch(e) {
+    if (!isCurrentLoad('providers', epoch)) return;
     PROVIDER_LIST = [];
     PROVIDER_LIST_READY = false;
     if (showErrorToast) toast('Provider 列表加载失败，将保留当前已保存模型', 'warning');
   }
+  if (!isCurrentLoad('providers', epoch)) return;
   renderExtraSettings();
   renderOcrSettings();
 }
@@ -3171,9 +3559,10 @@ async function saveSettings() {
 }
 
 async function loadFlood() {
-  var res = await safeGet('anti_flood/status');
-  if (!res || isApiError(res)) { toast('加载刷屏数据失败', 'error'); return; }
-  var d = res;
+  var epoch = beginLoad('flood');
+  var d = objectPayload(await safeGet('anti_flood/status'), '刷屏状态');
+  if (!isCurrentLoad('flood', epoch)) return;
+  if (isApiError(d)) { toast('加载刷屏数据失败: ' + apiErrMsg(d, ''), 'error'); return; }
   $('#floodEnabled').textContent = d.enabled ? '已启用' : '未启用';
   $('#floodEnabled').style.color = d.enabled ? 'var(--success)' : 'var(--text-muted)';
   $('#floodTrackedGroups').textContent = d.tracked_groups || 0;
@@ -3228,11 +3617,12 @@ async function loadFlood() {
 /* ============ v2.4.0 新增：入群审核 / 权限管理 / 申诉解禁 ============ */
 // 入群审核规则
 async function loadJoinRules() {
+  var epoch = beginLoad('join-rules');
   var box = $('#joinRuleList');
   box.innerHTML = '<p class="empty">加载中...</p>';
-  var res = await safeGet('join_rules');
-  if (isApiError(res)) { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('join_rules'), '入群规则');
+  if (!isCurrentLoad('join-rules', epoch)) return;
+  if (isApiError(list)) { box.innerHTML = '<p class="empty">' + esc(list.message) + '</p>'; return; }
   if (!list.length) { box.innerHTML = '<p class="empty">暂无规则</p>'; return; }
   box.innerHTML = list.map(function(r) {
     return '<div class="setting-item"><div class="setting-info">' +
@@ -3271,10 +3661,11 @@ async function saveJoinRule() {
 
 // 权限管理：群超管
 async function loadSuperAdmins() {
+  var epoch = beginLoad('super-admins');
   var box = $('#superAdminList');
-  var res = await safeGet('super_admin');
-  if (isApiError(res)) { box.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('super_admin'), '群超管');
+  if (!isCurrentLoad('super-admins', epoch)) return;
+  if (isApiError(list)) { box.innerHTML = '<p class="empty">加载失败：' + esc(list.message || '') + '</p>'; return; }
   box.innerHTML = list.length ? list.map(function(it) {
     return '<span class="list-tag list-tag-user">群' + esc(it.group_id) + ':' + esc(it.user_id) +
       '<button class="btn-remove" data-sa-g="' + escAttr(it.group_id) + '" data-sa-u="' + escAttr(it.user_id) + '">&times;</button></span>';
@@ -3290,10 +3681,11 @@ async function loadSuperAdmins() {
 }
 // 权限管理：动态授权
 async function loadGrants() {
+  var epoch = beginLoad('grants');
   var box = $('#grantList');
-  var res = await safeGet('admin_grant');
-  if (isApiError(res)) { box.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('admin_grant'), '授权配置');
+  if (!isCurrentLoad('grants', epoch)) return;
+  if (isApiError(list)) { box.innerHTML = '<p class="empty">加载失败：' + esc(list.message || '') + '</p>'; return; }
   box.innerHTML = list.length ? list.map(function(g) {
     return '<div class="setting-item"><div class="setting-info"><div class="setting-label">群 ' + esc(g.group_id) +
       ' ' + (g.enabled ? '<span class="badge badge-success">启用</span>' : '<span class="badge badge-default">停用</span>') + '</div>' +
@@ -3311,10 +3703,11 @@ async function loadGrants() {
 }
 // 权限管理：群权限黑名单
 async function loadBlocks() {
+  var epoch = beginLoad('blocks');
   var box = $('#blockList');
-  var res = await safeGet('admin_block');
-  if (isApiError(res)) { box.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('admin_block'), '权限黑名单');
+  if (!isCurrentLoad('blocks', epoch)) return;
+  if (isApiError(list)) { box.innerHTML = '<p class="empty">加载失败：' + esc(list.message || '') + '</p>'; return; }
   box.innerHTML = list.length ? list.map(function(it) {
     return '<span class="list-tag list-tag-black">群' + esc(it.group_id) + ':' + esc(it.user_id) +
       '<button class="btn-remove" data-ab-g="' + escAttr(it.group_id) + '" data-ab-u="' + escAttr(it.user_id) + '">&times;</button></span>';
@@ -3331,11 +3724,12 @@ async function loadBlocks() {
 
 // 申诉记录
 async function loadAppeals() {
+  var epoch = beginLoad('appeals');
   var box = $('#appealList');
   box.innerHTML = '<p class="empty">加载中...</p>';
-  var res = await safeGet('appeals', { limit: 100 });
-  if (isApiError(res)) { box.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('appeals', { limit: 100 }), '申诉记录');
+  if (!isCurrentLoad('appeals', epoch)) return;
+  if (isApiError(list)) { box.innerHTML = '<p class="empty">加载失败：' + esc(list.message || '') + '</p>'; return; }
   if (!list.length) { box.innerHTML = '<p class="empty">暂无申诉</p>'; return; }
   var stMap = { waiting: '待处理', approved: '已通过', rejected: '已驳回', expired: '已超时' };
   var stCls = { waiting: 'badge-warning', approved: 'badge-success', rejected: 'badge-danger', expired: 'badge-default' };
@@ -3347,11 +3741,12 @@ async function loadAppeals() {
 }
 // 定时解禁
 async function loadUnbans() {
+  var epoch = beginLoad('unbans');
   var box = $('#unbanList');
   box.innerHTML = '<p class="empty">加载中...</p>';
-  var res = await safeGet('scheduled_unbans');
-  if (isApiError(res)) { box.innerHTML = '<p class="empty">加载失败：' + esc(res.message || '') + '</p>'; return; }
-  var list = res || [];
+  var list = arrayPayload(await safeGet('scheduled_unbans'), '定时解禁');
+  if (!isCurrentLoad('unbans', epoch)) return;
+  if (isApiError(list)) { box.innerHTML = '<p class="empty">加载失败：' + esc(list.message || '') + '</p>'; return; }
   if (!list.length) { box.innerHTML = '<p class="empty">暂无计划</p>'; return; }
   box.innerHTML = '<table class="log-table"><thead><tr><th>群号</th><th>用户</th><th>解禁时间</th><th>操作</th></tr></thead><tbody>' +
     list.map(function(u) {
@@ -3372,17 +3767,33 @@ var GC_CONFIGURED = [];
 var GC_CUR = null;
 var GC_WHITE_ENABLED = false;
 async function loadGroupCfgGroups() {
+  var epoch = beginLoad('groupcfg-groups');
   var grid = $('#gcGroupGrid');
+  if (!isCurrentLoad('groupcfg-groups', epoch)) return;
   grid.innerHTML = '<p class="empty">加载中...</p>';
-  var cfgRes = await safeGet('configured_groups');
-  GC_CONFIGURED = isApiError(cfgRes) ? [] : (cfgRes || []);
-  $('#gcConfiguredHint').textContent = GC_CONFIGURED.length ? ('已配置 ' + GC_CONFIGURED.length + ' 个群') : '暂无群单独配置';
-  // 拉统计判断白名单是否启用（>0 则仅白名单群可配）
-  var stats = await safeGet('stats');
-  var whiteCount = (stats && stats.group_white_list_count) || 0;
-  var res = await safeGet('groups');
-  if (isApiError(res)) { grid.innerHTML = '<p class="empty">' + esc(res.message) + '（可直接输入白名单群号配置）</p>'; return; }
-  var all = res || [];
+  var results = await Promise.all([
+    safeGet('configured_groups'),
+    safeGet('stats'),
+    safeGet('groups')
+  ]);
+  if (!isCurrentLoad('groupcfg-groups', epoch)) return;
+  var cfgRes = results[0];
+  var stats = results[1];
+  var res = results[2];
+  if (Array.isArray(cfgRes)) {
+    GC_CONFIGURED = cfgRes;
+    $('#gcConfiguredHint').textContent = GC_CONFIGURED.length ? ('已配置 ' + GC_CONFIGURED.length + ' 个群') : '暂无群单独配置';
+  } else {
+    $('#gcConfiguredHint').textContent = '独立配置读取失败：' + payloadFailure(cfgRes, '独立配置');
+  }
+  // 白名单状态读取失败时不猜成“白名单为空”，避免展示错误的可配置范围。
+  if (isApiError(stats) || !stats || typeof stats !== 'object' || Array.isArray(stats)) {
+    grid.innerHTML = '<p class="empty">' + esc(payloadFailure(stats, '白名单状态')) + '</p>';
+    return;
+  }
+  var whiteCount = Number(stats.group_white_list_count) || 0;
+  if (isApiError(res) || !Array.isArray(res)) { grid.innerHTML = '<p class="empty">' + esc(payloadFailure(res, '群列表')) + '（可直接输入白名单群号配置）</p>'; return; }
+  var all = res;
   // 仅白名单群可配置：白名单非空时只显示白名单群，为空时（=全部群启用）显示全部
   GC_GROUPS = whiteCount > 0 ? all.filter(function(g) { return g.is_white; }) : all;
   GC_WHITE_ENABLED = whiteCount > 0;
@@ -3408,14 +3819,20 @@ function renderGcGroups(list) {
   });
 }
 async function openGroupCfg(gid) {
+  var epoch = beginLoad('groupcfg-detail');
   GC_CUR = String(gid);
   $('#gcConfigCard').style.display = '';
   $('#gcConfigTitle').textContent = '群配置 · ' + gid;
   var box = $('#gcConfigList');
+  if (!isCurrentLoad('groupcfg-detail', epoch)) return;
   box.innerHTML = '<p class="empty">加载中...</p>';
   var res = await safeGet('group_config', { group_id: gid });
-  if (isApiError(res)) { box.innerHTML = '<p class="empty">' + esc(res.message) + '</p>'; return; }
-  renderGroupCfgItems(res.items || []);
+  if (!isCurrentLoad('groupcfg-detail', epoch)) return;
+  if (isApiError(res) || !res || typeof res !== 'object' || !Array.isArray(res.items)) {
+    box.innerHTML = '<p class="empty">' + esc(payloadFailure(res, '群配置')) + '</p>';
+    return;
+  }
+  renderGroupCfgItems(res.items);
 }
 function renderGroupCfgItems(items) {
   var box = $('#gcConfigList');
@@ -3466,40 +3883,44 @@ function renderGroupCfgItems(items) {
   // bool 三态下拉
   $$('.gc-sel', box).forEach(function(sel) {
     sel.addEventListener('change', async function() {
+      var targetGroup = GC_CUR;
       var key = sel.dataset.key, v = sel.value;
       var ok;
       if (v === 'inherit') {
-        ok = await postOrToast('group_config/delete', { group_id: GC_CUR, key: key }, '已恢复继承', '恢复继承失败');
+        ok = await postOrToast('group_config/delete', { group_id: targetGroup, key: key }, '已恢复继承', '恢复继承失败');
       } else {
-        ok = await postOrToast('group_config/set', { group_id: GC_CUR, key: key, value: v === 'on' }, '已设置', '设置失败');
+        ok = await postOrToast('group_config/set', { group_id: targetGroup, key: key, value: v === 'on' }, '已设置', '设置失败');
       }
-      if (ok) openGroupCfg(GC_CUR);
+      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
   // 整型保存/继承
   $$('.gc-int-save', box).forEach(function(b) {
     b.addEventListener('click', async function() {
+      var targetGroup = GC_CUR;
       var key = b.dataset.key;
       var inp = box.querySelector('.gc-int[data-key="' + cssAttr(key) + '"]');
       var v = (inp.value || '').trim();
       var ok = v === ''
-        ? await postOrToast('group_config/delete', { group_id: GC_CUR, key: key }, '已恢复继承', '恢复继承失败')
-        : await postOrToast('group_config/set', { group_id: GC_CUR, key: key, value: v }, '已保存', '保存失败');
-      if (ok) openGroupCfg(GC_CUR);
+        ? await postOrToast('group_config/delete', { group_id: targetGroup, key: key }, '已恢复继承', '恢复继承失败')
+        : await postOrToast('group_config/set', { group_id: targetGroup, key: key, value: v }, '已保存', '保存失败');
+      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
   $$('.gc-str-sel', box).forEach(function(sel) {
     sel.addEventListener('change', async function() {
+      var targetGroup = GC_CUR;
       var key = sel.dataset.key;
       var v = sel.value;
       var ok = v === ''
-        ? await postOrToast('group_config/delete', { group_id: GC_CUR, key: key }, '已恢复继承', '恢复继承失败')
-        : await postOrToast('group_config/set', { group_id: GC_CUR, key: key, value: v }, '已保存', '保存失败');
-      if (ok) openGroupCfg(GC_CUR);
+        ? await postOrToast('group_config/delete', { group_id: targetGroup, key: key }, '已恢复继承', '恢复继承失败')
+        : await postOrToast('group_config/set', { group_id: targetGroup, key: key, value: v }, '已保存', '保存失败');
+      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
   $$('.gc-text-save', box).forEach(function(b) {
     b.addEventListener('click', async function() {
+      var targetGroup = GC_CUR;
       var key = b.dataset.key;
       var inp = box.querySelector('.gc-text[data-key="' + cssAttr(key) + '"]');
       var v = (inp && inp.value || '').trim();
@@ -3507,21 +3928,23 @@ function renderGroupCfgItems(items) {
       // this group". The separate inherit button deletes the override.
       var allowExplicitEmpty = key === 'join_llm_custom_prompt';
       var ok = v === '' && !allowExplicitEmpty
-        ? await postOrToast('group_config/delete', { group_id: GC_CUR, key: key }, '已恢复继承', '恢复继承失败')
-        : await postOrToast('group_config/set', { group_id: GC_CUR, key: key, value: v }, '已保存', '保存失败');
-      if (ok) openGroupCfg(GC_CUR);
+        ? await postOrToast('group_config/delete', { group_id: targetGroup, key: key }, '已恢复继承', '恢复继承失败')
+        : await postOrToast('group_config/set', { group_id: targetGroup, key: key, value: v }, '已保存', '保存失败');
+      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
   $$('.gc-text-clear', box).forEach(function(b) {
     b.addEventListener('click', async function() {
-      var ok = await postOrToast('group_config/delete', { group_id: GC_CUR, key: b.dataset.key }, '已恢复继承', '恢复继承失败');
-      if (ok) openGroupCfg(GC_CUR);
+      var targetGroup = GC_CUR;
+      var ok = await postOrToast('group_config/delete', { group_id: targetGroup, key: b.dataset.key }, '已恢复继承', '恢复继承失败');
+      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
   $$('.gc-int-clear', box).forEach(function(b) {
     b.addEventListener('click', async function() {
-      var ok = await postOrToast('group_config/delete', { group_id: GC_CUR, key: b.dataset.key }, '已恢复继承', '恢复继承失败');
-      if (ok) openGroupCfg(GC_CUR);
+      var targetGroup = GC_CUR;
+      var ok = await postOrToast('group_config/delete', { group_id: targetGroup, key: b.dataset.key }, '已恢复继承', '恢复继承失败');
+      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
 }
@@ -3783,6 +4206,10 @@ async function init() {
     if (txt) txt.textContent = text;
     if (dot) dot.style.background = color;
   }
+  var bridgeWaitUntil = Date.now() + 5000;
+  while (!window.AstrBotPluginPage && Date.now() < bridgeWaitUntil) {
+    await new Promise(function(resolve) { setTimeout(resolve, 50); });
+  }
   bridge = window.AstrBotPluginPage;
   if (bridge && bridge.ready) {
     try {
@@ -3795,6 +4222,14 @@ async function init() {
     }
   }
   bridge = window.AstrBotPluginPage || bridge;
+  // The SDK can expose GET and POST on separate ticks.  Keep waiting until
+  // both are ready; bridge.ready() has its own timeout, so give this phase a
+  // fresh window instead of consuming all of its time before methods appear.
+  var apiWaitUntil = Date.now() + 5000;
+  while (bridge && (!bridge.apiGet || !bridge.apiPost) && Date.now() < apiWaitUntil) {
+    await new Promise(function(resolve) { setTimeout(resolve, 50); });
+    bridge = window.AstrBotPluginPage || bridge;
+  }
   if (bridge && bridge.apiGet) apiGet = bridge.apiGet.bind(bridge);
   if (bridge && bridge.apiPost) apiPost = bridge.apiPost.bind(bridge);
   if (bridge && bridge.download) apiDownload = bridge.download.bind(bridge);

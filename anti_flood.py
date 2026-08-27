@@ -9,8 +9,10 @@ from typing import Dict, List, Optional, Tuple
 
 
 _REPEAT_IGNORED_PLACEHOLDERS_RE = re.compile(
-    r"^(?:\[(?:图片|表情|商城表情)\]\s*)+$"
+    r"^(?:\[(?:图片|语音|视频|表情|商城表情|文件|合并转发消息|空消息)\]\s*)+$"
 )
+_ANTI_FLOOD_EVENT_DEDUP_TTL_SECONDS = 2 * 3600
+_ANTI_FLOOD_EVENT_DEDUP_MAX_IDS = 256
 
 
 class AntiFloodMixin:
@@ -34,6 +36,10 @@ class AntiFloodMixin:
         """初始化防刷屏追踪数据字典和清理时间戳。"""
         self._anti_flood_data: Dict[str, Dict[str, deque]] = {}
         self._anti_flood_last_cleanup = 0.0
+        # OneBot adapters can deliver the same message event more than once.
+        # Keep this separate from rate history so a duplicate cannot be counted
+        # as another user message before the content-review deduplicator runs.
+        self._anti_flood_seen_message_ids: Dict[str, Dict[str, Dict[str, float]]] = {}
         # 处罚冷却表：{group_id: {user_id: 冷却到期时间戳}}。
         # 触发处罚后进入冷却，期间该用户的消息只静默处理，不再重复禁言/记日志/开申诉，
         # 用于吸收"处罚决定做出后仍在事件队列里排队的积压消息"，避免重复处罚刷屏。
@@ -51,6 +57,11 @@ class AntiFloodMixin:
             users.pop(user_id, None)
             if not users:
                 self._anti_flood_penalty_until.pop(group_id, None)
+            # Messages received while a mute/recall cooldown was active are
+            # intentionally not allowed to trigger a second penalty once it
+            # expires.  Otherwise the first post after cooldown can inherit
+            # the old one-minute/one-hour counters.
+            self._clear_anti_flood_history(group_id, user_id)
             return False
         return True
 
@@ -62,9 +73,7 @@ class AntiFloodMixin:
         if cooldown_seconds <= 0:
             cooldown_seconds = 60
         self._anti_flood_penalty_until.setdefault(group_id, {})[user_id] = time.time() + cooldown_seconds
-        group_q = self._anti_flood_data.get(group_id)
-        if group_q and user_id in group_q:
-            group_q[user_id].clear()
+        self._clear_anti_flood_history(group_id, user_id)
 
     def _clear_anti_flood_penalty(self, group_id: str, user_id: str) -> None:
         """禁言未生效时释放冷却，允许后续消息重新触发处罚。"""
@@ -74,6 +83,128 @@ class AntiFloodMixin:
         users.pop(user_id, None)
         if not users:
             self._anti_flood_penalty_until.pop(group_id, None)
+
+    def _clear_anti_flood_history(self, group_id: str, user_id: str) -> None:
+        """Discard a user's rate history without touching cooldown state."""
+        users = self._anti_flood_data.get(group_id)
+        if not users:
+            return
+        users.pop(user_id, None)
+        if not users:
+            self._anti_flood_data.pop(group_id, None)
+
+    @staticmethod
+    def _anti_flood_message_id(value) -> str:
+        if value is None or isinstance(value, bool):
+            return ""
+        text = str(value).strip()
+        if text.casefold() in {"", "none", "null", "nan", "false"} or text == "0":
+            return ""
+        return text
+
+    @classmethod
+    def _anti_flood_event_message_identity(cls, event) -> Tuple[str, str]:
+        """Return ``(tracking_id, recall_id)`` across adapter event shapes.
+
+        ``message_seq`` is useful for delivery de-duplication but is not a
+        OneBot ``delete_msg.message_id``.  Prefix it in the tracking history and
+        leave the recall ID empty so a protocol sequence is never sent to the
+        recall endpoint by accident.
+        """
+        msg_obj = getattr(event, "message_obj", None)
+        raw = getattr(event, "raw_event", None)
+        sources = (msg_obj, event, raw)
+
+        def iter_values(source, keys, depth=0, seen=None):
+            if source is None or depth > 4:
+                return
+            if seen is None:
+                seen = set()
+            if isinstance(source, dict):
+                marker = id(source)
+                if marker in seen:
+                    return
+                seen.add(marker)
+                for key in keys:
+                    if key in source:
+                        yield source.get(key)
+                for key in ("message", "raw_message", "data", "event", "payload"):
+                    nested = source.get(key)
+                    if isinstance(nested, dict):
+                        yield from iter_values(nested, keys, depth + 1, seen)
+                return
+            for key in keys:
+                try:
+                    yield getattr(source, key, None)
+                except Exception:
+                    yield None
+            try:
+                nested = getattr(source, "raw_message", None)
+            except Exception:
+                nested = None
+            if isinstance(nested, dict):
+                yield from iter_values(nested, keys, depth + 1, seen)
+
+        try:
+            getter = getattr(event, "get_message_id", None)
+            if callable(getter):
+                value = cls._anti_flood_message_id(getter())
+                if value:
+                    return value, value
+        except Exception:
+            pass
+
+        for source in sources:
+            for value in iter_values(source, ("message_id", "msg_id")):
+                value = cls._anti_flood_message_id(value)
+                if value:
+                    return value, value
+
+        for source in sources:
+            for value in iter_values(source, ("message_seq", "seq")):
+                value = cls._anti_flood_message_id(value)
+                if value:
+                    return f"seq:{value}", ""
+        return "", ""
+
+    @classmethod
+    def _anti_flood_recallable_message_id(cls, value) -> str:
+        """Return only a real numeric message ID suitable for ``delete_msg``."""
+        value = cls._anti_flood_message_id(value)
+        if not value or value.casefold().startswith("seq:"):
+            return ""
+        try:
+            if int(value) <= 0:
+                return ""
+        except (TypeError, ValueError):
+            return ""
+        return value
+
+    def _anti_flood_event_is_duplicate(
+        self, group_id: str, user_id: str, msg_id
+    ) -> bool:
+        """Return whether this OneBot message id was already accounted for.
+
+        This is deliberately a bounded, in-memory delivery deduplicator.  It
+        is not a message-content rule: distinct messages with equal text must
+        still be counted by the repeat-message detector.
+        """
+        msg_id = self._anti_flood_message_id(msg_id)
+        if not group_id or not user_id or not msg_id:
+            return False
+        now = time.monotonic()
+        by_group = self._anti_flood_seen_message_ids.setdefault(group_id, {})
+        seen = by_group.setdefault(user_id, {})
+        cutoff = now - _ANTI_FLOOD_EVENT_DEDUP_TTL_SECONDS
+        for known_id, seen_at in list(seen.items()):
+            if seen_at <= cutoff or seen_at > now:
+                seen.pop(known_id, None)
+        if msg_id in seen:
+            return True
+        seen[msg_id] = now
+        while len(seen) > _ANTI_FLOOD_EVENT_DEDUP_MAX_IDS:
+            seen.pop(next(iter(seen)), None)
+        return False
 
     def _normalize_message_text(self, text: str) -> str:
         """归一化消息文本，便于重复消息检测。"""
@@ -295,8 +426,22 @@ class AntiFloodMixin:
             for uid in list(users.keys()):
                 if now >= users[uid]:
                     del users[uid]
+                    self._clear_anti_flood_history(gid, uid)
             if not users:
                 del self._anti_flood_penalty_until[gid]
+        # Event-id deduplication uses monotonic time so wall-clock corrections
+        # do not keep an id alive indefinitely.
+        monotonic_now = time.monotonic()
+        dedup_cutoff = monotonic_now - _ANTI_FLOOD_EVENT_DEDUP_TTL_SECONDS
+        for gid, users in list(self._anti_flood_seen_message_ids.items()):
+            for uid, seen in list(users.items()):
+                for msg_id, seen_at in list(seen.items()):
+                    if seen_at <= dedup_cutoff or seen_at > monotonic_now:
+                        seen.pop(msg_id, None)
+                if not seen:
+                    del users[uid]
+            if not users:
+                del self._anti_flood_seen_message_ids[gid]
 
     def _get_anti_flood_status(self) -> dict:
         """返回防刷屏追踪快照，供 WebUI 仪表盘 API 使用。

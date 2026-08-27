@@ -3,6 +3,7 @@
 import ast
 import asyncio
 import importlib.util
+import json
 import sys
 import types
 import unittest
@@ -105,6 +106,21 @@ class _MemberInfoClient:
         return self.responses.pop(0)
 
 
+class _NoCacheMemberClient:
+    def __init__(self):
+        self.calls = []
+
+    async def call_action(self, action, **kwargs):
+        self.calls.append((action, dict(kwargs)))
+        if "no_cache" in kwargs:
+            raise TypeError("unexpected keyword argument 'no_cache'")
+        return {
+            "status": "ok",
+            "retcode": 0,
+            "data": {"card": "fresh", "nickname": "member"},
+        }
+
+
 class _SnapshotRaceClient(_Client):
     def __init__(self, group_result, member_result, on_member_list):
         super().__init__(group_result, member_result)
@@ -202,6 +218,22 @@ class _RecordingCardHarness(_CardHarness):
         group_id, user_id, _old, new = args[:4]
         self._remember_card_snapshot(group_id, user_id, new)
         return False
+
+
+class _CardSyncWebHarness(_RecordingCardHarness):
+    def __init__(self, client=None):
+        super().__init__(client)
+        self.web_calls = []
+
+    async def _call_onebot_web(self, client, action, timeout=8.0, **kwargs):
+        self.web_calls.append((action, timeout, dict(kwargs)))
+        return await client.call_action(action, **kwargs)
+
+    @staticmethod
+    def _extract_data_result(result):
+        if isinstance(result, str):
+            result = json.loads(result)
+        return _CardHarness._extract_data_result(result)
 
 
 class _RestoreFailureHarness(_CardHarness):
@@ -349,6 +381,23 @@ class CardMonitorTests(unittest.TestCase):
         self.assertFalse(result)
         self.assertEqual(client.calls, [])
 
+    def test_group_admin_notice_obeys_explicit_blacklist_when_event_lookup_is_empty(self):
+        harness = _CardHarness()
+        harness._group_black_set = {"100"}
+        harness.cfg_values["card_log_enabled"] = True
+        event = _Event({
+            "post_type": "notice",
+            "notice_type": "group_admin",
+            "group_id": 100,
+            "user_id": 200,
+            "sub_type": "set",
+        })
+
+        result = asyncio.run(harness._handle_group_admin_change(event))
+
+        self.assertFalse(result)
+        self.assertEqual(harness.logged, [])
+
     def test_member_info_failed_wrapper_is_not_accepted_as_data(self):
         client = _MemberInfoClient([
             {
@@ -395,6 +444,51 @@ class CardMonitorTests(unittest.TestCase):
             "no_cache": True,
         }])
 
+    def test_member_info_retries_without_no_cache_for_older_adapter(self):
+        client = _NoCacheMemberClient()
+        harness = _CardHarness(client)
+
+        member = asyncio.run(harness._fetch_member_card(client, "100", "200"))
+
+        self.assertEqual(member, ("fresh", "member"))
+        self.assertEqual(len(client.calls), 2)
+        self.assertIn("no_cache", client.calls[0][1])
+        self.assertNotIn("no_cache", client.calls[1][1])
+
+    def test_member_info_retries_when_serialized_nested_data_rejects_no_cache(self):
+        client = _MemberInfoClient([
+            {
+                "status": "ok",
+                "retcode": 0,
+                "data": json.dumps({
+                    "status": "failed",
+                    "message": "no_cache is unsupported",
+                }),
+            },
+            {
+                "status": "ok",
+                "retcode": 0,
+                "data": {"card": "fresh", "nickname": "member"},
+            },
+        ])
+        harness = _CardHarness(client)
+
+        member = asyncio.run(harness._fetch_member_card(client, "100", "200"))
+
+        self.assertEqual(member, ("fresh", "member"))
+        self.assertEqual(len(client.call_kwargs), 2)
+        self.assertIn("no_cache", client.call_kwargs[0])
+        self.assertNotIn("no_cache", client.call_kwargs[1])
+
+    def test_obfuscated_shop_url_is_treated_as_link_card(self):
+        value = "".join(
+            chr(0x1F170 + ord(char) - ord("A"))
+            if "A" <= char <= "Z" else char
+            for char in "HTTPS://CATFK.COM/SHOP/BUGBUGTEAM"
+        )
+
+        self.assertTrue(card_monitor.CardMonitorMixin._is_shop_link_card(value))
+
     def test_failed_member_list_does_not_erase_snapshot(self):
         client = _Client(
             {"status": "ok", "retcode": 0, "data": [{"group_id": 100}]},
@@ -411,6 +505,57 @@ class CardMonitorTests(unittest.TestCase):
         client = _Client(
             {"status": "ok", "retcode": 0, "data": [{"group_id": 100}]},
             {"status": "ok", "retcode": 0, "data": []},
+        )
+        harness = _CardHarness(client)
+        harness._card_snapshots = {"100": {"200": "known-card"}}
+
+        asyncio.run(harness._sync_group_cards())
+
+        self.assertEqual(harness._card_snapshots, {"100": {"200": "known-card"}})
+
+    def test_nonempty_member_rows_without_user_ids_do_not_erase_snapshot(self):
+        client = _Client(
+            {"status": "ok", "retcode": 0, "data": [{"group_id": 100}]},
+            {
+                "status": "ok",
+                "retcode": 0,
+                "data": [{"nickname": "malformed"}, {"card": "also malformed"}],
+            },
+        )
+        harness = _CardHarness(client)
+        harness._card_snapshots = {"100": {"200": "known-card"}}
+
+        asyncio.run(harness._sync_group_cards())
+
+        self.assertEqual(harness._card_snapshots, {"100": {"200": "known-card"}})
+
+    def test_card_sync_uses_shared_call_boundary_and_accepts_serialized_envelopes(self):
+        client = _Client(
+            json.dumps({"status": "ok", "retcode": 0, "data": [{"group_id": 100}]}),
+            json.dumps({
+                "status": "ok",
+                "retcode": 0,
+                "data": [{"user_id": 200, "card": "first", "nickname": "n"}],
+            }),
+        )
+        harness = _CardSyncWebHarness(client)
+
+        asyncio.run(harness._sync_group_cards())
+
+        self.assertEqual(
+            [call[0] for call in harness.web_calls],
+            ["get_group_list", "get_group_member_list"],
+        )
+        self.assertEqual(harness._card_snapshots["100"]["200"], "first")
+
+    def test_nested_failed_member_envelope_does_not_erase_snapshot(self):
+        client = _Client(
+            {"status": "ok", "retcode": 0, "data": [{"group_id": 100}]},
+            {
+                "status": "ok",
+                "retcode": 0,
+                "data": json.dumps({"status": "failed", "retcode": 100, "msg": "offline"}),
+            },
         )
         harness = _CardHarness(client)
         harness._card_snapshots = {"100": {"200": "known-card"}}

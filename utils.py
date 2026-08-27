@@ -3,6 +3,7 @@ import asyncio
 import functools
 import json
 import os
+import re
 import time
 from datetime import datetime
 from typing import Dict, List, Tuple
@@ -319,30 +320,90 @@ class UtilitiesMixin:
     def _get_admin_list(self) -> list:
         # 管理员名单 v2.4.0 起以 SQLite(managed_lists) 为准，运行时缓存在 self.admin_list。
         admin_list = getattr(self, "admin_list", None)
-        if not isinstance(admin_list, list):
+        if isinstance(admin_list, (str, bytes, bytearray)):
+            admin_list = [admin_list]
+        elif not isinstance(admin_list, (list, tuple, set, frozenset)):
             admin_list = []
-        return [str(a).strip() for a in admin_list if a]
+        normalized = []
+        for value in admin_list:
+            if value is None or isinstance(value, bool):
+                continue
+            text = str(value).strip()
+            if text and text.casefold() not in {"none", "null", "nan"}:
+                normalized.append(text)
+        return normalized
 
     @staticmethod
     def _extract_data_result(result):
         # 从 OneBot API 返回值中提取 data 字段：若响应是 {"data": {...}} 则取 data，否则原样返回。
-        if isinstance(result, dict) and "data" in result:
-            return result.get("data")
-        return result
+        current = result
+        for _ in range(4):
+            if isinstance(current, (bytes, bytearray)):
+                try:
+                    current = current.decode("utf-8")
+                except UnicodeDecodeError:
+                    return current
+            if isinstance(current, str):
+                try:
+                    parsed = json.loads(current)
+                except (TypeError, ValueError):
+                    return current
+                if parsed == current:
+                    return current
+                current = parsed
+                continue
+            if not isinstance(current, dict):
+                return current
+            for key in ("data", "result", "payload", "response"):
+                if key in current and current.get(key) is not current:
+                    current = current.get(key)
+                    break
+            else:
+                return current
+        return current
 
     @staticmethod
     def _extract_list_result(result) -> list:
-        # 从 OneBot API 返回值中提取列表：优先取 data 字段，再尝试 messages/files/notices 等嵌套 key。
-        result = UtilitiesMixin._extract_data_result(result)
-        if isinstance(result, list):
-            return result
-        if isinstance(result, dict):
-            for key in ("messages", "members", "files", "folders", "notices", "data", "items", "list"):
-                value = result.get(key)
-                if isinstance(value, list):
-                    return value
-            return []
-        return []
+        # OneBot adapters commonly wrap data more than once. Keep the search
+        # bounded and restricted to known container keys so unrelated lists
+        # in an error/detail object are never mistaken for the payload.
+        list_keys = (
+            "messages", "members", "group_members", "member_list", "groups",
+            "group_list", "files", "folders", "notices", "data", "items", "list",
+            "result", "payload", "response", "message_list", "memberList",
+            "groupList", "groupMembers", "group_member_list", "messageList",
+        )
+
+        def find_list(value, depth: int = 0):
+            if isinstance(value, (bytes, bytearray)):
+                try:
+                    value = value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return None
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except (TypeError, ValueError):
+                    return None
+            if isinstance(value, list):
+                return value
+            if not isinstance(value, dict) or depth >= 4:
+                return None
+            empty = None
+            for key in list_keys:
+                if key not in value:
+                    continue
+                found = find_list(value.get(key), depth + 1)
+                if found is None:
+                    continue
+                if found:
+                    return found
+                if empty is None:
+                    empty = found
+            return empty
+
+        found = find_list(result)
+        return found if found is not None else []
 
     def _cfg_check(self, key: str, name: str, group_id: str = None) -> Tuple[bool, str]:
         # 三级权限/功能检查：插件总开关 → 免责声明未同意 → 具体功能配置关闭，逐层短路返回错误。
@@ -356,19 +417,118 @@ class UtilitiesMixin:
         return True, ""
 
     def _check_api_result(self, result, action_name: str = "操作") -> Tuple[bool, str]:
-        # 检查 OneBot API 返回值：status=="failed" 或 retcode!=0 视为失败。
+        # 检查 OneBot API 返回值：兼容适配器返回的 JSON 文本/字节及嵌套
+        # response envelope，避免失败包先被当成成功再落成空数据。
         if result is None:
             return True, ""
-        if isinstance(result, dict):
-            status = result.get("status", "")
-            raw_retcode = result.get("retcode", 0)
+
+        def failed_http_status(value) -> bool:
+            if value is None or isinstance(value, bool):
+                return False
+            if isinstance(value, str):
+                value = value.strip()
+                if not re.fullmatch(r"\d{3}", value):
+                    return False
             try:
-                retcode = 0 if raw_retcode is None else int(raw_retcode)
+                status = int(value)
             except (TypeError, ValueError):
-                retcode = raw_retcode
-            if status == "failed" or retcode != 0:
-                msg = result.get("msg", "") or result.get("message", "") or f"错误码: {retcode}"
-                return False, msg
+                return False
+            return (100 <= status < 200) or status >= 300
+
+        def failed_code(value) -> bool:
+            if value is None or isinstance(value, bool):
+                return False
+            if isinstance(value, str):
+                value = value.strip().casefold()
+                if value in {"", "0", "ok", "success"}:
+                    return False
+            try:
+                code = int(value)
+            except (TypeError, ValueError):
+                return True
+            return code != 0 and not (200 <= code < 300)
+
+        def find_error(value, depth: int = 0, seen=None):
+            if depth >= 5:
+                return ""
+            if seen is None:
+                seen = set()
+            if isinstance(value, (dict, list)):
+                marker = id(value)
+                if marker in seen:
+                    return ""
+                seen.add(marker)
+            if isinstance(value, (bytes, bytearray)):
+                try:
+                    value = value.decode("utf-8")
+                except UnicodeDecodeError:
+                    return ""
+            if isinstance(value, str):
+                try:
+                    parsed = json.loads(value)
+                except (TypeError, ValueError):
+                    return ""
+                return find_error(parsed, depth + 1, seen)
+            if not isinstance(value, dict):
+                return ""
+
+            status = value.get("status", "")
+            status_text = str(status or "").strip().casefold()
+            failed_status = (
+                status_text in {"failed", "error", "fail", "failure"}
+                or failed_http_status(status)
+            )
+            failed_status_code = failed_http_status(value.get("statusCode"))
+            code_failed = (
+                "code" in value
+                and any(key in value for key in (
+                    "data", "result", "payload", "response", "status",
+                    "statusCode", "message", "msg", "wording", "error",
+                    "ok", "success", "retcode",
+                ))
+                and failed_code(value.get("code"))
+            )
+            boolean_failed = value.get("ok") is False or value.get("success") is False
+            if boolean_failed:
+                failed_status = True
+
+            raw_retcode = value.get("retcode", 0)
+            if (isinstance(raw_retcode, str)
+                    and raw_retcode.strip().casefold() in {"", "0", "ok", "success"}):
+                retcode = 0
+            else:
+                try:
+                    retcode = 0 if raw_retcode is None else int(raw_retcode)
+                except (TypeError, ValueError):
+                    retcode = raw_retcode
+            if failed_status or failed_status_code or code_failed or retcode != 0:
+                error_code = retcode
+                if code_failed:
+                    error_code = value.get("code")
+                elif failed_status_code:
+                    error_code = value.get("statusCode")
+                elif failed_status:
+                    error_code = status or ("failed" if boolean_failed else retcode)
+                msg = (
+                    value.get("msg") or value.get("message")
+                    or value.get("wording") or value.get("error")
+                    or f"错误码: {error_code}"
+                )
+                return str(msg)
+            if value.get("error") and not any(
+                key in value for key in ("data", "result", "payload", "response")
+            ):
+                return str(value.get("error"))
+            for key in ("data", "result", "payload", "response"):
+                if key in value:
+                    nested_error = find_error(value.get(key), depth + 1, seen)
+                    if nested_error:
+                        return nested_error
+            return ""
+
+        error = find_error(result)
+        if error:
+            return False, error
         return True, ""
 
     def _parse_join_verify_method(self, value) -> Tuple[int, str]:

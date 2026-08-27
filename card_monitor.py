@@ -16,12 +16,18 @@ _cfg / _cfg_int / _check_lexicon（utils）、_get_client / _call_group_api（on
 _call_llm_safe（moderation）。
 """
 import asyncio
+import json
 import re
 import time
 from datetime import datetime
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
+
+try:
+    from .text_obfuscation import extract_obfuscated_url_evidence
+except ImportError:
+    from text_obfuscation import extract_obfuscated_url_evidence
 
 # 链接/店铺特征：命中即违规，直接还原（不经 LLM）。
 # 这是"仅拦链接"宽松模式唯一拦截的东西，所以只放【明确的网址/店铺域名/扫码下单】，
@@ -129,6 +135,134 @@ class CardMonitorMixin:
         self._card_snapshots.setdefault(gid, {})[uid] = str(card or "")
         self._card_sync_known_groups.add(gid)
 
+    @staticmethod
+    def _card_member_id(value) -> str:
+        if value is None or isinstance(value, bool):
+            return ""
+        text = str(value).strip()
+        if text.casefold() in {"", "none", "null", "nan"}:
+            return ""
+        return text
+
+    @staticmethod
+    def _card_no_cache_unsupported(value, depth: int = 0, seen=None) -> bool:
+        """Recognize old adapters that reject ``no_cache`` in nested envelopes."""
+        if depth >= 5:
+            return False
+        if seen is None:
+            seen = set()
+        if isinstance(value, (dict, list, tuple, set)):
+            marker = id(value)
+            if marker in seen:
+                return False
+            seen.add(marker)
+        if isinstance(value, (bytes, bytearray)):
+            value = value.decode("utf-8", errors="replace")
+        if isinstance(value, str):
+            text = value
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None and parsed != value:
+                if CardMonitorMixin._card_no_cache_unsupported(
+                        parsed, depth + 1, seen):
+                    return True
+        elif isinstance(value, dict):
+            text = " ".join(
+                str(value.get(key, ""))
+                for key in ("status", "msg", "message", "wording", "error", "detail")
+            )
+            nested = (
+                value.get("result"), value.get("payload"), value.get("response"),
+                value.get("data"),
+            )
+            if any(CardMonitorMixin._card_no_cache_unsupported(
+                    item, depth + 1, seen) for item in nested):
+                return True
+        elif isinstance(value, (list, tuple, set)):
+            return any(CardMonitorMixin._card_no_cache_unsupported(
+                item, depth + 1, seen) for item in value)
+        else:
+            for attr in ("result", "response", "data", "details"):
+                nested = getattr(value, attr, None)
+                if nested is not None and nested is not value:
+                    if CardMonitorMixin._card_no_cache_unsupported(
+                            nested, depth + 1, seen):
+                        return True
+            text = str(value or "")
+        normalized = re.sub(r"[-\s]+", "_", text.casefold())
+        if "no_cache" not in normalized and "nocache" not in normalized:
+            return False
+        return any(marker in normalized for marker in (
+            "unknown", "unsupported", "unrecognized", "unexpected", "invalid",
+            "not_allowed", "not_permitted", "keyword", "parameter", "argument",
+            "field", "property", "不支持", "未知", "无效",
+        ))
+
+    async def _fetch_member_info_compatible(self, client, group_id: int, user_id: int):
+        web_call = getattr(self, "_call_onebot_web", None)
+        if callable(web_call):
+            return await web_call(
+                client, "get_group_member_info", timeout=10.0,
+                group_id=group_id, user_id=user_id, no_cache=True,
+            )
+        try:
+            result = await asyncio.wait_for(
+                client.call_action(
+                    "get_group_member_info", group_id=group_id,
+                    user_id=user_id, no_cache=True,
+                ),
+                timeout=10.0,
+            )
+        except Exception as exc:
+            if not self._card_no_cache_unsupported(exc):
+                raise
+            result = await asyncio.wait_for(
+                client.call_action(
+                    "get_group_member_info", group_id=group_id, user_id=user_id,
+                ),
+                timeout=10.0,
+            )
+        if self._card_no_cache_unsupported(result):
+            return await asyncio.wait_for(
+                client.call_action(
+                    "get_group_member_info", group_id=group_id, user_id=user_id,
+                ),
+                timeout=10.0,
+            )
+        return result
+
+    async def _call_card_sync_api(self, client, action: str, **kwargs):
+        """Use the shared WebUI call boundary for background card polling."""
+        web_call = getattr(self, "_call_onebot_web", None)
+        if callable(web_call):
+            try:
+                return await web_call(client, action, timeout=20.0, **kwargs)
+            except TypeError as exc:
+                # A few older host mixins expose the helper without its timeout
+                # keyword. Keep the compatibility path local to those hosts.
+                if "timeout" not in str(exc).casefold():
+                    raise
+                return await web_call(client, action, **kwargs)
+        return await asyncio.wait_for(
+            client.call_action(action, **kwargs), timeout=20.0
+        )
+
+    def _check_card_sync_api_result(self, result, action_name: str):
+        normalize = getattr(self, "_normalize_onebot_web_result", None)
+        if callable(normalize):
+            result = normalize(result)
+        web_error = getattr(self, "_onebot_web_error", None)
+        if callable(web_error):
+            error = web_error(result)
+            if error:
+                return False, error
+        checker = getattr(self, "_check_api_result", None)
+        if callable(checker):
+            return checker(result, action_name)
+        return True, ""
+
     async def _fetch_member_card(self, client, group_id: str, user_id: str):
         """通过标准 get_group_member_info 获取名片；失败返回 None。"""
         gid = self._safe_int(group_id, 0)
@@ -140,10 +274,7 @@ class CardMonitorMixin:
         # 当作普通基线吞掉；周期同步仍会接管最终兜底。
         for attempt in range(2):
             try:
-                result = await asyncio.wait_for(
-                    client.call_action("get_group_member_info", group_id=gid, user_id=uid, no_cache=True),
-                    timeout=10.0,
-                )
+                result = await self._fetch_member_info_compatible(client, gid, uid)
                 ok, error = self._check_api_result(result, "查询成员名片")
                 if not ok:
                     last_error = error
@@ -355,7 +486,10 @@ class CardMonitorMixin:
     @staticmethod
     def _is_shop_link_card(text: str) -> bool:
         """名片是否含店铺/推广链接 —— 命中直接还原，不走 LLM。"""
-        return bool(text and _SHOP_LINK_RE.search(text))
+        if not text:
+            return False
+        value = str(text)
+        return bool(_SHOP_LINK_RE.search(value) or extract_obfuscated_url_evidence(value))
 
     def _card_lexicon_hit(self, group_id: str, text: str) -> dict:
         """名片文本词库/正则初筛，返回命中的可疑类型 dict（供 LLM 二判用），无命中返回 {}。"""
@@ -559,8 +693,8 @@ class CardMonitorMixin:
         if white:
             groups.update(white)
         try:
-            result = await asyncio.wait_for(client.call_action("get_group_list"), timeout=20.0)
-            ok, error = self._check_api_result(result, "获取群列表")
+            result = await self._call_card_sync_api(client, "get_group_list")
+            ok, error = self._check_card_sync_api_result(result, "获取群列表")
             if not ok:
                 raise RuntimeError(error)
             for item in self._extract_list_result(result):
@@ -599,10 +733,12 @@ class CardMonitorMixin:
                 gid = self._safe_int(group_id, 0)
                 if not gid:
                     continue
-                result = await asyncio.wait_for(
-                    client.call_action("get_group_member_list", group_id=gid), timeout=20.0
+                result = await self._call_card_sync_api(
+                    client, "get_group_member_list", group_id=gid
                 )
-                ok, error = self._check_api_result(result, "获取群成员列表")
+                ok, error = self._check_card_sync_api_result(
+                    result, "获取群成员列表"
+                )
                 if not ok:
                     logger.debug(f"[GroupMgr] 获取群成员列表失败({group_id}): {error}")
                     continue
@@ -618,6 +754,17 @@ class CardMonitorMixin:
                 # 未设置 retcode/status。保留旧快照，避免下轮把全群当首次基线。
                 if not isinstance(members, list) or not members:
                     logger.debug(f"[GroupMgr] 获取群成员列表为空({group_id})，保留旧快照")
+                    continue
+                usable_member_rows = [
+                    member for member in members
+                    if isinstance(member, dict)
+                    and self._card_member_id(member.get("user_id"))
+                ]
+                if not usable_member_rows:
+                    logger.debug(
+                        f"[GroupMgr] 获取群成员列表无可用 user_id({group_id})，"
+                        "保留旧快照"
+                    )
                     continue
             except Exception as e:
                 logger.debug(f"[GroupMgr] 名片同步获取成员失败({group_id}): {e}")
@@ -637,9 +784,11 @@ class CardMonitorMixin:
             current = {}
             seen_member_ids = set()
             for member in members:
-                if not isinstance(member, dict) or member.get("user_id") is None:
+                if not isinstance(member, dict):
                     continue
-                user_id = str(member.get("user_id"))
+                user_id = self._card_member_id(member.get("user_id"))
+                if not user_id:
+                    continue
                 seen_member_ids.add(user_id)
                 # card 字段是 OneBot 标准；没有该字段的响应不应把默认值误当成清空。
                 if "card" not in member:
@@ -693,6 +842,15 @@ class CardMonitorMixin:
                     self._card_pending_misses[pending_item] = misses
                     if misses >= _CARD_PENDING_MAX_MISSES:
                         self._clear_card_pending(*pending_item)
+            if previous and not current:
+                # A non-empty response with no usable card values is still a
+                # malformed snapshot. Never turn it into an empty membership
+                # baseline and erase the last known-good state.
+                logger.debug(
+                    f"[GroupMgr] 获取群成员列表未形成可用名片快照({group_id})，"
+                    "保留旧快照"
+                )
+                continue
             async with self._card_change_lock:
                 latest = self._card_snapshots.setdefault(group_id, {})
                 merged = {}
@@ -731,6 +889,11 @@ class CardMonitorMixin:
             return False
         logger.info(f"[GroupMgr] 收到管理员任免事件: 群{group_id} 用户{user_id} {sub_type}")
         if not self._card_monitor_active(group_id):
+            return False
+        # Notice wrappers do not always expose group_id through AstrBot's
+        # generic event accessor. Check the raw-event group first so a
+        # blacklisted or non-whitelisted group cannot bypass the filter.
+        if not self._card_group_allowed(group_id):
             return False
         allowed, _reason = self._check_group_access(event)
         if not allowed:

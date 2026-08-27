@@ -2,11 +2,13 @@
 import asyncio
 import csv
 import io
+import json
 import re
 import sqlite3
 import time
 from collections import deque
 from typing import Tuple
+from urllib.parse import quote
 
 from astrbot.api import logger
 
@@ -33,8 +35,24 @@ class WebMixin:
         # 为每个 Web API handler 添加 Quart 可用性检查的装饰器层。
         # 这样每个 handler 在被调用前都会先验证 Quart 是否正常，避免奇怪的 ImportError。
         async def _wrapped(*args, **kwargs):
-            self._check_quart_available()
-            return await handler(*args, **kwargs)
+            try:
+                self._check_quart_available()
+                return await handler(*args, **kwargs)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                # Bridge treats an uncaught exception as a rejected request and
+                # the page loses the useful error envelope. Normalize failures
+                # here so every endpoint follows the same client-side path.
+                logger.exception(
+                    "[GroupMgr] WebUI handler failed: %s", handler.__name__
+                )
+                if jsonify is not None:
+                    return jsonify({
+                        "status": "error",
+                        "message": self._format_web_error(e),
+                    })
+                raise
         _wrapped.__name__ = handler.__name__
         return _wrapped
 
@@ -141,41 +159,448 @@ class WebMixin:
             val = min(hi, val)
         return val
 
+    @staticmethod
+    def _no_cache_unsupported(value, depth: int = 0, seen=None) -> bool:
+        """Return whether an adapter explicitly rejected the ``no_cache`` field."""
+        if depth >= 5:
+            return False
+        if seen is None:
+            seen = set()
+        if isinstance(value, (dict, list, tuple, set)):
+            marker = id(value)
+            if marker in seen:
+                return False
+            seen.add(marker)
+        if isinstance(value, (bytes, bytearray)):
+            try:
+                value = value.decode("utf-8", errors="replace")
+            except Exception:
+                value = repr(value)
+        if isinstance(value, str):
+            raw_text = value
+            try:
+                parsed = json.loads(value)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed is not None and parsed != value:
+                if WebMixin._no_cache_unsupported(parsed, depth + 1, seen):
+                    return True
+            text = raw_text
+        elif isinstance(value, dict):
+            parts = [
+                value.get("status"), value.get("msg"), value.get("message"),
+                value.get("wording"), value.get("error"), value.get("detail"),
+            ]
+            text = " ".join(str(part) for part in parts if part is not None)
+            nested = (
+                value.get("result"), value.get("payload"), value.get("response"),
+                value.get("data"),
+            )
+            if any(WebMixin._no_cache_unsupported(item, depth + 1, seen) for item in nested):
+                return True
+        else:
+            text = str(value or "")
+        normalized = re.sub(r"[-\s]+", "_", text.casefold())
+        has_field = "no_cache" in normalized or "nocache" in normalized
+        if not has_field:
+            return False
+        markers = (
+            "unknown", "unsupported", "unrecognized", "unexpected",
+            "invalid", "not_allowed", "not_permitted", "keyword",
+            "parameter", "argument", "field", "property", "不支持", "未知", "无效",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @classmethod
+    def _no_cache_retryable_failure(cls, value) -> bool:
+        """Recognize both explicit and generic adapter failures for no_cache."""
+        if cls._no_cache_unsupported(value):
+            return True
+        if isinstance(value, Exception):
+            # aiocqhttp raises ActionFailed instead of returning the OneBot
+            # envelope. Its structured result contains the same retcode and
+            # message that the response-path classifier already understands.
+            for attr in ("result", "response", "data", "details"):
+                payload = getattr(value, attr, None)
+                if payload is None or payload is value:
+                    continue
+                if cls._no_cache_retryable_failure(payload):
+                    return True
+            try:
+                if int(getattr(value, "retcode", 0) or 0) != 0:
+                    return True
+            except (TypeError, ValueError):
+                pass
+            normalized = str(value or "").casefold()
+            return any(marker in normalized for marker in (
+                "parameter", "argument", "keyword", "field", "property",
+                "参数", "请求参数", "参数错误",
+            ))
+        if isinstance(value, (dict, list, str, bytes, bytearray)):
+            error = cls._onebot_web_error(value)
+            return bool(error and error != "empty response")
+        return False
+
     async def _call_onebot_web(self, client, action: str, timeout: float = 8.0, **kwargs):
-        return await asyncio.wait_for(client.call_action(action, **kwargs), timeout=timeout)
+        try:
+            result = await asyncio.wait_for(
+                client.call_action(action, **kwargs), timeout=timeout
+            )
+        except Exception as exc:
+            if "no_cache" not in kwargs or not self._no_cache_retryable_failure(exc):
+                raise
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("no_cache", None)
+            logger.debug(
+                "[GroupMgr] OneBot adapter rejected no_cache for %s; retrying without it",
+                action,
+            )
+            return await asyncio.wait_for(
+                client.call_action(action, **retry_kwargs), timeout=timeout
+            )
+        if "no_cache" not in kwargs or not self._no_cache_retryable_failure(result):
+            return result
+        retry_kwargs = dict(kwargs)
+        retry_kwargs.pop("no_cache", None)
+        logger.debug(
+            "[GroupMgr] OneBot adapter returned no_cache unsupported for %s; retrying without it",
+            action,
+        )
+        return await asyncio.wait_for(
+            client.call_action(action, **retry_kwargs), timeout=timeout
+        )
 
     @staticmethod
     def _format_web_error(e: Exception) -> str:
         msg = str(e).strip()
         return msg or e.__class__.__name__
 
+    @staticmethod
+    def _web_error_response(message: str, status: int = 400):
+        """Return an API error with a real HTTP status for bridge downloads."""
+        return jsonify({"status": "error", "message": str(message)}), status
+
+    @staticmethod
+    def _download_headers(filename: str, content_type: str) -> dict:
+        """Build a filename header that works for ASCII and UTF-8 clients."""
+        filename = str(filename or "download.bin").replace("\r", "_").replace("\n", "_")
+        ascii_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename).strip("._") or "download"
+        return {
+            "Content-Type": content_type,
+            "Content-Disposition": (
+                f"attachment; filename=\"{ascii_name}\"; "
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+        }
+
+    @staticmethod
+    def _onebot_web_transport_status_failed(value) -> bool:
+        if value is None or isinstance(value, bool):
+            return False
+        if isinstance(value, str):
+            value = value.strip()
+            if not re.fullmatch(r"\d{3}", value):
+                return False
+        try:
+            status = int(value)
+        except (TypeError, ValueError):
+            return False
+        return (100 <= status < 200) or status >= 300
+
+    @staticmethod
+    def _onebot_web_code_failed(value) -> bool:
+        if value is None or isinstance(value, bool):
+            return False
+        if isinstance(value, str):
+            value = value.strip().casefold()
+            if value in {"", "0", "ok", "success"}:
+                return False
+        try:
+            code = int(value)
+        except (TypeError, ValueError):
+            return True
+        return code != 0 and not (200 <= code < 300)
+
+    @staticmethod
+    def _onebot_web_error(result, depth: int = 0, seen=None) -> str:
+        """Return a readable error for a failed OneBot response envelope."""
+        if depth >= 6:
+            return "nested response too deep"
+        if seen is None:
+            seen = set()
+        if isinstance(result, (dict, list)):
+            marker = id(result)
+            if marker in seen:
+                return "nested response cycle"
+            seen.add(marker)
+        result = WebMixin._normalize_onebot_web_result(result)
+        if result is None:
+            return "empty response"
+        if isinstance(result, list):
+            return ""
+        if not isinstance(result, dict):
+            return f"unexpected response type: {type(result).__name__}"
+        status = str(result.get("status", "") or "").strip().lower()
+        status_failed = (
+            status in {"failed", "error", "fail", "failure"}
+            or WebMixin._onebot_web_transport_status_failed(result.get("status"))
+        )
+        status_code_failed = WebMixin._onebot_web_transport_status_failed(
+            result.get("statusCode")
+        )
+        code_failed = (
+            "code" in result
+            and any(key in result for key in (
+                "data", "result", "payload", "response", "status",
+                "statusCode", "message", "msg", "wording", "error",
+                "ok", "success", "retcode",
+            ))
+            and WebMixin._onebot_web_code_failed(result.get("code"))
+        )
+        boolean_failed = result.get("ok") is False or result.get("success") is False
+        if boolean_failed:
+            status_failed = True
+        raw_retcode = result.get("retcode", 0)
+        if (isinstance(raw_retcode, str)
+                and raw_retcode.strip().casefold() in {"", "0", "ok", "success"}):
+            retcode = 0
+        else:
+            try:
+                retcode = 0 if raw_retcode is None else int(raw_retcode)
+            except (TypeError, ValueError):
+                retcode = raw_retcode
+        if status_failed or status_code_failed or code_failed or retcode != 0:
+            error_code = retcode
+            if code_failed:
+                error_code = result.get("code")
+            elif status_code_failed:
+                error_code = result.get("statusCode")
+            elif status_failed:
+                error_code = result.get("status") or (
+                    "failed" if boolean_failed else retcode
+                )
+            return str(
+                result.get("msg")
+                or result.get("message")
+                or result.get("wording")
+                or result.get("error")
+                or f"code={error_code}"
+            )
+        if result.get("error") and not any(
+            key in result for key in ("result", "payload", "response", "data")
+        ):
+            return str(result.get("error"))
+        for key in ("result", "payload", "response", "data"):
+            nested = result.get(key)
+            if isinstance(nested, (dict, list, str, bytes, bytearray)):
+                nested_error = WebMixin._onebot_web_error(nested, depth + 1, seen)
+                if nested_error and nested_error != "empty response":
+                    return nested_error
+        return ""
+
+    @staticmethod
+    def _normalize_onebot_web_result(result):
+        """Accept adapters that serialize one or more response layers as JSON text."""
+        for _ in range(4):
+            if isinstance(result, (bytes, bytearray)):
+                try:
+                    result = result.decode("utf-8")
+                except UnicodeDecodeError:
+                    return result
+            if not isinstance(result, str):
+                return result
+            try:
+                parsed = json.loads(result)
+            except (TypeError, ValueError):
+                return result
+            if parsed == result:
+                return result
+            result = parsed
+        return result
+
+    _WEB_LIST_KEYS = frozenset({
+        "messages", "members", "group_members", "member_list", "groups",
+        "group_list", "files", "folders", "notices", "data", "items", "list",
+        "result", "payload", "response", "message_list", "memberList",
+        "groupList", "groupMembers", "group_member_list", "messageList",
+    })
+
+    @classmethod
+    def _onebot_web_has_list_result(cls, value, depth: int = 0) -> bool:
+        """Distinguish a valid empty list from a response with no data field."""
+        value = cls._normalize_onebot_web_result(value)
+        if isinstance(value, list):
+            return True
+        if not isinstance(value, dict) or depth >= 4:
+            return False
+        for key in cls._WEB_LIST_KEYS:
+            if key in value and cls._onebot_web_has_list_result(value.get(key), depth + 1):
+                return True
+        return False
+
+    @staticmethod
+    def _web_id(value) -> str:
+        if value is None or isinstance(value, bool):
+            return ""
+        text = str(value).strip()
+        return "" if text.casefold() in {"", "none", "null", "nan"} else text
+
+    @staticmethod
+    def _web_text(value, default: str = "") -> str:
+        if value is None or isinstance(value, (dict, list, tuple, set)):
+            return default
+        text = str(value).strip()
+        return text if text else default
+
+    @staticmethod
+    def _web_count(value) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _web_list_has_usable_rows(cls, items, id_key: str) -> bool:
+        """Return whether a non-empty adapter list contains a usable row.
+
+        An empty list is a valid OneBot answer.  A non-empty list whose every
+        item is malformed is different: treating it as an empty snapshot would
+        erase the last known-good WebUI data.
+        """
+        if not isinstance(items, list) or not items:
+            return True
+        return any(
+            isinstance(item, dict) and cls._web_id(item.get(id_key))
+            for item in items
+        )
+
+    @staticmethod
+    def _web_timestamp_value(value) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _web_cache_has_snapshot(cache) -> bool:
+        """Return whether a group/member cache contains a usable snapshot."""
+        if not isinstance(cache, dict) or not isinstance(cache.get("data"), list):
+            return False
+        if cache.get("data"):
+            return True
+        try:
+            return float(cache.get("ts", 0) or 0) > 0
+        except (TypeError, ValueError):
+            return False
+
+    @classmethod
+    def _web_cache_is_fresh(cls, cache, now: float, ttl: float) -> bool:
+        if not cls._web_cache_has_snapshot(cache):
+            return False
+        try:
+            ts = float(cache.get("ts", 0) or 0)
+        except (TypeError, ValueError):
+            return False
+        age = now - ts
+        return ts > 0 and 0 <= age < ttl
+
+    @staticmethod
+    def _web_cache_timestamp(cache) -> float:
+        if not isinstance(cache, dict):
+            return 0.0
+        try:
+            return float(cache.get("ts", 0) or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    @classmethod
+    def _web_snapshot_should_replace(
+        cls, current, timestamp: float, stale: bool
+    ) -> bool:
+        """Prefer real snapshots over fallbacks before comparing timestamps."""
+        if not cls._web_cache_has_snapshot(current):
+            return True
+        current_stale = bool(current.get("_stale"))
+        if current_stale != bool(stale):
+            return current_stale and not stale
+        return timestamp > cls._web_cache_timestamp(current)
+
+    def _store_web_group_snapshot(
+        self, timestamp: float, data: list, *, stale: bool = False
+    ) -> None:
+        """Keep newer real data ahead of older requests and local fallbacks."""
+        current = getattr(self, "_web_group_cache", None)
+        if self._web_snapshot_should_replace(current, timestamp, stale):
+            self._web_group_cache = {
+                "ts": timestamp, "data": data, "_stale": bool(stale),
+            }
+
+    def _current_web_group_snapshot(self) -> dict:
+        cache = getattr(self, "_web_group_cache", None)
+        return cache if isinstance(cache, dict) else {"ts": 0.0, "data": []}
+
+    def _store_web_member_snapshot(
+        self, group_id: str, timestamp: float, data: list, *, stale: bool = False
+    ) -> None:
+        current = dict(getattr(self, "_web_member_cache", {}) or {})
+        previous = current.get(group_id)
+        if self._web_snapshot_should_replace(previous, timestamp, stale):
+            current[group_id] = {
+                "ts": timestamp, "data": data, "_stale": bool(stale),
+            }
+            self._web_member_cache = current
+
+    def _current_web_member_snapshot(self, group_id: str):
+        cache = getattr(self, "_web_member_cache", None)
+        if not isinstance(cache, dict):
+            return None
+        value = cache.get(group_id)
+        return value if isinstance(value, dict) else None
+
     def _fallback_web_groups(self) -> list:
         group_ids = set()
-        group_ids.update(str(x) for x in getattr(self, "group_white_list", []) if x)
-        group_ids.update(str(x) for x in getattr(self, "group_black_list", []) if x)
+        group_ids.update(
+            self._web_id(x) for x in getattr(self, "group_white_list", [])
+            if self._web_id(x)
+        )
+        group_ids.update(
+            self._web_id(x) for x in getattr(self, "group_black_list", [])
+            if self._web_id(x)
+        )
         try:
-            group_ids.update(str(x) for x in self._storage.list_configured_groups() if x)
+            group_ids.update(
+                self._web_id(x) for x in self._storage.list_configured_groups()
+                if self._web_id(x)
+            )
         except Exception:
             pass
         for item in list(getattr(self, "_moderation_logs", [])):
-            gid = str(item.get("group_id", "")).strip()
+            if not isinstance(item, dict):
+                continue
+            gid = self._web_id(item.get("group_id"))
             if gid:
                 group_ids.add(gid)
         today_start = self._today_start()
         today_blocked_map = {}
         for item in list(getattr(self, "_moderation_logs", [])):
+            if not isinstance(item, dict):
+                continue
+            item["ts"] = self._web_timestamp_value(item.get("ts"))
+            item["action"] = self._web_text(item.get("action"))
             if item.get("ts", 0) >= today_start and "撤回" in item.get("action", ""):
-                gid = str(item.get("group_id", "")).strip()
+                gid = self._web_id(item.get("group_id"))
                 if gid:
                     today_blocked_map[gid] = today_blocked_map.get(gid, 0) + 1
+        white_set = {self._web_id(x) for x in getattr(self, "_group_white_set", set())}
+        black_set = {self._web_id(x) for x in getattr(self, "_group_black_set", set())}
         return [
             {
                 "group_id": gid,
                 "group_name": f"群 {gid}",
                 "member_count": 0,
                 "avatar": f"https://p.qlogo.cn/gh/{gid}/{gid}/",
-                "is_white": gid in getattr(self, "_group_white_set", set()),
-                "is_black": gid in getattr(self, "_group_black_set", set()),
+                "is_white": gid in white_set,
+                "is_black": gid in black_set,
                 "today_blocked": today_blocked_map.get(gid, 0),
             }
             for gid in sorted(group_ids)
@@ -183,36 +608,36 @@ class WebMixin:
 
     def _fallback_web_group_members(self, group_id: str) -> list:
         users = {}
-        admin_set = set(self._get_admin_list())
+        admin_set = {self._web_id(x) for x in self._get_admin_list()}
         for uid in admin_set:
-            uid = str(uid).strip()
             if uid:
                 users[uid] = {"user_id": uid, "display_name": uid, "role": "member", "is_plugin_admin": True}
         for uid in list(getattr(self, "user_black_list", [])) + list(getattr(self, "user_white_list", [])):
-            uid = str(uid).strip()
+            uid = self._web_id(uid)
             if uid:
                 users.setdefault(uid, {"user_id": uid, "display_name": uid, "role": "member", "is_plugin_admin": uid in admin_set})
         for item in list(getattr(self, "_moderation_logs", [])):
-            if str(item.get("group_id", "")) != str(group_id):
+            if not isinstance(item, dict) or self._web_id(item.get("group_id")) != self._web_id(group_id):
                 continue
-            uid = str(item.get("user_id", "")).strip()
+            uid = self._web_id(item.get("user_id"))
             if not uid:
                 continue
-            name = str(item.get("user_name", "") or uid)
+            name = self._web_text(item.get("user_name"), uid)
             users[uid] = {"user_id": uid, "display_name": name, "role": "member", "is_plugin_admin": uid in admin_set}
         enriched = []
         for uid, item in users.items():
+            name = self._web_text(item.get("display_name"), uid)
             enriched.append({
                 "user_id": uid,
-                "nickname": item.get("display_name", uid),
+                "nickname": name,
                 "card": "",
-                "display_name": item.get("display_name", uid),
-                "role": item.get("role", "member"),
+                "display_name": name,
+                "role": self._web_text(item.get("role"), "member").casefold(),
                 "title": "",
                 "avatar": f"https://q.qlogo.cn/headimg_dl?dst_uin={uid}&spec=640",
                 "is_plugin_admin": bool(item.get("is_plugin_admin")),
             })
-        enriched.sort(key=lambda x: (0 if x["is_plugin_admin"] else 1, x["display_name"]))
+        enriched.sort(key=lambda x: (0 if x["is_plugin_admin"] else 1, x["display_name"].casefold()))
         return enriched
 
     def _register_web_apis(self):
@@ -316,14 +741,32 @@ class WebMixin:
                 ("/lexicon_learn/delete", self._web_learn_delete, ["POST"], "删除学习候选词"),
                 ("/lexicon_learn/run", self._web_learn_run_now, ["POST"], "立即执行一次学习挖掘"),
             ]
+            registered = 0
             for path, handler, methods, desc in routes:
-                self.context.register_web_api(
-                    f"/{PLUGIN_NAME}{path}",
-                    self._wrap_web_handler(handler),
-                    methods,
-                    desc
+                try:
+                    self.context.register_web_api(
+                        f"/{PLUGIN_NAME}{path}",
+                        self._wrap_web_handler(handler),
+                        methods,
+                        desc
+                    )
+                    registered += 1
+                except Exception:
+                    # Keep unrelated endpoints available when an older host
+                    # rejects one route during plugin reload.
+                    logger.exception(
+                        "[GroupMgr] WebUI API route registration failed: %s%s",
+                        PLUGIN_NAME,
+                        path,
+                    )
+            if registered == len(routes):
+                logger.info("[GroupMgr] WebUI API 已注册")
+            else:
+                logger.warning(
+                    "[GroupMgr] WebUI API partially registered: %d/%d",
+                    registered,
+                    len(routes),
                 )
-            logger.info("[GroupMgr] WebUI API 已注册")
         except Exception as e:
             logger.warning(f"[GroupMgr] 注册 WebUI API 失败: {e}")
 
@@ -691,7 +1134,7 @@ class WebMixin:
             category = str(quart_request.args.get("category", "")).strip()
             query = str(quart_request.args.get("q", "")).strip()
             if not category:
-                return jsonify({"status": "error", "message": "缺少分类"})
+                return self._web_error_response("缺少分类", 400)
             items = self._storage.list_lexicon_keywords(category, query, 100000, 0)
             output = io.StringIO()
             # 写入 UTF-8 BOM，确保 Excel 打开 CSV 时正确识别中文编码
@@ -703,13 +1146,12 @@ class WebMixin:
             safe_cat = re.sub(r'[^\w\-]', '_', category)
             filename = f"lexicon_{safe_cat}.csv"
             # 返回 (body, status, headers) 元组让 Quart 直接触发下载，避免依赖未导入的 send_file
-            return output.getvalue(), 200, {
-                "Content-Type": "text/csv; charset=utf-8",
-                "Content-Disposition": f"attachment; filename={filename}",
-            }
+            return output.getvalue(), 200, self._download_headers(
+                filename, "text/csv; charset=utf-8"
+            )
         except Exception as e:
             logger.exception("[GroupMgr] 导出关键词失败")
-            return jsonify({"status": "error", "message": str(e)})
+            return self._web_error_response(str(e), 500)
 
     async def _web_get_rules(self):
         try:
@@ -837,20 +1279,24 @@ class WebMixin:
             return jsonify({"status": "error", "message": str(e)})
 
     async def _web_get_logs(self):
-        try:
-            limit = min(int(quart_request.args.get("limit", 50)), 200)
-        except (ValueError, TypeError):
-            limit = 50
-        try:
+        page = max(1, self._safe_int(quart_request.args.get("page", 1), 1))
+        page_size = min(200, max(1, self._safe_int(
+            quart_request.args.get(
+                "page_size", quart_request.args.get("limit", 50)
+            ),
+            50,
+        )))
+        if str(quart_request.args.get("offset", "")).strip():
             offset = max(0, self._safe_int(quart_request.args.get("offset", 0), 0))
-        except (ValueError, TypeError):
-            offset = 0
-        group_id = quart_request.args.get("group_id", "").strip()
-        user_id = quart_request.args.get("user_id", "").strip()
-        action = quart_request.args.get("action", "").strip()
+            page = offset // page_size + 1
+        else:
+            offset = (page - 1) * page_size
+        group_id = str(quart_request.args.get("group_id", "") or "").strip()
+        user_id = str(quart_request.args.get("user_id", "") or "").strip()
+        action = str(quart_request.args.get("action", "") or "").strip()
         logs, total = await asyncio.gather(
             self._run_in_thread(
-                self._storage.list_logs, limit, offset,
+                self._storage.list_logs, page_size, offset,
                 group_id, user_id, action,
             ),
             self._run_in_thread(
@@ -866,7 +1312,17 @@ class WebMixin:
             item["review_verdict"] = marked.get("verdict", "")
             item["review_note"] = marked.get("note", "")
             item["review_status"] = marked.get("review_status", "")
-        return jsonify({"status": "success", "data": logs, "total": total, "limit": limit, "offset": offset})
+        return jsonify({
+            "status": "success",
+            "data": {
+                "items": logs,
+                "total": total,
+                "page": page,
+                "page_size": page_size,
+                "limit": page_size,
+                "offset": offset,
+            },
+        })
 
     async def _web_review_feedback(self):
         try:
@@ -1174,149 +1630,208 @@ class WebMixin:
     async def _web_export_logs(self):
         # 导出审核日志，支持 json（默认）和 csv 两种格式。
         # csv 格式返回带 Content-Disposition 的文本，浏览器会自动触发下载。
-        fmt = quart_request.args.get("format", "json").strip().lower()
-        logs = self._storage.list_logs(limit=100000)
-        if fmt == "csv":
-            output = io.StringIO()
-            writer = csv.writer(output)
-            writer.writerow(["ID", "时间", "群号", "用户ID", "用户名", "消息内容", "操作", "原因"])
-            for l in logs:
-                writer.writerow([self._csv_safe(x) for x in (
-                    l.get("id", ""), l.get("time", ""), l.get("group_id", ""),
-                    l.get("user_id", ""), l.get("user_name", ""),
-                    l.get("msg_text", ""), l.get("action", ""), l.get("reason", ""),
-                )])
-            return output.getvalue(), 200, {"Content-Type": "text/csv; charset=utf-8", "Content-Disposition": "attachment; filename=moderation_logs.csv"}
-        return jsonify({"status": "success", "data": logs})
+        try:
+            fmt = quart_request.args.get("format", "json").strip().lower()
+            logs = self._storage.list_logs(limit=100000)
+            if fmt == "csv":
+                output = io.StringIO()
+                writer = csv.writer(output)
+                writer.writerow(["ID", "时间", "群号", "用户ID", "用户名", "消息内容", "操作", "原因"])
+                for l in logs:
+                    writer.writerow([self._csv_safe(x) for x in (
+                        l.get("id", ""), l.get("time", ""), l.get("group_id", ""),
+                        l.get("user_id", ""), l.get("user_name", ""),
+                        l.get("msg_text", ""), l.get("action", ""), l.get("reason", ""),
+                    )])
+                return output.getvalue(), 200, self._download_headers(
+                    "moderation_logs.csv", "text/csv; charset=utf-8"
+                )
+            return jsonify({"status": "success", "data": logs})
+        except Exception as e:
+            logger.exception("[GroupMgr] 导出审核日志失败")
+            return self._web_error_response(str(e), 500)
 
     async def _web_get_groups(self):
         # 获取 Bot 加入的所有群列表，附带群头像、黑白名单状态、今日拦截数。
         # 需要 QQ 客户端已连接，否则返回错误提示。
         force = str(quart_request.args.get("force", "")).strip().lower() in ("1", "true", "yes")
-        cache = getattr(self, "_web_group_cache", {"ts": 0.0, "data": []})
+        cache = self._current_web_group_snapshot()
         now = time.time()
-        if not force and cache.get("data") and now - float(cache.get("ts", 0) or 0) < 20:
+        if not force and self._web_cache_is_fresh(cache, now, 20):
             return jsonify({"status": "success", "data": cache.get("data", [])})
         client = await self._get_client()
         if not client:
-            if cache.get("data"):
+            if self._web_cache_has_snapshot(cache):
                 return jsonify({"status": "success", "data": cache.get("data", []), "stale": True, "message": "无法获取QQ客户端，已显示缓存群列表"})
             fallback = self._fallback_web_groups()
             if fallback:
-                self._web_group_cache = {"ts": now, "data": fallback}
+                self._store_web_group_snapshot(now, fallback, stale=True)
                 return jsonify({"status": "success", "data": fallback, "stale": True, "message": "无法获取QQ客户端，已显示本地配置群"})
             return jsonify({"status": "error", "message": "无法获取QQ客户端，请确保已连接"})
         try:
-            result = await self._call_onebot_web(client, 'get_group_list', timeout=8.0)
+            # OneBot 11 defines no parameters for get_group_list.  `force`
+            # bypasses this plugin's snapshot cache; sending no_cache here
+            # makes standard aiocqhttp adapters reject an otherwise valid call.
+            group_kwargs = {}
+            result = self._normalize_onebot_web_result(
+                await self._call_onebot_web(
+                    client, 'get_group_list', timeout=8.0, **group_kwargs
+                )
+            )
+            api_error = self._onebot_web_error(result)
+            if api_error:
+                raise RuntimeError(f"get_group_list failed: {api_error}")
+            if not self._onebot_web_has_list_result(result):
+                raise RuntimeError("get_group_list returned no list data")
             groups = self._extract_list_result(result)
+            if not self._web_list_has_usable_rows(groups, "group_id"):
+                raise RuntimeError("get_group_list returned malformed list data")
             today_start = self._today_start()
             today_blocked_map = {}
             for l in list(self._moderation_logs):
+                if not isinstance(l, dict):
+                    continue
+                l["ts"] = self._web_timestamp_value(l.get("ts"))
+                l["action"] = self._web_text(l.get("action"))
                 if l.get("ts", 0) >= today_start and "撤回" in l.get("action", ""):
-                    gid = str(l.get("group_id", ""))
+                    gid = self._web_id(l.get("group_id"))
                     if gid:
                         today_blocked_map[gid] = today_blocked_map.get(gid, 0) + 1
-            configured_set = set(self._storage.list_configured_groups())
+            configured_set = {
+                self._web_id(x) for x in self._storage.list_configured_groups()
+                if self._web_id(x)
+            }
+            white_set = {self._web_id(x) for x in getattr(self, "_group_white_set", set())}
+            black_set = {self._web_id(x) for x in getattr(self, "_group_black_set", set())}
             enriched = []
             for g in groups:
-                gid = str(g.get("group_id", ""))
+                if not isinstance(g, dict):
+                    continue
+                gid = self._web_id(g.get("group_id"))
+                if not gid:
+                    continue
                 enriched.append({
                     "group_id": gid,
-                    "group_name": g.get("group_name", ""),
-                    "member_count": g.get("member_count", 0),
+                    "group_name": self._web_text(g.get("group_name")),
+                    "member_count": self._web_count(g.get("member_count")),
                     "avatar": f"https://p.qlogo.cn/gh/{gid}/{gid}/",
-                    "is_white": gid in self._group_white_set,
-                    "is_black": gid in self._group_black_set,
+                    "is_white": gid in white_set,
+                    "is_black": gid in black_set,
                     "has_config": gid in configured_set,
                     "today_blocked": today_blocked_map.get(gid, 0),
                 })
-            self._web_group_cache = {"ts": now, "data": enriched}
+            self._store_web_group_snapshot(now, enriched)
             return jsonify({"status": "success", "data": enriched})
         except asyncio.TimeoutError:
-            if cache.get("data"):
+            # Another request may have completed while this one was waiting.
+            # Read the cache again so an older timeout cannot hide its newer
+            # snapshot behind the request-start state captured above.
+            cache = self._current_web_group_snapshot()
+            if self._web_cache_has_snapshot(cache):
                 return jsonify({"status": "success", "data": cache.get("data", []), "stale": True})
             fallback = self._fallback_web_groups()
             if fallback:
-                self._web_group_cache = {"ts": now, "data": fallback}
+                self._store_web_group_snapshot(now, fallback, stale=True)
                 return jsonify({"status": "success", "data": fallback, "stale": True, "message": "获取群列表超时，已显示本地缓存/配置群"})
             return jsonify({"status": "error", "message": "获取群列表超时，请稍后重试"})
         except Exception as e:
             logger.warning(f"[GroupMgr] WebUI 获取群列表失败: {e!r}")
-            if cache.get("data"):
+            cache = self._current_web_group_snapshot()
+            if self._web_cache_has_snapshot(cache):
                 return jsonify({"status": "success", "data": cache.get("data", []), "stale": True, "message": f"获取群列表失败，已显示缓存: {self._format_web_error(e)}"})
             fallback = self._fallback_web_groups()
             if fallback:
-                self._web_group_cache = {"ts": now, "data": fallback}
+                self._store_web_group_snapshot(now, fallback, stale=True)
                 return jsonify({"status": "success", "data": fallback, "stale": True, "message": f"获取群列表失败，已显示本地配置群: {self._format_web_error(e)}"})
             return jsonify({"status": "error", "message": f"获取群列表失败: {self._format_web_error(e)}"})
 
     async def _web_get_group_members(self):
         # 获取指定群的成员列表，附带头像、角色、头衔、是否为插件管理员等丰富信息。
         # 按角色排序（群主 → 管理员 → 成员），需要 group_id 查询参数。
-        group_id = quart_request.args.get("group_id", "").strip()
-        if not group_id:
+        raw_group_id = quart_request.args.get("group_id", "").strip()
+        if not raw_group_id:
             return jsonify({"status": "error", "message": "缺少 group_id 参数"})
+        group_number = self._safe_int(raw_group_id, 0)
+        if group_number <= 0:
+            return jsonify({"status": "error", "message": "group_id 参数无效"})
+        group_id = str(group_number)
         force = str(quart_request.args.get("force", "")).strip().lower() in ("1", "true", "yes")
-        member_cache = getattr(self, "_web_member_cache", {})
-        cached = member_cache.get(group_id)
+        cached = self._current_web_member_snapshot(group_id)
         now = time.time()
-        if not force and cached and now - float(cached.get("ts", 0) or 0) < 15:
+        if not force and self._web_cache_is_fresh(cached, now, 15):
             return jsonify({"status": "success", "data": cached.get("data", [])})
         client = await self._get_client()
         if not client:
-            if cached:
+            if self._web_cache_has_snapshot(cached):
                 return jsonify({"status": "success", "data": cached.get("data", []), "stale": True, "message": "无法获取QQ客户端，已显示缓存成员"})
             fallback = self._fallback_web_group_members(group_id)
             if fallback:
-                member_cache[group_id] = {"ts": now, "data": fallback}
-                self._web_member_cache = member_cache
+                self._store_web_member_snapshot(group_id, now, fallback, stale=True)
                 return jsonify({"status": "success", "data": fallback, "stale": True, "message": "无法获取QQ客户端，已显示本地记录成员"})
             return jsonify({"status": "error", "message": "无法获取QQ客户端"})
         try:
-            gid = self._safe_int(group_id, 0)
-            result = await self._call_onebot_web(client, 'get_group_member_list', timeout=10.0, group_id=gid, no_cache=force)
+            member_kwargs = {"group_id": group_number}
+            # get_group_member_list likewise only accepts group_id in the
+            # OneBot 11 contract.  Force refresh means bypassing our cache.
+            result = self._normalize_onebot_web_result(
+                await self._call_onebot_web(
+                    client, 'get_group_member_list', timeout=10.0,
+                    **member_kwargs,
+                )
+            )
+            api_error = self._onebot_web_error(result)
+            if api_error:
+                raise RuntimeError(f"get_group_member_list failed: {api_error}")
+            if not self._onebot_web_has_list_result(result):
+                raise RuntimeError("get_group_member_list returned no list data")
             members = self._extract_list_result(result)
+            if not self._web_list_has_usable_rows(members, "user_id"):
+                raise RuntimeError("get_group_member_list returned malformed list data")
             enriched = []
-            admin_set = set(self._get_admin_list())
+            admin_set = {self._web_id(x) for x in self._get_admin_list()}
             for m in members:
-                uid = str(m.get("user_id", ""))
-                card = m.get("card", "")
-                nickname = m.get("nickname", "")
-                role = m.get("role", "member")
-                title = m.get("title", "") or m.get("special_title", "")
+                if not isinstance(m, dict):
+                    continue
+                uid = self._web_id(m.get("user_id"))
+                if not uid:
+                    continue
+                card = self._web_text(m.get("card"))
+                nickname = self._web_text(m.get("nickname"), uid)
+                role = self._web_text(m.get("role"), "member").casefold()
+                title = self._web_text(m.get("title") or m.get("special_title"))
+                display_name = card or nickname or uid
                 is_plugin_admin = uid in admin_set
                 enriched.append({
                     "user_id": uid,
                     "nickname": nickname,
                     "card": card,
-                    "display_name": card or nickname,
+                    "display_name": display_name,
                     "role": role,
                     "title": title,
                     "avatar": f"https://q.qlogo.cn/headimg_dl?dst_uin={uid}&spec=640",
                     "is_plugin_admin": is_plugin_admin,
                 })
             role_order = {"owner": 0, "admin": 1, "member": 2}
-            enriched.sort(key=lambda x: (role_order.get(x["role"], 9), x["display_name"]))
-            member_cache[group_id] = {"ts": now, "data": enriched}
-            self._web_member_cache = member_cache
+            enriched.sort(key=lambda x: (role_order.get(x["role"], 9), x["display_name"].casefold()))
+            self._store_web_member_snapshot(group_id, now, enriched)
             return jsonify({"status": "success", "data": enriched})
         except asyncio.TimeoutError:
-            if cached:
+            cached = self._current_web_member_snapshot(group_id)
+            if self._web_cache_has_snapshot(cached):
                 return jsonify({"status": "success", "data": cached.get("data", []), "stale": True})
             fallback = self._fallback_web_group_members(group_id)
             if fallback:
-                member_cache[group_id] = {"ts": now, "data": fallback}
-                self._web_member_cache = member_cache
+                self._store_web_member_snapshot(group_id, now, fallback, stale=True)
                 return jsonify({"status": "success", "data": fallback, "stale": True, "message": "获取群成员超时，已显示本地缓存/记录成员"})
             return jsonify({"status": "error", "message": "获取群成员超时，请稍后重试"})
         except Exception as e:
             logger.warning(f"[GroupMgr] WebUI 获取群成员失败 group={group_id}: {e!r}")
-            if cached:
+            cached = self._current_web_member_snapshot(group_id)
+            if self._web_cache_has_snapshot(cached):
                 return jsonify({"status": "success", "data": cached.get("data", []), "stale": True, "message": f"获取群成员失败，已显示缓存: {self._format_web_error(e)}"})
             fallback = self._fallback_web_group_members(group_id)
             if fallback:
-                member_cache[group_id] = {"ts": now, "data": fallback}
-                self._web_member_cache = member_cache
+                self._store_web_member_snapshot(group_id, now, fallback, stale=True)
                 return jsonify({"status": "success", "data": fallback, "stale": True, "message": f"获取群成员失败，已显示本地记录成员: {self._format_web_error(e)}"})
             return jsonify({"status": "error", "message": f"获取群成员失败: {self._format_web_error(e)}。当前 OneBot/平台可能不支持 get_group_member_list，且本地暂无该群成员缓存。"})
 
@@ -1810,7 +2325,7 @@ class WebMixin:
         return str(group_id) in self._group_white_set
 
     _CONFIG_CATEGORIES = {
-        "enabled": "基础开关", "auto_moderate_enabled": "基础开关", "auto_moderate_notice": "基础开关",
+        "enabled": "基础开关", "auto_moderate_enabled": "基础开关", "moderation_admin_exempt": "审核规则", "auto_moderate_notice": "基础开关",
         "scan_swear": "审核规则", "scan_ad": "审核规则", "llm_moderation_enabled": "审核规则",
         "llm_moderation_always": "审核规则",
         "base_decode_enabled": "审核规则",

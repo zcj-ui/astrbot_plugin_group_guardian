@@ -199,6 +199,10 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
         SQLiteStorage._ensure_column(conn, "appeals", "attempts", "INTEGER NOT NULL DEFAULT 0")
         SQLiteStorage._ensure_column(conn, "appeals", "prompt_sent", "INTEGER NOT NULL DEFAULT 0")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_appeals_user_status ON appeals(user_id, status)")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_appeals_group_user_status "
+            "ON appeals(group_id, user_id, status)"
+        )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_appeals_expire ON appeals(expire_at)")
         # F3 定时解禁计划
         conn.execute(
@@ -1064,17 +1068,32 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
     # ============================================================
     def open_appeal(self, group_id: str, user_id: str, reason: str, penalty: str,
                     mute_duration: int, created_at: int, expire_at: int) -> int:
-        # 登记一条 waiting 申诉；若同群同人已有 waiting，先作废旧的（标记 expired）再新建。
+        # 申诉创建必须在同一写事务内完成“过期清理 + 活跃检查 + 插入”。
+        # 私聊申诉无法确认用户要处理哪一个群的处罚，因此每个用户同一时刻
+        # 只能有一条 waiting/judging 记录。BEGIN IMMEDIATE 让并发处罚事件
+        # 看到前一条结果，避免重复 @、重复提示或私聊串到另一条申诉。
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "UPDATE appeals SET status='expired', decided_at=? "
-                "WHERE group_id=? AND user_id=? AND status='waiting'",
-                (created_at, str(group_id), str(user_id)),
+                "WHERE user_id=? "
+                "AND status IN ('waiting', 'judging') AND expire_at <= ?",
+                (int(created_at), str(user_id), int(created_at)),
             )
+            active = conn.execute(
+                "SELECT id FROM appeals "
+                "WHERE user_id=? "
+                "AND status IN ('waiting', 'judging') "
+                "ORDER BY id DESC LIMIT 1",
+                (str(user_id),),
+            ).fetchone()
+            if active:
+                conn.commit()
+                return 0
             cur = conn.execute(
                 "INSERT INTO appeals(group_id, user_id, reason, penalty, mute_duration, status, created_at, expire_at) "
                 "VALUES(?, ?, ?, ?, ?, 'waiting', ?, ?)",
-                (str(group_id), str(user_id), reason or "", penalty or "", int(mute_duration or 0), created_at, expire_at),
+                (str(group_id), str(user_id), reason or "", penalty or "", int(mute_duration or 0), int(created_at), int(expire_at)),
             )
             conn.commit()
             return int(cur.lastrowid or 0)
@@ -1097,6 +1116,49 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             conn.commit()
         return bool(cur.rowcount)
 
+    def expire_appeal_if_due(self, appeal_id: int, now_ts: int) -> bool:
+        """Expire only an appeal that is still actionable and has reached its deadline."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE appeals SET status='expired', decided_at=? "
+                "WHERE id=? AND status IN ('waiting', 'judging') AND expire_at <= ?",
+                (int(now_ts), int(appeal_id), int(now_ts)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def finalize_appeal_if_active(self, appeal_id: int, status: str, now_ts: int) -> bool:
+        """Finish a running review only while its appeal window remains open."""
+        if status not in {"approved", "rejected"}:
+            raise ValueError("invalid terminal appeal status")
+        with self._connect() as conn:
+            cur = conn.execute(
+                "UPDATE appeals SET status=?, decided_at=? "
+                "WHERE id=? AND status='judging' AND expire_at > ?",
+                (status, int(now_ts), int(appeal_id), int(now_ts)),
+            )
+            conn.commit()
+        return bool(cur.rowcount)
+
+    def reopen_active_appeal(self, appeal_id: int, now_ts: int,
+                             decrement_attempt: bool = False) -> bool:
+        """Return a failed review to waiting without reviving an expired appeal."""
+        with self._connect() as conn:
+            if decrement_attempt:
+                cur = conn.execute(
+                    "UPDATE appeals SET status='waiting', attempts=MAX(attempts-1, 0) "
+                    "WHERE id=? AND status='judging' AND expire_at > ?",
+                    (int(appeal_id), int(now_ts)),
+                )
+            else:
+                cur = conn.execute(
+                    "UPDATE appeals SET status='waiting' "
+                    "WHERE id=? AND status='judging' AND expire_at > ?",
+                    (int(appeal_id), int(now_ts)),
+                )
+            conn.commit()
+        return bool(cur.rowcount)
+
     def mark_appeal_prompted(self, appeal_id: int) -> bool:
         """Atomically mark the text prompt as sent.
 
@@ -1113,13 +1175,15 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             conn.commit()
         return bool(cur.rowcount)
 
-    def claim_appeal_attempt(self, appeal_id: int, max_attempts: int = 2) -> int:
+    def claim_appeal_attempt(self, appeal_id: int, max_attempts: int = 2,
+                             now_ts: Optional[int] = None) -> int:
         """抢占一次文字申诉机会，成功返回当前第几次，失败返回 0。"""
+        now_ts = int(time.time()) if now_ts is None else int(now_ts)
         with self._connect() as conn:
             cur = conn.execute(
                 "UPDATE appeals SET status='judging', attempts=attempts+1 "
-                "WHERE id=? AND status='waiting' AND attempts < ?",
-                (int(appeal_id), int(max_attempts)),
+                "WHERE id=? AND status='waiting' AND attempts < ? AND expire_at > ?",
+                (int(appeal_id), int(max_attempts), now_ts),
             )
             if not cur.rowcount:
                 conn.commit()

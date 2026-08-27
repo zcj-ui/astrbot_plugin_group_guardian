@@ -1,5 +1,6 @@
 import ast
 import json
+import re
 import unittest
 from pathlib import Path
 
@@ -91,6 +92,18 @@ class ConfigSurfaceTests(unittest.TestCase):
         self.assertIn("key: 'base_decode_enabled'", self.dashboard)
         self.assertIn("base_decode_enabled: true", self.dashboard)
 
+    def test_admin_content_exemption_is_opt_in_and_group_overridable(self):
+        setting = self.schema["moderation_admin_exempt"]
+        self.assertEqual("bool", setting["type"])
+        self.assertFalse(setting["default"])
+
+        categories = self._class_literal("_CONFIG_CATEGORIES")
+        excluded = self._class_literal("_GROUP_CONFIG_EXCLUDE")
+        self.assertEqual("审核规则", categories["moderation_admin_exempt"])
+        self.assertNotIn("moderation_admin_exempt", excluded)
+        self.assertIn("key: 'moderation_admin_exempt'", self.dashboard)
+        self.assertIn("moderation_admin_exempt: true", self.dashboard)
+
     def test_moderation_review_is_global_and_exposed_in_builtin_dashboard(self):
         expected = {
             "moderation_review_enabled": ("bool", False),
@@ -138,6 +151,33 @@ class ConfigSurfaceTests(unittest.TestCase):
         ):
             with self.subTest(marker=marker):
                 self.assertNotIn(marker, production)
+
+    def test_dashboard_relies_on_host_injected_bridge_sdk(self):
+        # Keep the SDK reference explicit so the page also works when opened
+        # through the plugin-page route in AstrBot versions that do not inject
+        # it into the document automatically.
+        self.assertIn(
+            '<script src="/api/plugin/page/bridge-sdk.js"></script>',
+            self.dashboard,
+        )
+        self.assertIn("var bridge = null", self.dashboard)
+
+    def test_dashboard_literal_api_paths_are_registered(self):
+        called = set(re.findall(
+            r"safe(?:Get|Post|Download)\(\s*['\"]([^'\"]+)",
+            self.dashboard,
+        ))
+        registered = {
+            path.lstrip("/")
+            for path in re.findall(
+                r'\("(/[^"\\]+)",\s*self\._web_', self.web_source
+            )
+        }
+        self.assertFalse({
+            path for path in called
+            if path.startswith("/") or "?" in path or "#" in path or ".." in path
+        })
+        self.assertFalse(called - registered)
 
 
 if __name__ == "__main__":

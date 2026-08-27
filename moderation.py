@@ -20,6 +20,7 @@ try:
     from .encoded_content import decode_base_evidence
     from .lexicon_migration import LOW_CONFIDENCE_LITERALS as LOW_CONFIDENCE_SWEAR_LITERALS
     from .image_audit import ImageAuditMixin
+    from .text_obfuscation import extract_obfuscated_url_evidence
     from .moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -30,6 +31,7 @@ except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
     from encoded_content import decode_base_evidence
     from lexicon_migration import LOW_CONFIDENCE_LITERALS as LOW_CONFIDENCE_SWEAR_LITERALS
     from image_audit import ImageAuditMixin
+    from text_obfuscation import extract_obfuscated_url_evidence
     from moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -379,11 +381,17 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 blocked 为 False 时 notice 为 None。
         """
         user_id = self._try_get_sender_id(event)
-        msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-        if not self._cfg("anti_flood_enabled", True, group_id=group_id) or not user_id or not msg_id:
+        msg_id, _recall_msg_id = self._anti_flood_event_message_identity(event)
+        if not self._cfg("anti_flood_enabled", True, group_id=group_id) or not user_id:
             return False, None
         if await self._is_admin(event):
             return False, None
+        if self._anti_flood_event_is_duplicate(group_id, user_id, msg_id):
+            # Content moderation has its own event deduplication, but it runs
+            # after this guard.  Stop here so a retransmitted OneBot event
+            # cannot inflate rate counters or create a second flood penalty.
+            event.stop_event()
+            return True, None
         # 处罚冷却：用户刚被刷屏处罚后进入冷却期，期间其积压/后续消息只静默忽略，
         # 不再重复禁言/撤回/记日志/开申诉。这能挡住"处罚已生效但事件队列里还排着该用户
         # 多条消息"导致的重复处罚刷屏（被禁言者其实已发不出新消息）。
@@ -413,9 +421,10 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         recall_threshold = self._cfg_int("anti_flood_recall_threshold", 20, group_id=group_id)
         # 立即登记处罚冷却并清空该用户计数队列：必须在执行禁言/撤回等 await 之前完成，
         # 否则 await 期间其它积压消息的协程会先跑完检测、造成重复处罚。
-        # 冷却时长取禁言时长与一个最小值的较大者（仅撤回不禁言时也保证有冷却窗口）。
-        cooldown = mute_dur if mute_dur > 0 else self._cfg_int("anti_flood_recall_threshold", 20, group_id=group_id)
-        self._mark_anti_flood_penalty(group_id, user_id, max(cooldown, 30))
+        # 冷却时长取禁言时长与一个最小值的较大者。仅撤回模式没有禁言时长，
+        # 使用固定 30 秒吸收积压事件；撤回阈值是消息条数，不能拿来当秒数。
+        cooldown = max(mute_dur, 30) if mute_dur > 0 else 30
+        self._mark_anti_flood_penalty(group_id, user_id, cooldown)
         try:
             mute_succeeded = False
             if mute_dur > 0:
@@ -426,8 +435,13 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 else:
                     self._clear_anti_flood_penalty(group_id, user_id)
             flood_total = flood_info.get("total_msgs", flood_info.get("count", 0))
-            if recall_enabled and flood_total >= recall_threshold and flood_info.get("msg_ids"):
-                for fid in flood_info["msg_ids"]:
+            recall_ids = [
+                self._anti_flood_recallable_message_id(fid)
+                for fid in (flood_info.get("msg_ids") or [])
+            ]
+            recall_ids = [fid for fid in recall_ids if fid]
+            if recall_enabled and flood_total >= recall_threshold and recall_ids:
+                for fid in recall_ids:
                     try:
                         await self._recall_msg(event, fid)
                     except Exception:
@@ -534,6 +548,8 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         if not isinstance(llm_result, dict) or not llm_result.get("fallback", False):
             return False
         if hit_types.get("oversized"):
+            return True
+        if hit_types.get("obfuscated_url"):
             return True
         # 可选严格模式：LLM 降级时对任何真实命中都 fail-closed（默认关，避免 Provider
         # 抖动时把广告泛词/低置信命中放大成误封）。用 getattr 兼容无 _cfg 的测试桩。
@@ -660,8 +676,7 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         """
         if not group_id:
             group_id = self._get_group_id(event)
-        msg_obj = getattr(event, 'message_obj', None)
-        msg_id = str(getattr(msg_obj, 'message_id', '')) if msg_obj else ''
+        msg_id = self._context_message_id(event)
         user_name = event.get_sender_name()
         raw_event = getattr(event, "raw_event", None)
         raw_event = raw_event if isinstance(raw_event, dict) else {}
@@ -777,6 +792,7 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
             "weapons": "涉枪涉爆",
             "corruption": "贪腐相关",
             "illegal_url": "违规网址",
+            "obfuscated_url": "异形字符伪装链接",
             "other": "其他违规",
             "supplement": "补充违规",
             "livelihood": "民生敏感",
@@ -865,7 +881,11 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
             f"     * 正常游戏攻略、教程链接\n"
             f"     * 视频网站链接（B站、YouTube等）\n"
             f"     * 工具软件官网\n\n"
-            f"7. 隐私泄露类：\n"
+            f"7. 异形字符伪装链接类（obfuscated_url）—— 一律违规：\n"
+            f"   - 把 HTTP/HTTPS、域名或路径替换为方框字、带圈字、同形外文字母、"
+            f"零宽字符或逐字空格后发送，属于刻意规避审核的外链引流\n"
+            f"   - 系统会附上归一化后的链接证据；即使无法判断站点内容，刻意伪装链接本身也应撤回\n\n"
+            f"8. 隐私泄露类：\n"
             f"   - 以下情况**违规**：\n"
             f"     * 泄露他人身份证号、住址、电话\n"
             f"     * 人肉搜索、开盒行为\n"
@@ -1817,6 +1837,18 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         )
 
     @staticmethod
+    def _append_obfuscated_url_evidence(text: str) -> Tuple[str, list]:
+        """Attach reconstructed URL evidence without discarding the source text."""
+        urls = extract_obfuscated_url_evidence(text)
+        if not urls:
+            return text, []
+        evidence = "\n".join(urls)
+        return (
+            f"{str(text or '').strip()}\n[异形字符归一化链接]\n{evidence}".strip(),
+            urls,
+        )
+
+    @staticmethod
     def _check_dict_seg_qq_favorite(seg: dict) -> bool:
         # 对单个 CQ 码段的 dict 表示，检查 json/app 类型中是否包含 QQ 收藏特征。
         if not isinstance(seg, dict):
@@ -1880,7 +1912,8 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 yield event.plain_result(flood_notice)
             return
 
-        if await self._is_admin(event):
+        if (self._cfg("moderation_admin_exempt", False, group_id=group_id)
+                and await self._is_admin(event)):
             return
 
         blacklist_handled, blacklist_notice = await self._handle_user_blacklist(event, group_id, user_id, user_name)
@@ -1902,6 +1935,10 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
             if self._combined_in_cooldown(
                 group_id, user_id, event_signature
             ):
+                # This exact OneBot event has already entered the moderation
+                # pipeline. Do not let its retransmission trigger later
+                # handlers a second time.
+                event.stop_event()
                 return
             self._mark_combined_handled(
                 group_id, user_id, event_signature
@@ -1970,6 +2007,13 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                     event, group_id, user_id, user_name, ready_text,
                     pending=False,
                 )
+        # This evidence is part of the advertising/link detector.  Do not add
+        # a reconstructed URL to the general text when that detector is off:
+        # otherwise unrelated swear/lexicon rules or the LLM could still act on
+        # a feature the administrator explicitly disabled.
+        obfuscated_urls = []
+        if self._cfg("scan_ad", True, group_id=group_id):
+            text, obfuscated_urls = self._append_obfuscated_url_evidence(text)
         text, decoded_evidence = self._append_base_decode_evidence(text, group_id)
         text = self._append_stream_rule_evidence(
             text, [inline_scan, forward_scan]
@@ -1981,12 +2025,17 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         )
 
         hit_types = self._initial_screening(text, group_id)
+        if obfuscated_urls and self._cfg("scan_ad", True, group_id=group_id):
+            # Deliberately disguising an external URL is itself an evasion
+            # signal.  The reconstructed evidence is retained in `text` for
+            # logs and later appeal review.
+            hit_types["obfuscated_url"] = True
         for scan in (inline_scan, forward_scan):
             for category, hit in scan.get("hits", {}).items():
                 if hit:
                     hit_types[category] = True
         extra_recall_ids = []
-        if hit_types.get("oversized"):
+        if hit_types.get("oversized") or hit_types.get("obfuscated_url"):
             self._set_moderation_combine_state(
                 event, group_id, user_id, extra_recall_ids, "consumed"
             )
@@ -2332,9 +2381,14 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 event.stop_event()
                 return
             ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
-            self._mark_moderation_penalty(group_id, user_id, ban_duration)
             mute_succeeded = False
             if self._cfg("llm_moderation_ban", True, group_id=group_id):
+                # Reserve the cooldown before awaiting the OneBot call so
+                # concurrent duplicate events cannot issue a second ban.
+                # In recall-only mode there is no punishment to serialize;
+                # keeping this cooldown would silently stop every later
+                # message from the user for the configured ban duration.
+                self._mark_moderation_penalty(group_id, user_id, ban_duration)
                 mute_succeeded = await self._mute_member(event, ban_duration)
                 if mute_succeeded:
                     self._schedule_unban(group_id, user_id, ban_duration)

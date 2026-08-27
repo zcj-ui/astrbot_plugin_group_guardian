@@ -83,31 +83,100 @@ class ModerationContextMixin:
         except (TypeError, ValueError):
             return 0
 
-    def _event_message_order(self, event) -> Tuple[int, int]:
-        """Return ``(message_seq, timestamp)`` without assuming one adapter shape."""
+    @staticmethod
+    def _context_source_value(source, key):
+        if isinstance(source, dict):
+            return source.get(key)
+        try:
+            return getattr(source, key, None)
+        except Exception:
+            return None
+
+    @staticmethod
+    def _context_identifier(value) -> str:
+        """Normalize an adapter message ID while rejecting empty sentinel values."""
+        if value is None or isinstance(value, bool):
+            return ""
+        value = getattr(value, "value", value)
+        text = str(value).strip()
+        if text.casefold() in {"", "none", "null", "nil", "0"}:
+            return ""
+        return text
+
+    @classmethod
+    def _context_nested_mappings(cls, payload):
+        """Yield the bounded OneBot envelopes that can carry message metadata."""
+        queue = deque([payload])
+        seen = set()
+        while queue and len(seen) < 32:
+            current = queue.popleft()
+            if not isinstance(current, dict):
+                continue
+            marker = id(current)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            yield current
+            for key in ("data", "event", "raw_event", "raw_message", "payload"):
+                nested = current.get(key)
+                if isinstance(nested, dict):
+                    queue.append(nested)
+
+    def _context_event_sources(self, event) -> list:
+        sources = []
+        msg_obj = getattr(event, "message_obj", None)
+        if msg_obj is not None:
+            sources.append(msg_obj)
+            sources.extend(self._context_nested_mappings(
+                self._context_source_value(msg_obj, "raw_message")
+            ))
+        sources.append(event)
         try:
             raw = getattr(event, "raw_event", None)
         except Exception:
             raw = None
-        raw = raw if isinstance(raw, dict) else {}
-        msg_obj = getattr(event, "message_obj", None)
-        seq = self._positive_int(
-            raw.get("message_seq") or raw.get("seq")
-            or getattr(msg_obj, "message_seq", 0)
-            or getattr(msg_obj, "seq", 0)
+        sources.extend(self._context_nested_mappings(raw))
+        return sources
+
+    def _context_message_id(self, event) -> str:
+        sources = self._context_event_sources(event)
+        for key in ("message_id", "messageId", "msg_id", "msgId"):
+            for source in sources:
+                value = self._context_identifier(
+                    self._context_source_value(source, key)
+                )
+                if value:
+                    return value
+        return ""
+
+    def _context_event_positive_value(self, event, keys) -> int:
+        for key in keys:
+            for source in self._context_event_sources(event):
+                value = self._positive_int(self._context_source_value(source, key))
+                if value:
+                    return value
+        return 0
+
+    def _event_message_order(self, event) -> Tuple[int, int]:
+        """Return ``(message_seq, timestamp)`` without assuming one adapter shape."""
+        seq = self._context_event_positive_value(
+            event, ("message_seq", "messageSeq", "seq")
         )
-        timestamp = self._positive_int(
-            raw.get("time") or raw.get("timestamp")
-            or getattr(msg_obj, "time", 0)
-            or getattr(msg_obj, "timestamp", 0)
+        timestamp = self._context_event_positive_value(
+            event, ("time", "timestamp")
         )
         return seq, timestamp
 
     def _context_message_key(self, event) -> str:
-        msg_obj = getattr(event, "message_obj", None)
-        msg_id = str(getattr(msg_obj, "message_id", "") or "")
+        msg_id = self._context_message_id(event)
         if msg_id:
             return f"message:{msg_id}"
+
+        message_seq = self._context_event_positive_value(
+            event, ("message_seq", "messageSeq", "seq")
+        )
+        if message_seq:
+            return f"sequence:{message_seq}"
 
         try:
             cached = getattr(event, _CONTEXT_EVENT_KEY_ATTR, None)
@@ -346,8 +415,7 @@ class ModerationContextMixin:
             # Keep recently active users at the end so capacity eviction is LRU-like.
             store[key] = store.pop(key)
 
-        msg_obj = getattr(event, "message_obj", None)
-        msg_id = str(getattr(msg_obj, "message_id", "") or "")
+        msg_id = self._context_message_id(event)
         context_key = self._context_message_key(event)
         seq, event_time = self._event_message_order(event)
         for entry in queue:
@@ -551,8 +619,7 @@ class ModerationContextMixin:
         queue = store.get((str(group_id), str(user_id)))
         if not queue:
             return
-        msg_obj = getattr(event, "message_obj", None)
-        current_id = str(getattr(msg_obj, "message_id", "") or "")
+        current_id = self._context_message_id(event)
         current_context_key = self._context_message_key(event)
         target_ids = {
             str(value) for value in (extra_message_ids or []) if str(value)
@@ -634,8 +701,7 @@ class ModerationContextMixin:
             ),
             600,
         ))
-        msg_obj = getattr(event, "message_obj", None)
-        current_id = str(getattr(msg_obj, "message_id", "") or "")
+        current_id = self._context_message_id(event)
         current_context_key = self._context_message_key(event)
         self._record_moderation_context(
             event,

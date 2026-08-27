@@ -13,6 +13,9 @@ import types
 import unittest
 from enum import Enum
 from pathlib import Path
+from unittest.mock import patch
+
+import anti_flood
 
 
 def _load_moderation():
@@ -78,12 +81,16 @@ class _Event:
             "time": timestamp,
         }
         self.message_obj = types.SimpleNamespace(message_id=message_id)
+        self.stop_calls = 0
 
     def get_messages(self):
         return self._chain
 
     def get_sender_name(self):
         return "tester"
+
+    def stop_event(self):
+        self.stop_calls += 1
 
 
 class _ReadOnlyContextEvent:
@@ -189,6 +196,15 @@ class _LLMHarness(_Harness):
 class Plain:
     def __init__(self, text):
         self.text = text
+
+
+def _negative_squared_url(value):
+    return "".join(
+        chr(0x1F170 + ord(char.upper()) - ord("A"))
+        if char.isascii() and char.isalpha()
+        else char
+        for char in value
+    )
 
 
 class Reply:
@@ -306,6 +322,7 @@ class _HandleHarness(_StreamHarness):
     def __init__(self):
         super().__init__("never-present")
         self.rule_penalties = 0
+        self.rule_inputs = []
         self.llm_calls = 0
         self.llm_inputs = []
 
@@ -339,6 +356,7 @@ class _HandleHarness(_StreamHarness):
 
     async def _execute_rule_penalty(self, *_args, **_kwargs):
         self.rule_penalties += 1
+        self.rule_inputs.append((_args[4], dict(_args[5])))
         if False:
             yield None
 
@@ -346,6 +364,31 @@ class _HandleHarness(_StreamHarness):
         self.llm_calls += 1
         self.llm_inputs.append((text, dict(hit_types)))
         return {"violation": False, "fallback": False}
+
+
+class _ObfuscatedUrlHandleHarness(_HandleHarness):
+    def __init__(self, *, scan_ad=True, llm_enabled=False, is_admin=False,
+                 admin_exempt=False):
+        super().__init__()
+        self.scan_ad = scan_ad
+        self.llm_enabled = llm_enabled
+        self.is_admin = is_admin
+        self.admin_exempt = admin_exempt
+
+    def _cfg(self, name, default=None, group_id=""):
+        values = {
+            "scan_ad": self.scan_ad,
+            "llm_moderation_enabled": self.llm_enabled,
+            "moderation_admin_exempt": self.admin_exempt,
+        }
+        return values.get(name, default)
+
+    @staticmethod
+    def _cfg_int(name, default=0, group_id=""):
+        return default
+
+    async def _is_admin(self, _event):
+        return self.is_admin
 
 
 class _ContextHandleHarness(_HandleHarness):
@@ -924,6 +967,286 @@ class NestedForwardTests(unittest.TestCase):
         self.assertEqual(harness.rule_penalties, 1)
         self.assertEqual(harness.llm_calls, 0)
 
+    def test_negative_squared_url_uses_one_local_penalty_without_llm(self):
+        harness = _ObfuscatedUrlHandleHarness()
+        url = "https://catfk.com/shop/bugbugteam"
+        event = _Event(
+            [Plain(_negative_squared_url(url))],
+            message_id="boxed-url", message_seq=901, timestamp=901,
+        )
+
+        async def consume():
+            return [item async for item in harness._handle_message(event)]
+
+        asyncio.run(consume())
+
+        self.assertEqual(harness.rule_penalties, 1)
+        self.assertEqual(harness.llm_calls, 0)
+        audit_text, hit_types = harness.rule_inputs[0]
+        self.assertTrue(hit_types["obfuscated_url"])
+        self.assertIn("[异形字符归一化链接]", audit_text)
+        self.assertIn(url.upper(), audit_text)
+
+    def test_disguised_url_respects_disabled_ad_scan(self):
+        harness = _ObfuscatedUrlHandleHarness(scan_ad=False)
+        event = _Event(
+            [Plain(_negative_squared_url("https://catfk.com/shop/bugbugteam"))],
+            message_id="boxed-url-disabled", message_seq=902, timestamp=902,
+        )
+
+        async def consume():
+            return [item async for item in harness._handle_message(event)]
+
+        asyncio.run(consume())
+
+        self.assertEqual(harness.rule_penalties, 0)
+        self.assertEqual(harness.llm_calls, 0)
+
+    def test_admin_content_is_scanned_unless_exemption_is_enabled(self):
+        async def consume(harness, event):
+            return [item async for item in harness._handle_message(event)]
+
+        scanned = _ObfuscatedUrlHandleHarness(is_admin=True, admin_exempt=False)
+        asyncio.run(consume(scanned, _Event(
+            [Plain(_negative_squared_url("https://catfk.com/shop/bugbugteam"))],
+            message_id="admin-scanned", message_seq=903, timestamp=903,
+        )))
+        self.assertEqual(scanned.rule_penalties, 1)
+
+        exempt = _ObfuscatedUrlHandleHarness(is_admin=True, admin_exempt=True)
+        asyncio.run(consume(exempt, _Event(
+            [Plain(_negative_squared_url("https://catfk.com/shop/bugbugteam"))],
+            message_id="admin-exempt", message_seq=904, timestamp=904,
+        )))
+        self.assertEqual(exempt.rule_penalties, 0)
+        self.assertEqual(exempt.llm_calls, 0)
+
+    def test_duplicate_boxed_url_delivery_has_one_penalty(self):
+        harness = _ObfuscatedUrlHandleHarness()
+        payload = [Plain(_negative_squared_url("https://catfk.com/shop/bugbugteam"))]
+
+        async def consume(event):
+            return [item async for item in harness._handle_message(event)]
+
+        first = _Event(
+            payload, message_id="duplicate-boxed-url", message_seq=905,
+            timestamp=905,
+        )
+        duplicate = _Event(
+            payload, message_id="duplicate-boxed-url", message_seq=905,
+            timestamp=905,
+        )
+        asyncio.run(consume(first))
+        asyncio.run(consume(duplicate))
+
+        self.assertEqual(harness.rule_penalties, 1)
+        self.assertEqual(harness.llm_calls, 0)
+        self.assertEqual(duplicate.stop_calls, 1)
+
+    def test_anti_flood_duplicate_stops_event_propagation(self):
+        class GuardHarness:
+            @staticmethod
+            def _try_get_sender_id(_event):
+                return "2"
+
+            @staticmethod
+            def _cfg(name, default=True, group_id=""):
+                return True if name == "anti_flood_enabled" else default
+
+            @staticmethod
+            async def _is_admin(_event):
+                return False
+
+            @staticmethod
+            def _anti_flood_event_message_identity(event):
+                return anti_flood.AntiFloodMixin._anti_flood_event_message_identity(event)
+
+            @staticmethod
+            def _anti_flood_event_is_duplicate(_group_id, _user_id, _msg_id):
+                return True
+
+        event = _Event([], message_id="retransmitted")
+        blocked, notice = asyncio.run(
+            moderation.ModerationMixin._anti_flood_guard(GuardHarness(), event, "1")
+        )
+
+        self.assertTrue(blocked)
+        self.assertIsNone(notice)
+        self.assertEqual(event.stop_calls, 1)
+
+    def test_recall_only_flood_cooldown_is_not_the_recall_message_threshold(self):
+        class GuardHarness(anti_flood.AntiFloodMixin):
+            def __init__(self):
+                self.cooldowns = []
+                self._init_anti_flood()
+
+            @staticmethod
+            def _try_get_sender_id(_event):
+                return "2"
+
+            @staticmethod
+            async def _is_admin(_event):
+                return False
+
+            @staticmethod
+            def _moderation_in_penalty_cooldown(_group_id, _user_id):
+                return False
+
+            @staticmethod
+            def _format_message_content(_raw_message, include_forward_content=True):
+                return "fixture"
+
+            @staticmethod
+            def _check_anti_flood(_group_id, _user_id):
+                return True, {
+                    "rate": "每秒", "count": 2, "limit": 1,
+                    "total_msgs": 2, "msg_ids": [],
+                }
+
+            def _cfg(self, name, default=True, group_id=""):
+                values = {
+                    "anti_flood_enabled": True,
+                    "anti_flood_recall_enabled": False,
+                    "appeal_enabled": False,
+                }
+                return values.get(name, default)
+
+            def _cfg_int(self, name, default=0, group_id=""):
+                values = {
+                    "anti_flood_mute_duration": 0,
+                    "anti_flood_recall_threshold": 999999,
+                }
+                return values.get(name, default)
+
+            def _mark_anti_flood_penalty(self, group_id, user_id, cooldown_seconds):
+                self.cooldowns.append((group_id, user_id, cooldown_seconds))
+
+            @staticmethod
+            def _log_moderation(*_args):
+                return None
+
+        harness = GuardHarness()
+        event = _Event([], message_id="recall-only")
+        event.message_obj.message = []
+        blocked, _notice = asyncio.run(
+            moderation.ModerationMixin._anti_flood_guard(harness, event, "1")
+        )
+
+        self.assertTrue(blocked)
+        self.assertEqual([("1", "2", 30)], harness.cooldowns)
+
+    def test_llm_recall_only_does_not_suppress_later_messages_with_ban_cooldown(self):
+        class RecallOnlyHarness(moderation.ModerationMixin):
+            def __init__(self):
+                self.cooldowns = []
+
+            @staticmethod
+            def _moderation_in_penalty_cooldown(_group_id, _user_id):
+                return False
+
+            @staticmethod
+            def _anti_flood_in_cooldown(_group_id, _user_id):
+                return False
+
+            @staticmethod
+            async def _recall_msg(*_args):
+                return None
+
+            @staticmethod
+            async def _recall_extra_messages(*_args):
+                return None
+
+            @staticmethod
+            def _log_moderation(*_args):
+                return None
+
+            @staticmethod
+            def _cfg_int(name, default=0, group_id=""):
+                return 1800 if name == "moderation_ban_duration" else default
+
+            @staticmethod
+            def _cfg(name, default=True, group_id=""):
+                if name in {"llm_moderation_ban", "auto_moderate_notice"}:
+                    return False
+                return default
+
+            def _mark_moderation_penalty(self, group_id, user_id, cooldown_seconds):
+                self.cooldowns.append((group_id, user_id, cooldown_seconds))
+
+        harness = RecallOnlyHarness()
+        event = _Event([], message_id="llm-recall-only")
+
+        async def consume():
+            return [item async for item in harness._execute_llm_penalty(
+                event, "1", "2", "tester", "fixture", "violation", "ad", [], []
+            )]
+
+        self.assertEqual([], asyncio.run(consume()))
+        self.assertEqual([], harness.cooldowns)
+
+    def test_anti_flood_entry_counts_message_without_an_id(self):
+        class EntryHarness(anti_flood.AntiFloodMixin):
+            def __init__(self):
+                self.values = {
+                    "anti_flood_enabled": True,
+                    "anti_flood_rate_per_second": 2,
+                    "anti_flood_rate_per_minute": 0,
+                    "anti_flood_rate_per_hour": 0,
+                    "repeat_detect_enabled": False,
+                    "long_text_detect_enabled": False,
+                    "anti_flood_mute_duration": 0,
+                    "anti_flood_recall_enabled": False,
+                    "appeal_enabled": False,
+                }
+                self._init_anti_flood()
+                self.recorded = []
+
+            @staticmethod
+            def _try_get_sender_id(_event):
+                return "2"
+
+            @staticmethod
+            async def _is_admin(_event):
+                return False
+
+            @staticmethod
+            def _moderation_in_penalty_cooldown(_group_id, _user_id):
+                return False
+
+            @staticmethod
+            def _format_message_content(_raw_message, include_forward_content=True):
+                return "message without id"
+
+            def _record_message(self, group_id, user_id, msg_id, text=""):
+                self.recorded.append((group_id, user_id, msg_id, text))
+                return super()._record_message(group_id, user_id, msg_id, text)
+
+            def _cfg(self, name, default=True, group_id=""):
+                return self.values.get(name, default)
+
+            def _cfg_int(self, name, default=0, group_id=""):
+                return int(self.values.get(name, default))
+
+            @staticmethod
+            def _log_moderation(*args):
+                return None
+
+        harness = EntryHarness()
+        events = [_Event([], message_id="", message_seq=0, timestamp=0) for _ in range(3)]
+        with patch.object(moderation.time, "time", return_value=1000.0):
+            results = [
+                asyncio.run(
+                    moderation.ModerationMixin._anti_flood_guard(harness, event, "1")
+                )
+                for event in events
+            ]
+
+        self.assertFalse(results[0][0])
+        self.assertFalse(results[1][0])
+        self.assertTrue(results[2][0])
+        self.assertEqual(3, len(harness.recorded))
+        self.assertTrue(all(not item[2] for item in harness.recorded))
+
     def test_low_confidence_swear_still_uses_local_rule_when_llm_disabled(self):
         harness = _HandleHarness()
         harness._swear_matcher = _ContainsMatcher("啥子")
@@ -1107,6 +1430,51 @@ class NestedForwardTests(unittest.TestCase):
         self.assertEqual(
             event.raw_event[moderation_context._CONTEXT_EVENT_KEY_ATTR], key
         )
+
+    def test_nested_onebot_message_ids_share_a_canonical_context_key(self):
+        harness = _CombinedHarness()
+
+        def event_with(raw_event):
+            event = _RawCacheContextEvent()
+            event.raw_event = raw_event
+            return event
+
+        events = [
+            event_with({"message_id": "adapter-42"}),
+            event_with({"msg_id": "adapter-42"}),
+            event_with({
+                "data": {"event": {"raw_message": {"msg_id": "adapter-42"}}},
+            }),
+        ]
+
+        self.assertEqual(
+            {harness._context_message_key(event) for event in events},
+            {"message:adapter-42"},
+        )
+
+    def test_nested_message_sequence_is_used_only_when_message_id_is_empty(self):
+        harness = _CombinedHarness()
+
+        def event_with(raw_event):
+            event = _RawCacheContextEvent()
+            event.raw_event = raw_event
+            return event
+
+        first = event_with({
+            "data": {"event": {"raw_message": {
+                "message_seq": 314, "time": 1234,
+            }}},
+        })
+        second = event_with({"seq": "314", "timestamp": "1234"})
+        empty = event_with({"message_id": 0, "msg_id": None, "message_seq": 0})
+
+        self.assertEqual("sequence:314", harness._context_message_key(first))
+        self.assertEqual(
+            harness._context_message_key(first),
+            harness._context_message_key(second),
+        )
+        self.assertEqual((314, 1234), harness._event_message_order(first))
+        self.assertTrue(harness._context_message_key(empty).startswith("event:"))
 
     def test_combined_deduplication_is_per_candidate_signature(self):
         harness = _ContextHandleHarness(llm_enabled=False)

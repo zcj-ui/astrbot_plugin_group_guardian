@@ -4,6 +4,7 @@ import importlib.util
 import sqlite3
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import types
 import unittest
 from pathlib import Path
@@ -43,6 +44,58 @@ storage_module = _load_storage()
 
 
 class StorageMigrationTests(unittest.TestCase):
+    @staticmethod
+    def _new_store(temp_dir):
+        store = storage_module.SQLiteStorage(Path(temp_dir), str(ROOT))
+        with store._connect() as conn:
+            storage_module.SQLiteStorage._create_tables(conn)
+        return store
+
+    def test_appeal_creation_is_atomic_and_deduplicates_active_rows(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = self._new_store(temp_dir)
+
+            def create(index):
+                return store.open_appeal(
+                    "123", "456", f"reason-{index}", "mute", 60,
+                    100, 1000,
+                )
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                ids = list(executor.map(create, (1, 2)))
+
+            self.assertEqual(1, sum(bool(item) for item in ids))
+            self.assertEqual(1, len(store.list_appeals("waiting")))
+            self.assertEqual(
+                0,
+                store.open_appeal("123", "456", "again", "mute", 60, 101, 1001),
+            )
+            self.assertEqual(
+                0,
+                store.open_appeal("789", "456", "other group", "mute", 60, 101, 1001),
+            )
+
+            # A stale row is closed inside the same transaction and does not
+            # block a new punishment from opening its own appeal window, even
+            # when the later punishment came from another group.
+            new_id = store.open_appeal(
+                "789", "456", "after expiry", "mute", 60, 1001, 2000
+            )
+            self.assertGreater(new_id, 0)
+            rows = store.list_appeals()
+            self.assertEqual("waiting", rows[0]["status"])
+            self.assertEqual("789", rows[0]["group_id"])
+            self.assertEqual("expired", rows[1]["status"])
+
+    def test_appeal_attempt_claim_rejects_deadline_boundary(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = self._new_store(temp_dir)
+            appeal_id = store.open_appeal(
+                "123", "456", "reason", "mute", 60, 100, 200
+            )
+            self.assertEqual(0, store.claim_appeal_attempt(appeal_id, 2, 200))
+            self.assertEqual(1, store.claim_appeal_attempt(appeal_id, 2, 199))
+
     def test_old_scheduled_unbans_table_is_migrated_and_retried(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             store = storage_module.SQLiteStorage(Path(temp_dir), str(ROOT))
