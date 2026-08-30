@@ -296,6 +296,8 @@ LLM 找出反复出现、又不在现有词库里的引流词（带置信度/理
 | `anti_flood_night_rate_*`    | 夜间每秒/每分钟/每小时消息上限      | `3/10/30`  |
 | `join_audit_enabled`         | 入群自动审核开关              | `false`    |
 | `join_llm_moderation_enabled` | 入群 LLM 语义审核（可按群覆盖） | `false` |
+| `join_llm_web_search_enabled` | 入群 LLM 不确定时调用 AstrBot Tavily 搜索（可按群覆盖） | `false` |
+| `join_llm_web_search_max_queries` | 单次入群审核最大搜索次数（1-3） | `2` |
 | `join_llm_custom_prompt`     | 入群 LLM 自定义审核标准        | 空 |
 | `join_accept_overrides_lexicon` | 通过词优先于通用词库（拒绝词仍最优先） | `true` |
 | `appeal_enabled`             | 刷屏申诉模式开关              | `false`    |

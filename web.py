@@ -132,6 +132,7 @@ class WebMixin:
             "combine_detect_count": (2, 20),
             "combine_detect_window_seconds": (5, 600),
             "llm_max_concurrency": (1, 32),
+            "join_llm_web_search_max_queries": (1, 3),
             "kick_recall_count": (1, 50),
             "card_sync_interval": (30, 3600),
             "lexicon_learn_interval": (30, 3600),
@@ -2360,6 +2361,8 @@ class WebMixin:
         "auto_unban_enabled": "定时解禁", "auto_unban_permanent_hours": "定时解禁",
         "join_audit_enabled": "入群审核", "join_reject_use_lexicon": "入群审核",
         "join_llm_moderation_enabled": "入群审核", "join_llm_custom_prompt": "入群审核",
+        "join_llm_web_search_enabled": "入群审核",
+        "join_llm_web_search_max_queries": "入群审核",
         "join_accept_overrides_lexicon": "入群审核",
         "join_default_action": "入群审核", "join_reject_reason": "入群审核",
     }
