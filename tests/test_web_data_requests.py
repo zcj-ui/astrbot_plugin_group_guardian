@@ -805,6 +805,48 @@ class WebDataRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["data"]["offset"], 20)
         self.assertEqual(result["data"]["page_size"], 10)
 
+    async def test_moderation_users_excludes_llm_passed_logs(self):
+        # issue #86：被 LLM 放行（事实上未被撤回）的消息不应进入“被撤回用户”聚合。
+        harness = _Harness()
+        harness._storage.list_logs = lambda limit=5000, **_kwargs: [
+            {"id": 1, "group_id": "g1", "user_id": "u1", "user_name": "A",
+             "time": "", "ts": 1, "msg_preview": "正常聊天", "action": "LLM放行", "reason": ""},
+            {"id": 2, "group_id": "g1", "user_id": "u2", "user_name": "B",
+             "time": "", "ts": 2, "msg_preview": "广告", "action": "撤回+禁言", "reason": "疑似广告"},
+            {"id": 3, "group_id": "g1", "user_id": "u2", "user_name": "B",
+             "time": "", "ts": 3, "msg_preview": "降级消息", "action": "LLM降级放行", "reason": ""},
+            {"id": 4, "group_id": "g1", "user_id": "u3", "user_name": "C",
+             "time": "", "ts": 4, "msg_preview": "[加群申请]", "action": "入群通过", "reason": ""},
+            {"id": 5, "group_id": "g1", "user_id": "u4", "user_name": "D",
+             "time": "", "ts": 5, "msg_preview": "[申诉]", "action": "申诉通过", "reason": ""},
+        ]
+        web.quart_request = _Request()
+
+        result = await harness._web_get_moderation_users()
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["data"][0]["user_id"], "u2")
+        self.assertEqual(result["data"][0]["count"], 1)
+        self.assertEqual(result["data"][0]["records"][0]["action"], "撤回+禁言")
+
+    async def test_moderation_users_explicit_action_filter_still_matches_passed(self):
+        # 显式指定 action 筛选时仍按筛选条件返回，不受默认排除放行逻辑影响。
+        harness = _Harness()
+        harness._storage.list_logs = lambda limit=5000, **_kwargs: [
+            {"id": 1, "group_id": "g1", "user_id": "u1", "user_name": "A",
+             "time": "", "ts": 1, "msg_preview": "正常聊天", "action": "LLM放行", "reason": ""},
+            {"id": 2, "group_id": "g1", "user_id": "u2", "user_name": "B",
+             "time": "", "ts": 2, "msg_preview": "广告", "action": "撤回+禁言", "reason": "疑似广告"},
+        ]
+        web.quart_request = _Request({"action": "放行"})
+
+        result = await harness._web_get_moderation_users()
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["data"][0]["user_id"], "u1")
+
     async def test_one_bad_route_does_not_stop_remaining_registration(self):
         context = _Context("/providers")
         harness = _Harness(context=context)

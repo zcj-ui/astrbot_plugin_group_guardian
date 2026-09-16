@@ -1549,7 +1549,12 @@ class WebMixin:
         group_filter = quart_request.args.get("group_id", "").strip()
         user_map = {}
         for log in logs:
-            if action_filter and action_filter not in log.get("action", ""):
+            action = log.get("action", "")
+            if action_filter:
+                if action_filter not in action:
+                    continue
+            elif "放行" in action or "通过" in action:
+                # 被 LLM/人工放行的消息（事实上未被撤回）不计入“被撤回用户”聚合（issue #86）
                 continue
             if group_filter and log.get("group_id", "") != group_filter:
                 continue
@@ -1580,7 +1585,7 @@ class WebMixin:
                     "ts": log.get("ts", 0),
                     "group_id": gid,
                     "msg_preview": log.get("msg_preview", ""),
-                    "action": log.get("action", ""),
+                    "action": action,
                     "reason": log.get("reason", ""),
                 })
         for u in user_map.values():
