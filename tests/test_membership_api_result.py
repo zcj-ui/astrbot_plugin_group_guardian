@@ -422,7 +422,10 @@ class MembershipApiResultTests(unittest.IsolatedAsyncioTestCase):
                 return '{"results":[]}'
 
         class _BudgetHarness(_Harness):
-            JOIN_WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 0.01
+            # 0.05s（50ms）：留足高于 Windows 默认系统计时器粒度（约15.6ms）的余量，
+            # 避免该边界测试在 Windows 上因计时粒度偶发翻车，同时仍远小于
+            # PER_QUERY_TIMEOUT(1.0s)/慢查询耗时，测试意图不变。
+            JOIN_WEB_SEARCH_TOTAL_TIMEOUT_SECONDS = 0.05
             JOIN_WEB_SEARCH_PER_QUERY_TIMEOUT_SECONDS = 1.0
 
         tool = _SlowTool()

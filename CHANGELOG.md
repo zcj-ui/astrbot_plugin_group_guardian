@@ -1,5 +1,38 @@
 # Changelog
 
+## v2.8.5 - 2026-09-17
+
+### 修复：被 LLM 放行的消息不再计入被撤回用户聚合（Issue #86，PR #87 by @BB0813）
+
+- `/moderation_users`（违规记录-被撤回用户）聚合默认排除 action 含"放行"/"通过"的日志
+  （LLM放行、LLM降级放行、入群通过、申诉通过等），只有实际被处罚的记录才计入统计；
+  显式传 `action` 筛选时行为不变，仍可查到放行记录。
+- 审核日志页（`/logs`）与 CSV 导出不受影响，仍展示全量消息。
+
+### 新功能：入群 LLM 审核按需联网搜索兜底（PR #80 by @DBeidachazi）
+
+- 新增 `join_llm_web_search_enabled`（默认关闭，可按群覆盖）：仅当第一轮入群 LLM 审核对
+  冷门作品名、简称、别名或圈内术语明确返回 `search` 决策时，调用 AstrBot 已注册的
+  `web_search_tavily` 内置工具补充证据，再由第二轮 LLM 结合搜索证据复审；明显正确或
+  错误的答案不触发搜索。
+- 搜索证据经 `<`/`>` 转义后才拼入提示词，证据中的指令/角色要求一律忽略，防止外部搜索结果
+  注入指令；单次查询超时 15 秒，总预算 30 秒，单查询失败不影响其余查询；证据不足或复审
+  失败一律转人工，不臆测判定。
+- 新增 `join_llm_web_search_max_queries`（默认 2，范围 1-3）控制单次审核最大搜索次数。
+- `_call_llm_safe` 第三级 Provider 回退改用 AstrBot `Context` 公共 API
+  （`get_using_provider_async`/`get_using_provider`），不再依赖内部 `provider_manager`。
+
+### 测试稳定性
+
+- 修复 `test_web_search_uses_one_total_time_budget` 在 Windows 上的计时偶发失败：该测试
+  原用 10ms 总预算，低于 Windows 默认系统计时器粒度（约 15.6ms），与功能代码本身无关，
+  已放宽至 50ms（仍远小于 1 秒的模拟慢查询超时，测试意图不变）。
+
+### 已确认修复但仍待关闭的历史 Issue
+
+- Issue #82（获取群列表失败）与 Issue #71（审核日志不能翻页）均已在 v2.8.4 修复
+  （commit 已按 issue 号标注），本次一并在 GitHub 上关闭引用。
+
 ## v2.8.4 - 2026-08-27
 
 ### 修复：WebUI 群列表/成员列表解包失败（Issue #82）
