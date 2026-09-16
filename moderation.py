@@ -618,7 +618,7 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         # 多级 Provider 调用的安全封装，按以下优先级逐级尝试：
         # 1) configured_id —— 用户在配置中手动指定的 LLM Provider ID
         # 2) get_all_providers() —— 遍历所有已注册的 Provider，逐一尝试
-        # 3) provider_manager.get_using_provider() —— 获取当前正在使用的 Provider
+        # 3) Context 公共 API —— 获取当前正在使用的 Provider
         # 若所有级别均失败，则抛出 RuntimeError 并汇总前 5 条错误信息。
         errors = _LLMErrorBag()
 
@@ -648,19 +648,28 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 errors.add(str(e)[:80])
                 continue
 
-        # ---------- 第三级：provider_manager 的当前 Provider ----------
+        # ---------- 第三级：Context 公共 API 的当前 Provider ----------
         try:
-            pm = getattr(self.context, "provider_manager", None)
-            if pm and hasattr(pm, "get_using_provider"):
-                up = pm.get_using_provider()
-                if up:
-                    result = await self._invoke_provider_methods(
-                        up, str(getattr(up, "provider_name", up)), system_prompt, prompt, errors)
-                    if result:
-                        logger.info("[GroupMgr] LLM审核使用provider_manager")
-                        return result
+            up = None
+            get_using_async = getattr(
+                self.context, "get_using_provider_async", None
+            )
+            if callable(get_using_async):
+                up = await get_using_async()
+            else:
+                get_using = getattr(self.context, "get_using_provider", None)
+                if callable(get_using):
+                    up = get_using()
+            if up:
+                result = await self._invoke_provider_methods(
+                    up, str(getattr(up, "provider_name", up)),
+                    system_prompt, prompt, errors,
+                )
+                if result:
+                    logger.info("[GroupMgr] LLM审核使用当前provider")
+                    return result
         except Exception as e:
-            errors.add(f"provider_manager: {str(e)[:120]}")
+            errors.add(f"get_using_provider: {str(e)[:120]}")
 
         # ---------- 所有级别均失败 ----------
         raise RuntimeError(f"LLM调用失败({errors.summary()})。请检查AstrBot是否已配置LLM Provider")

@@ -623,6 +623,18 @@
         "default": false,
         "hint": "开启后将入群申请验证信息交由审核 LLM 判断，用于减少广告/词库误报；显式拒绝词、通过词和用户黑名单仍优先。LLM 失败时有本地候选沿用拒绝，无候选回退到默认动作（manual 为人工）。默认关闭，可按群覆盖"
     },
+    "join_llm_web_search_enabled": {
+        "description": "入群-LLM Web Search 增强",
+        "type": "bool",
+        "default": false,
+        "hint": "仅当第一轮入群 LLM 对冷门作品名、简称、别名或圈内术语明确返回 search 时，调用 AstrBot 已注册的 web_search_tavily，并由 LLM 根据搜索证据复审；明显正确或错误的答案不会搜索。需先在 AstrBot 中启用 Tavily Web Search 并配置 Key，可按群覆盖"
+    },
+    "join_llm_web_search_max_queries": {
+        "description": "入群-LLM 最大搜索次数",
+        "type": "int",
+        "default": 2,
+        "hint": "单次入群审核最多执行的搜索查询数，范围 1-3；用于控制 Tavily credits 消耗，可按群覆盖"
+    },
     "join_llm_custom_prompt": {
         "description": "入群-LLM 自定义审核标准",
         "type": "text",

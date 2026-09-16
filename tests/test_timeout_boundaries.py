@@ -183,6 +183,37 @@ class _ModerationHarness(moderation.ModerationMixin, utilities.UtilitiesMixin):
         return '{"violation": false, "reason": "ok"}'
 
 
+class _CurrentProvider:
+    provider_name = "current-test-provider"
+
+    async def text_chat(self, *args, **kwargs):
+        return "current provider response"
+
+
+class _CurrentProviderContext:
+    def __init__(self):
+        self.async_getter_calls = 0
+
+    @staticmethod
+    def get_all_providers():
+        return []
+
+    async def get_using_provider_async(self):
+        self.async_getter_calls += 1
+        return _CurrentProvider()
+
+    @property
+    def provider_manager(self):
+        raise AssertionError("must use Context public provider API")
+
+
+class _ProviderFallbackHarness(moderation.ModerationMixin):
+    config = {}
+
+    def __init__(self):
+        self.context = _CurrentProviderContext()
+
+
 class _HangingOcrHarness(_ModerationHarness):
     def __init__(self):
         super().__init__(semaphore=asyncio.Semaphore(1))
@@ -435,6 +466,14 @@ class _AppealPromptHarness(appeal.AppealMixin):
 
 
 class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_llm_fallback_uses_context_public_provider_api(self):
+        harness = _ProviderFallbackHarness()
+
+        result = await harness._call_llm_safe("system", "prompt")
+
+        self.assertEqual(result, "current provider response")
+        self.assertEqual(harness.context.async_getter_calls, 1)
+
     async def test_moderation_llm_queue_waits_instead_of_auto_passing(self):
         semaphore = asyncio.Semaphore(0)
         harness = _ModerationHarness(semaphore=semaphore)

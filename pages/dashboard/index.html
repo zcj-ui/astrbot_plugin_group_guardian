@@ -2474,6 +2474,7 @@ var FEATURE_TOGGLES = [
   { key: 'join_audit_enabled', label: '入群自动审核' },
   { key: 'join_reject_use_lexicon', label: '入群词库过滤' },
   { key: 'join_llm_moderation_enabled', label: '入群 AI 审核', desc: '将验证信息交由 LLM 判断，默认关闭' },
+  { key: 'join_llm_web_search_enabled', label: '入群 AI 搜索增强', desc: '仅在 LLM 对冷门词不确定时调用 AstrBot Tavily 搜索' },
   { key: 'join_accept_overrides_lexicon', label: '入群通过词优先', desc: '显式通过词可覆盖通用词库候选' },
   { key: 'appeal_enabled', label: '刷屏申诉模式' },
   { key: 'auto_unban_enabled', label: '定时自动解禁' },
@@ -2582,6 +2583,7 @@ var MANUAL_SETTING_KEYS = {
   join_audit_enabled: true,
   join_reject_use_lexicon: true,
   join_llm_moderation_enabled: true,
+  join_llm_web_search_enabled: true,
   join_accept_overrides_lexicon: true,
   appeal_enabled: true,
   auto_unban_enabled: true,
@@ -2605,6 +2607,7 @@ var MANUAL_SETTING_KEYS = {
   long_text_threshold: true,
   join_default_action: true,
   join_reject_reason: true,
+  join_llm_web_search_max_queries: true,
   join_llm_custom_prompt: true,
   appeal_window_minutes: true,
   appeal_context_count: true,
@@ -3354,6 +3357,7 @@ function renderExtraSettings() {
   var banNotice = CONFIG.ban_notice || '[群管] {name}({uid}) 的消息已被撤回（违规内容）';
   var joinAction = CONFIG.join_default_action || 'manual';
   var joinRejectReason = CONFIG.join_reject_reason || '';
+  var joinSearchMaxQueries = CONFIG.join_llm_web_search_max_queries != null ? CONFIG.join_llm_web_search_max_queries : 2;
   var joinLlmPrompt = CONFIG.join_llm_custom_prompt || '';
   var appealWindow = CONFIG.appeal_window_minutes != null ? CONFIG.appeal_window_minutes : 10;
   var appealContext = CONFIG.appeal_context_count != null ? CONFIG.appeal_context_count : 30;
@@ -3371,6 +3375,7 @@ function renderExtraSettings() {
     '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">入群审核设置</h3>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">入群默认动作</div><div class="setting-desc">未命中通过/拒绝关键词时的兜底动作</div></div><select class="input-sm" id="inputJoinAction" style="width:160px"><option value="manual"' + (joinAction === 'manual' ? ' selected' : '') + '>转人工</option><option value="accept"' + (joinAction === 'accept' ? ' selected' : '') + '>自动通过</option><option value="reject"' + (joinAction === 'reject' ? ' selected' : '') + '>自动拒绝</option></select></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">入群拒绝理由</div><div class="setting-desc">自动拒绝加群申请时回传给申请人的理由</div></div><input type="text" class="input-sm" id="inputJoinRejectReason" value="' + escAttr(joinRejectReason) + '" style="width:260px" /></div>' +
+    '<div class="setting-item"><div class="setting-info"><div class="setting-label">入群最大搜索次数</div><div class="setting-desc">仅在「入群 AI 搜索增强」开启且第一轮 LLM 返回 search 时使用，范围 1-3</div></div><input type="number" class="input-sm" id="inputJoinSearchMaxQueries" value="' + joinSearchMaxQueries + '" min="1" max="3" style="width:80px" /></div>' +
     '<div class="setting-item"><div class="setting-info"><div class="setting-label">入群 LLM 自定义审核标准</div><div class="setting-desc">仅在「入群 AI 审核」开启时生效；留空使用内置标准，可按群覆盖</div></div><textarea class="input-md" id="inputJoinLlmPrompt" rows="3" style="width:100%;max-width:520px" placeholder="例如：只拒绝明确广告引流，正常交流均通过">' + esc(joinLlmPrompt) + '</textarea></div>' +
     '<hr style="margin:16px 0;border:none;border-top:1px solid var(--border)">' +
     '<h3 style="font-size:13px;font-weight:600;margin-bottom:12px">申诉 / 解禁设置</h3>' +
@@ -3487,6 +3492,8 @@ async function saveSettings() {
   if (joinAction) payload.join_default_action = joinAction.value;
   var joinRejectReason = $('#inputJoinRejectReason');
   if (joinRejectReason) payload.join_reject_reason = joinRejectReason.value.trim();
+  var joinSearchMaxQueries = $('#inputJoinSearchMaxQueries');
+  if (joinSearchMaxQueries) payload.join_llm_web_search_max_queries = Math.min(3, Math.max(1, parseIntOrDefault(joinSearchMaxQueries.value, 2)));
   var joinLlmPrompt = $('#inputJoinLlmPrompt');
   if (joinLlmPrompt) payload.join_llm_custom_prompt = joinLlmPrompt.value.trim();
   var appealWindow = $('#inputAppealWindow');
