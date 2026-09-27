@@ -21,6 +21,7 @@ try:
     from .lexicon_migration import LOW_CONFIDENCE_LITERALS as LOW_CONFIDENCE_SWEAR_LITERALS
     from .image_audit import ImageAuditMixin
     from .text_obfuscation import extract_obfuscated_url_evidence
+    from .link_whitelist import normalize_whitelist, strip_whitelisted_links
     from .moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -32,6 +33,7 @@ except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
     from lexicon_migration import LOW_CONFIDENCE_LITERALS as LOW_CONFIDENCE_SWEAR_LITERALS
     from image_audit import ImageAuditMixin
     from text_obfuscation import extract_obfuscated_url_evidence
+    from link_whitelist import normalize_whitelist, strip_whitelisted_links
     from moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -944,6 +946,22 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 review_block + "请严格按照以下JSON格式返回，不要返回其他内容：\n",
                 1,
             )
+        # Issue #89：本地规则已跳过白名单链接，但若消息因其它内容进入 LLM 复核，
+        # 也要告知模型这些域名本身是允许的，避免仅因链接存在而判违规。
+        whitelist = self._link_whitelist()
+        if whitelist:
+            shown = "、".join(whitelist[:30])
+            more = f" 等 {len(whitelist)} 个" if len(whitelist) > 30 else ""
+            whitelist_block = (
+                "【本群允许的链接域名（管理员配置）】\n"
+                f"{shown}{more}（含其子域名）。指向这些域名的普通链接本身不构成违规；"
+                "但消息其余内容仍需照常判断，用字符伪装的链接不在此列。\n\n"
+            )
+            prompt = prompt.replace(
+                "请严格按照以下JSON格式返回，不要返回其他内容：\n",
+                whitelist_block + "请严格按照以下JSON格式返回，不要返回其他内容：\n",
+                1,
+            )
         # system_prompt 较短，核心约束是"严格返回 JSON 格式"。
         system_prompt = (
             "你是一名群聊内容审核员。你的任务是判断被标记消息是否需要撤回。"
@@ -1025,6 +1043,8 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
 
         total_chunks = len(text_chunks)
         results = []
+        first_fallback = None
+        consecutive_fallbacks = 0
         for index, chunk in enumerate(text_chunks, start=1):
             result = await review_chunk(chunk, index, total_chunks)
             results.append(result)
@@ -1037,13 +1057,23 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                     ).strip()
                 return result
             if result.get("fallback", False):
-                if total_chunks > 1:
-                    result = dict(result)
-                    result["reason"] = (
-                        f"分片{index}/{total_chunks}审核不完整: "
-                        f"{result.get('reason', '')}"
-                    ).strip()
-                return result
+                # 单片失败不能提前返回：此前第 1 片超时就会整条放行，
+                # 后续分片（可能正是违规内容所在）根本没送审。继续审核剩余分片，
+                # 任一分片判违规即拦截；连续 2 片失败视为 LLM 不可用，停止白耗等待。
+                if first_fallback is None:
+                    first_fallback = dict(result)
+                    if total_chunks > 1:
+                        first_fallback["reason"] = (
+                            f"分片{index}/{total_chunks}审核不完整: "
+                            f"{result.get('reason', '')}"
+                        ).strip()
+                consecutive_fallbacks += 1
+                if consecutive_fallbacks >= 2:
+                    break
+                continue
+            consecutive_fallbacks = 0
+        if first_fallback is not None:
+            return first_fallback
         return results[0] if results else {
             "violation": False,
             "reason": "无可审核内容",
@@ -1915,6 +1945,12 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         if self._pre_check_message(event, group_id, user_id):
             return
 
+        # Issue #89：机器人在该群只是普通成员时无法撤回/禁言，继续审核只会白耗 LLM
+        # 调用并在群里虚报「已撤回」。确认是普通成员就整条跳过（防刷屏同样依赖禁言/撤回）。
+        can_moderate = getattr(self, "_bot_can_moderate", None)
+        if callable(can_moderate) and not await can_moderate(event, group_id):
+            return
+
         blocked, flood_notice = await self._anti_flood_guard(event, group_id)
         if blocked:
             if flood_notice:
@@ -2262,12 +2298,18 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
             return False, None
         try:
             msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-            if msg_id:
-                await self._recall_msg(event, msg_id)
-                self._log_moderation(group_id, user_id, user_name, "[QQ收藏消息]", "撤回", "QQ收藏内容自动撤回", image_urls)
-                event.stop_event()
-            # 同样受"撤回提示"开关管控：关闭后静默撤回，不发提示
-            if not self._cfg("auto_moderate_notice", True, group_id=group_id):
+            if not msg_id:
+                # 没有消息 ID 就无法撤回，不能宣布「已自动撤回」
+                return True, None
+            recall_failed = (await self._recall_msg(event, msg_id)) is False
+            self._log_moderation(
+                group_id, user_id, user_name, "[QQ收藏消息]",
+                "QQ收藏（未能删除消息）" if recall_failed else "撤回",
+                "QQ收藏内容自动撤回", image_urls,
+            )
+            event.stop_event()
+            # Issue #89：撤回被拒时不宣布「已自动撤回」；同样受「撤回提示」开关管控
+            if recall_failed or not self._cfg("auto_moderate_notice", True, group_id=group_id):
                 return True, None
             return True, "[群管] 检测到QQ收藏内容，已自动撤回"
         except Exception as e:
@@ -2296,10 +2338,31 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
             return result + (scan or self._new_stream_rule_scan(),)
         return result
 
+    def _link_whitelist(self) -> tuple:
+        """读取并缓存规整后的链接白名单（Issue #89）。配置变化时自动重算。"""
+        config = getattr(self, "config", None) or {}
+        raw = config.get("link_whitelist", []) if hasattr(config, "get") else []
+        if isinstance(raw, str):
+            raw = [x for x in re.split(r"[\s,，;；]+", raw) if x]
+        if not isinstance(raw, (list, tuple)):
+            raw = []
+        key = tuple(str(x) for x in raw)
+        cached = getattr(self, "_link_whitelist_cache", None)
+        if cached and cached[0] == key:
+            return cached[1]
+        hosts = normalize_whitelist(key)
+        self._link_whitelist_cache = (key, hosts)
+        return hosts
+
     def _initial_screening(self, text: str, group_id: str) -> dict:
         hit_types = {k: False for k in ("swear", "ad", "political", "porn", "violent_terror",
                      "reactionary", "weapons", "corruption", "illegal_url", "other",
                      "supplement", "livelihood", "tencent_ban")}
+        # Issue #89：白名单域名的普通链接不参与本地规则初筛，其余正文照常检查。
+        # 主管线与递归流式扫描都经由这里，因此一处生效即全覆盖。
+        whitelist = self._link_whitelist()
+        if whitelist:
+            text = strip_whitelisted_links(text, whitelist)
         if self._cfg("scan_swear", True, group_id=group_id) and hasattr(self, '_swear_matcher'):
             hit_types["swear"] = self._swear_matcher.is_match(text)
         if self._cfg("scan_ad", True, group_id=group_id):
@@ -2341,12 +2404,15 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         reason = "触发规则: " + ", ".join(k for k, v in hit_types.items() if v)
         try:
             msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
-            await self._recall_msg(event, msg_id)
+            # Issue #89：_recall_msg 返回 False 表示协议端明确拒绝（多为机器人无权限）。
+            # 此时日志不能写「撤回」——统计把含「撤回」的记录计为已拦截，会虚增拦截数。
+            recall_failed = (await self._recall_msg(event, msg_id)) is False
             await self._recall_extra_messages(event, extra_recall_ids)
             # 审核处罚与防刷屏处罚互相感知：任一冷却期内只撤回不重复禁言，
             # 防止后到的短时禁言覆盖先到的长时禁言、或解禁计划被 REPLACE 缩短
             if self._moderation_in_penalty_cooldown(group_id, user_id) or self._anti_flood_in_cooldown(group_id, user_id):
-                self._log_moderation(group_id, user_id, user_name, text, "撤回", reason, image_urls)
+                action = "规则命中（未能删除消息）" if recall_failed else "撤回"
+                self._log_moderation(group_id, user_id, user_name, text, action, reason, image_urls)
                 event.stop_event()
                 return
             ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
@@ -2363,7 +2429,10 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                     and self._cfg("auto_moderate_notice", True, group_id=group_id)):
                 notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 已被禁言（触发规则）", group_id=group_id)
                 yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
-            action = "撤回+禁言" if mute_succeeded else "撤回（禁言失败）"
+            if recall_failed:
+                action = "规则命中（未能删除消息）+禁言" if mute_succeeded else "规则命中（未能删除消息）"
+            else:
+                action = "撤回+禁言" if mute_succeeded else "撤回（禁言失败）"
             self._log_moderation(
                 group_id, user_id, user_name, text, action, reason, image_urls
             )
@@ -2378,15 +2447,20 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         logger.info(f"[GroupMgr] LLM审核拦截: {user_name}({user_id}) in {group_id} | {hit_summary} | {reason}")
         try:
             msg_id = str(getattr(getattr(event, 'message_obj', None), 'message_id', ''))
+            recall_failed = False
             if msg_id:
                 try:
-                    await self._recall_msg(event, msg_id)
+                    recall_failed = (await self._recall_msg(event, msg_id)) is False
                 except Exception as recall_err:
+                    recall_failed = True
                     logger.warning(f"[GroupMgr] 撤回消息失败: {recall_err}")
             await self._recall_extra_messages(event, extra_recall_ids)
+            # Issue #89：撤回被协议端拒绝时，日志不写「撤回」（避免虚增拦截统计），
+            # 群内也不再宣布「消息已被撤回」——此前机器人非管理员时会持续虚报。
+            recall_action = "LLM判违规（未能删除消息）" if recall_failed else "LLM撤回"
             # 与防刷屏处罚互相感知，避免重复/覆盖禁言（详见 _execute_rule_penalty 注释）
             if self._moderation_in_penalty_cooldown(group_id, user_id) or self._anti_flood_in_cooldown(group_id, user_id):
-                self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
+                self._log_moderation(group_id, user_id, user_name, text, recall_action, reason, image_urls)
                 event.stop_event()
                 return
             ban_duration = self._cfg_int("moderation_ban_duration", 1800, group_id=group_id)
@@ -2403,13 +2477,15 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                     self._schedule_unban(group_id, user_id, ban_duration)
                 else:
                     self._clear_moderation_penalty(group_id, user_id)
-            if self._cfg("auto_moderate_notice", True, group_id=group_id):
+            if not recall_failed and self._cfg("auto_moderate_notice", True, group_id=group_id):
                 try:
                     notice = self._cfg_str("ban_notice", "[群管] {name}({uid}) 的消息已被撤回（违规内容）", group_id=group_id)
                     yield event.plain_result(notice.replace("{name}", user_name).replace("{uid}", user_id).replace("{group}", group_id).replace("{reason}", reason))
                 except Exception as notice_err:
                     logger.warning(f"[GroupMgr] 发送通知失败: {notice_err}")
-            self._log_moderation(group_id, user_id, user_name, text, "LLM撤回", reason, image_urls)
+            if recall_failed and mute_succeeded:
+                recall_action += "+禁言"
+            self._log_moderation(group_id, user_id, user_name, text, recall_action, reason, image_urls)
             event.stop_event()
         except Exception as e:
             logger.warning(f"[GroupMgr] 自动审核出错: {e}")

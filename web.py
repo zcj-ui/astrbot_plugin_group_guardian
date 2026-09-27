@@ -108,6 +108,69 @@ class WebMixin:
     def _is_redos_prone(cls, pattern: str) -> bool:
         return bool(cls._REDOS_PATTERN.search(pattern or ""))
 
+    # 结构黑名单只能识别嵌套量词，识别不了 (a|aa)+b、(x|xy)*z 这类「分支重叠」回溯，
+    # 又不能简单拒绝所有带量词的分支（(微信|vx)+ 是正常规则）。因此保存时再做一次
+    # 行为探测：用由正则自身字符构造的对抗串实际跑一遍，超时即拒绝。
+    # 必须放在子进程里跑——Python 的 re 在线程中无法被中断，子进程超时可以直接杀掉。
+    REDOS_PROBE_TIMEOUT = 2.0
+    REDOS_PROBE_REPEAT = 40
+    _REDOS_PROBE_SCRIPT = (
+        "import json, re, sys\n"
+        "data = json.loads(sys.stdin.read())\n"
+        "p = re.compile(data['pattern'], re.IGNORECASE)\n"
+        "for s in data['probes']:\n"
+        "    p.search(s)\n"
+    )
+
+    @classmethod
+    def _redos_probe_strings(cls, pattern: str) -> list:
+        """由正则中出现的字符构造对抗串：同一字符重复 N 次后接一个不可能匹配的结尾。"""
+        chars = []
+        for ch in re.sub(r"\\[dDwWsSbB]", "", pattern or ""):
+            if ch in "()[]{}|*+?.^$\\-,:=!<>" or ch.isspace() or ch in chars:
+                continue
+            chars.append(ch)
+            if len(chars) >= 12:
+                break
+        # 覆盖 \d \w \s 等字符类的代表字符
+        for ch in ("a", "0", " ", "_"):
+            if ch not in chars:
+                chars.append(ch)
+        n = cls.REDOS_PROBE_REPEAT
+        probes = [ch * n + "\x00" for ch in chars]
+        # 双字符重复串：覆盖 (a|ab|b)+c 这类需要「ab」交替才能触发的分支歧义
+        bigrams = []
+        stripped = re.sub(r"\\.", " ", pattern or "")
+        for run in re.findall(r"[^()\[\]{}|*+?.^$\\,:=!<>\s-]{2,}", stripped):
+            for i in range(len(run) - 1):
+                pair = run[i:i + 2]
+                if pair not in bigrams:
+                    bigrams.append(pair)
+                if len(bigrams) >= 12:
+                    break
+            if len(bigrams) >= 12:
+                break
+        probes.extend(pair * n + "\x00" for pair in bigrams)
+        return probes
+
+    @classmethod
+    def _regex_runtime_safe(cls, pattern: str) -> bool:
+        """在子进程中限时运行对抗探测。超时返回 False；无法启动子进程时返回 True（仍有结构检查兜底）。"""
+        import subprocess
+        import sys
+        payload = json.dumps({"pattern": pattern, "probes": cls._redos_probe_strings(pattern)})
+        try:
+            subprocess.run(
+                [sys.executable, "-c", cls._REDOS_PROBE_SCRIPT],
+                input=payload, capture_output=True, text=True,
+                timeout=cls.REDOS_PROBE_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            return False
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 正则回溯探测无法执行，跳过: {e}")
+        return True
+
     @staticmethod
     def _config_int_ranges():
         return {
@@ -684,6 +747,7 @@ class WebMixin:
                 ("/moderation_review/suggestions/rollback", self._web_review_rollback, ["POST"], "回滚提示词修正候选"),
                 ("/moderation_review/audit", self._web_review_audit, ["GET"], "获取误判复盘审计记录"),
                 ("/groups", self._web_get_groups, ["GET"], "获取群列表"),
+                ("/bot_roles", self._web_get_bot_roles, ["GET"], "查询机器人在各群的角色"),
                 ("/group_members", self._web_get_group_members, ["GET"], "获取群成员列表"),
                 ("/whitelist/add", self._web_whitelist_add, ["POST"], "添加群白名单"),
                 ("/whitelist/remove", self._web_whitelist_remove, ["POST"], "移除群白名单"),
@@ -1190,6 +1254,10 @@ class WebMixin:
             # 拒绝嵌套量词等易导致灾难性回溯(ReDoS)的结构，防止匹配时阻塞事件循环
             if self._is_redos_prone(pattern):
                 return jsonify({"status": "error", "message": "正则包含嵌套量词等高风险结构（可能导致卡死），已拒绝。如需纯文本匹配请直接填写字面量"})
+            # 行为探测放到线程池里，避免子进程等待阻塞事件循环
+            loop = asyncio.get_running_loop()
+            if not await loop.run_in_executor(None, self._regex_runtime_safe, pattern):
+                return jsonify({"status": "error", "message": "正则在对抗测试中出现灾难性回溯（例如 (a|aa)+b 这类分支重叠写法），可能卡死审核，已拒绝。请改写分支或直接填写字面量"})
             saved_id = self._storage.save_moderation_rule(category, pattern, description, enabled, rule_id)
             if rule_id > 0 and saved_id <= 0:
                 return jsonify({"status": "error", "message": "未找到规则"})
@@ -1657,6 +1725,55 @@ class WebMixin:
             logger.exception("[GroupMgr] 导出审核日志失败")
             return self._web_error_response(str(e), 500)
 
+    # Issue #89：WebUI 群卡片展示机器人是否为管理员。单次最多查询的群数与总耗时上限，
+    # 避免大量群或协议端卡顿时拖住请求；未及时返回的群在后台继续查询并写入缓存。
+    BOT_ROLES_MAX_GROUPS = 30
+    BOT_ROLES_DEADLINE = 8.0
+    BOT_ROLES_CONCURRENCY = 4
+
+    async def _web_get_bot_roles(self):
+        try:
+            raw = str(quart_request.args.get("group_ids", "") or "")
+            group_ids = []
+            for part in re.split(r"[\s,，]+", raw):
+                gid = part.strip()
+                if gid.isdigit() and gid not in group_ids:
+                    group_ids.append(gid)
+                if len(group_ids) >= self.BOT_ROLES_MAX_GROUPS:
+                    break
+            if not group_ids:
+                return jsonify({"status": "success", "data": {}})
+            semaphore = asyncio.Semaphore(self.BOT_ROLES_CONCURRENCY)
+
+            async def query(gid):
+                async with semaphore:
+                    return gid, await self._get_bot_group_role(None, gid)
+
+            tasks = [asyncio.ensure_future(query(gid)) for gid in group_ids]
+            done, pending = await asyncio.wait(tasks, timeout=self.BOT_ROLES_DEADLINE)
+            # 超时未完成的查询不取消：让它们在后台跑完并写入角色缓存，下次刷新即可命中。
+            # 必须持有引用，否则事件循环只保留弱引用，任务可能被提前回收。
+            if pending:
+                keep = getattr(self, "_bot_role_tasks", None)
+                if keep is None:
+                    keep = set()
+                    self._bot_role_tasks = keep
+                for task in pending:
+                    keep.add(task)
+                    task.add_done_callback(keep.discard)
+            roles = {}
+            for task in done:
+                try:
+                    gid, role = task.result()
+                except Exception:
+                    continue
+                roles[gid] = role or "unknown"
+            for gid in group_ids:
+                roles.setdefault(gid, "pending")
+            return jsonify({"status": "success", "data": roles})
+        except Exception as e:
+            return jsonify({"status": "error", "message": str(e)})
+
     async def _web_get_groups(self):
         # 获取 Bot 加入的所有群列表，附带群头像、黑白名单状态、今日拦截数。
         # 需要 QQ 客户端已连接，否则返回错误提示。
@@ -2041,7 +2158,7 @@ class WebMixin:
     async def _web_dashboard_trend(self):
         # 返回最近 N 天的每日拦截/放行/审核趋势，days 参数默认 30 天。
         try:
-            days = min(int(quart_request.args.get("days", "30")), 365)
+            days = self._clamp_int(quart_request.args.get("days", 30), 30, 1, 365)
         except (ValueError, TypeError):
             days = 30
         try:
@@ -2053,7 +2170,7 @@ class WebMixin:
     async def _web_dashboard_distribution(self):
         # 返回违规类型分布：按 reason 分组统计，days 参数默认 30 天。
         try:
-            days = min(int(quart_request.args.get("days", "30")), 365)
+            days = self._clamp_int(quart_request.args.get("days", 30), 30, 1, 365)
         except (ValueError, TypeError):
             days = 30
         try:
@@ -2065,7 +2182,7 @@ class WebMixin:
     async def _web_dashboard_hourly(self):
         # 返回时段的拦截量分布（0-23 小时），用于分析违规高发时段。
         try:
-            days = min(int(quart_request.args.get("days", "7")), 90)
+            days = self._clamp_int(quart_request.args.get("days", 7), 7, 1, 90)
         except (ValueError, TypeError):
             days = 7
         try:
@@ -2077,11 +2194,11 @@ class WebMixin:
     async def _web_dashboard_group_ranking(self):
         # 返回历史群拦截排行 Top N，支持 days 和 top 参数。
         try:
-            days = min(int(quart_request.args.get("days", "30")), 365)
+            days = self._clamp_int(quart_request.args.get("days", 30), 30, 1, 365)
         except (ValueError, TypeError):
             days = 30
         try:
-            top_n = min(int(quart_request.args.get("top", "10")), 50)
+            top_n = self._clamp_int(quart_request.args.get("top", 10), 10, 1, 50)
         except (ValueError, TypeError):
             top_n = 10
         try:
@@ -2169,7 +2286,7 @@ class WebMixin:
         # F2：返回申诉记录，可选 status 过滤。
         try:
             status = str(quart_request.args.get("status", "")).strip()
-            limit = min(self._safe_int(quart_request.args.get("limit", 200), 200), 1000)
+            limit = self._clamp_int(quart_request.args.get("limit", 200), 200, 1, 1000)
             return jsonify({"status": "success", "data": self._storage.list_appeals(status, limit)})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
@@ -2332,6 +2449,7 @@ class WebMixin:
 
     _CONFIG_CATEGORIES = {
         "enabled": "基础开关", "auto_moderate_enabled": "基础开关", "moderation_admin_exempt": "审核规则", "auto_moderate_notice": "基础开关",
+        "moderation_require_bot_admin": "基础开关", "link_whitelist": "审核规则",
         "scan_swear": "审核规则", "scan_ad": "审核规则", "llm_moderation_enabled": "审核规则",
         "llm_moderation_always": "审核规则",
         "base_decode_enabled": "审核规则",

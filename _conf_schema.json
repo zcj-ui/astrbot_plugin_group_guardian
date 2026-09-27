@@ -70,6 +70,18 @@
         "default": false,
         "hint": "关闭时群主、群管理员和插件管理员也会进入消息内容审核，便于测试且避免管理员账号成为广告绕过通道；防刷屏仍始终豁免管理员。可按群覆盖"
     },
+    "moderation_require_bot_admin": {
+        "description": "机器人非管理员时跳过自动审核",
+        "type": "bool",
+        "default": true,
+        "hint": "机器人在某群只是普通成员时无法撤回或禁言，继续审核只会白耗 LLM 调用并干扰群聊。开启后确认机器人不是管理员/群主的群会跳过自动审核与防刷屏，并在日志中每小时提示一次；角色查询失败时不跳过。被设为管理员后立即恢复。可按群覆盖（Issue #89）"
+    },
+    "link_whitelist": {
+        "description": "链接白名单（允许的域名）",
+        "type": "list",
+        "default": [],
+        "hint": "指向这些域名的普通链接不再触发广告/违规网址等本地规则，也会告知 LLM 这些域名是允许的；消息其余内容照常审核。按主机名匹配并包含子域名：填 bilibili.com 可覆盖 www./m./space. 等全部子域，填 www.bilibili.com 则只放行该主机。用方框字、带圈字等伪装的链接不受白名单豁免（Issue #89）"
+    },
     "auto_moderate_notice": {
         "description": "撤回提示开关（撤回后是否在群内发说明消息）",
         "type": "bool",

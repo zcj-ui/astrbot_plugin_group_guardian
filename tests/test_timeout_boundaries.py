@@ -524,6 +524,58 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
             all("[审核分片 " in prompt for prompt in harness.prompts)
         )
 
+    async def test_chunk_fallback_does_not_skip_later_violating_chunk(self):
+        # 审查发现：第 1 片 LLM 失败时循环会立即返回并整条放行，后续分片从未送审。
+        class _Scripted(_ModerationHarness):
+            def __init__(self, responses):
+                super().__init__(semaphore=asyncio.Semaphore(4))
+                self.responses = list(responses)
+
+            async def _call_llm_safe(self, system_prompt, prompt):
+                self.llm_calls += 1
+                self.prompts.append(prompt)
+                if self.responses:
+                    return self.responses.pop(0)
+                return '{"violation": false, "reason": "ok"}'
+
+        text = "a" * 30_000
+        chunks = len(_Scripted([])._llm_message_chunks(text, {"full_scan": True}))
+        self.assertGreaterEqual(chunks, 3)
+
+        harness = _Scripted([
+            "not-json",
+            '{"violation": true, "reason": "第二片有广告"}',
+        ])
+        result = await harness._call_llm_for_moderation(
+            _ModerationEvent(), text, {"full_scan": True}, group_id="1"
+        )
+        self.assertTrue(result["violation"])
+        self.assertEqual(harness.llm_calls, 2)
+
+    async def test_two_consecutive_chunk_fallbacks_stop_and_report_fallback(self):
+        class _AlwaysBroken(_ModerationHarness):
+            async def _call_llm_safe(self, system_prompt, prompt):
+                self.llm_calls += 1
+                return "not-json"
+
+        harness = _AlwaysBroken(semaphore=asyncio.Semaphore(4))
+        result = await harness._call_llm_for_moderation(
+            _ModerationEvent(), "a" * 30_000, {"full_scan": True}, group_id="1"
+        )
+        self.assertFalse(result["violation"])
+        self.assertTrue(result["fallback"])
+        # LLM 看起来整体不可用时不再逐片空等
+        self.assertEqual(harness.llm_calls, 2)
+
+    async def test_link_whitelist_is_disclosed_to_llm(self):
+        harness = _ModerationHarness(semaphore=asyncio.Semaphore(1))
+        harness.config["link_whitelist"] = ["github.com"]
+        await harness._call_llm_for_moderation(
+            _ModerationEvent(), "看 github.com/x", {"ad": True}, group_id="1"
+        )
+        self.assertIn("本群允许的链接域名", harness.last_prompt)
+        self.assertIn("github.com", harness.last_prompt)
+
     async def test_review_guidance_is_appended_to_default_moderation_prompt(self):
         harness = _ModerationHarness(semaphore=asyncio.Semaphore(1))
         harness.config["llm_moderation_review_guidance"] = "需要结合推广意图，不按单个普通词处罚"

@@ -2,7 +2,7 @@
 import asyncio
 import inspect
 import time
-from typing import Tuple
+from typing import Optional, Tuple
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
@@ -274,6 +274,82 @@ class OneBotMixin:
             logger.debug(f"[GroupMgr] 查询群成员角色失败({group_id}/{user_id}): {e}")
         return ""
 
+    # 机器人自身群角色缓存（Issue #89）：角色很少变化，确认值缓存 5 分钟；
+    # 查询失败只短缓存 30 秒，避免每条消息都重查两次 API，又能较快恢复。
+    # 机器人被设/撤管理员时 group_admin 通知会调用 _invalidate_bot_role 立即失效。
+    BOT_ROLE_CACHE_TTL = 300.0
+    BOT_ROLE_FAIL_TTL = 30.0
+    BOT_ROLE_CACHE_MAX = 2000
+
+    async def _get_bot_group_role(self, event, group_id) -> str:
+        """返回机器人在某群的角色（owner/admin/member），查询失败返回 ''。"""
+        gid = str(group_id or "")
+        if not gid:
+            return ""
+        cache = getattr(self, "_bot_role_cache", None)
+        if cache is None:
+            cache = {}
+            self._bot_role_cache = cache
+        now = time.time()
+        hit = cache.get(gid)
+        if hit and now - hit[1] < hit[2]:
+            return hit[0]
+        role = ""
+        try:
+            client = await self._get_client(event)
+            if client:
+                uin = await self._get_bot_uin(client)
+                if uin:
+                    role = await self._get_role_by_id(client, gid, uin)
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 查询机器人群角色失败({gid}): {e}")
+            role = ""
+        if len(cache) >= self.BOT_ROLE_CACHE_MAX:
+            cache.clear()
+        cache[gid] = (role, now, self.BOT_ROLE_CACHE_TTL if role else self.BOT_ROLE_FAIL_TTL)
+        return role
+
+    def _invalidate_bot_role(self, group_id=None) -> None:
+        """机器人群角色变化后失效缓存；group_id 为空时清空全部。"""
+        cache = getattr(self, "_bot_role_cache", None)
+        if not cache:
+            return
+        if group_id:
+            cache.pop(str(group_id), None)
+        else:
+            cache.clear()
+
+    async def _bot_can_moderate(self, event, group_id) -> bool:
+        """机器人在该群能否执行撤回/禁言（Issue #89）。
+
+        仅在确认机器人是普通成员时返回 False；角色查询失败时返回 True，
+        保持原有行为，避免协议端偶发故障导致审核被静默关闭。
+        受 moderation_require_bot_admin（默认开，可按群覆盖）控制。
+        """
+        gid = str(group_id or "")
+        if not gid or not self._cfg("moderation_require_bot_admin", True, group_id=gid):
+            return True
+        role = await self._get_bot_group_role(event, gid)
+        if not role:
+            return True
+        if role in ("admin", "owner"):
+            return True
+        # 同一群最多每小时提醒一次，便于管理员知道为什么这个群不审核
+        warned = getattr(self, "_bot_role_warned", None)
+        if warned is None:
+            warned = {}
+            self._bot_role_warned = warned
+        now = time.time()
+        if now - warned.get(gid, 0) >= 3600:
+            if len(warned) >= self.BOT_ROLE_CACHE_MAX:
+                warned.clear()
+            warned[gid] = now
+            logger.warning(
+                f"[GroupMgr] 机器人在群 {gid} 不是管理员/群主，无法撤回或禁言，已跳过该群的自动审核"
+                "（可在配置 moderation_require_bot_admin 中关闭此判断）"
+            )
+        return False
+
     async def _precheck_member_action(self, client, group_id, target_uid, action: str) -> Tuple[bool, str]:
         """群成员操作前置校验：检查 bot 自身权限 + 目标角色，避免必然失败的调用。
 
@@ -467,6 +543,26 @@ class OneBotMixin:
                 return False, None, "机器人在该群权限不足（需为管理员/群主，且不能对同级或更高身份操作）"
             return False, None, err
 
+    async def _call_action_checked(self, client, action: str, result_name: str = "", **kwargs):
+        """带超时与结果校验地调用 OneBot，成功时原样返回协议端结果，失败时抛 RuntimeError。
+
+        供查询类指令/工具使用：它们需要自行解析原始结果（列表字段名各协议端不同），
+        此前直接裸调 client.call_action——没有超时（协议端不响应即永久挂起），
+        也不校验 status/retcode（失败包被当成「空列表」显示给用户）。
+        调用方均在 try/except Exception 中，异常会转为明确的失败提示。
+        """
+        name = result_name or action
+        try:
+            result = await asyncio.wait_for(
+                client.call_action(action, **kwargs), timeout=ONEBOT_CALL_TIMEOUT
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"{name} 超时（协议端 {ONEBOT_CALL_TIMEOUT:.0f}s 无响应）")
+        ok, err = self._check_api_result(result, name)
+        if not ok:
+            raise RuntimeError(err or f"{name} 失败")
+        return result
+
     async def _call_group_api(self, client, action: str, result_name: str = "", **kwargs) -> Tuple[bool, str]:
         # 调用 OneBot API 并用 _check_api_result 统一判断结果（status=failed 或 retcode!=0 视为失败）。
         # 统一加 20s 超时，防止协议端无响应导致协程永久挂起。
@@ -475,18 +571,24 @@ class OneBotMixin:
         )
         return ok, error
 
-    async def _recall_msg(self, event: AiocqhttpMessageEvent, msg_id: str):
+    async def _recall_msg(self, event: AiocqhttpMessageEvent, msg_id: str) -> Optional[bool]:
+        """撤回一条消息。返回 True=撤回成功，False=协议端明确失败，None=未尝试（无消息ID/无 client）。
+
+        Issue #89：此前不校验 OneBot 返回值，机器人非管理员时撤回被拒也毫无感知，
+        审核路径随后照样在群里宣布「消息已被撤回」。现经 _call_group_api 统一校验
+        status/retcode 与异常，调用方可据此决定是否发提示、日志如何记录。
+        """
         mid = self._safe_int(msg_id)
         if not mid:
-            return
+            return None
         client = await self._get_client(event)
         if not client:
-            return
-        try:
-            await asyncio.wait_for(client.call_action('delete_msg', message_id=mid), timeout=ONEBOT_CALL_TIMEOUT)
-        except Exception as e:
+            return None
+        ok, err = await self._call_group_api(client, "delete_msg", "撤回消息", message_id=mid)
+        if not ok:
             # 撤回失败多为业务性原因（超2分钟/无权限），不清 client 缓存
-            logger.warning(f"[GroupMgr] 撤回消息失败: {e}")
+            logger.warning(f"[GroupMgr] 撤回消息失败: {err}")
+        return ok
 
     async def _maybe_recall_on_kick(self, client, gid, user_id) -> int:
         """按 kick_recall_enabled 配置在踢人前撤回该成员近期消息，返回撤回条数。

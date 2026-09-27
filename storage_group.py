@@ -241,6 +241,16 @@ class GroupStorageMixin:
         避免被后续挖掘重新拉回 pending。返回该词当前 {status, occurrences}。"""
         cat = category if category in ("ad", "swear") else "ad"
         with self._connect() as conn:
+            # 匹配器本身大小写不敏感（关键词与正文都会转小写），但 UNIQUE(group_id, keyword)
+            # 区分大小写：LLM 先后返回「AI中转」「ai中转」会成为两条互不相干的候选，
+            # 出现次数被拆散、审批互不影响。先按不区分大小写找到已有行，沿用其原始写法。
+            existing = conn.execute(
+                "SELECT keyword FROM learned_keywords "
+                "WHERE group_id=? AND lower(keyword)=lower(?) LIMIT 1",
+                (str(group_id), str(keyword)),
+            ).fetchone()
+            if existing:
+                keyword = existing["keyword"]
             conn.execute(
                 "INSERT INTO learned_keywords("
                 "group_id, keyword, category, status, reason, sample, confidence, "
@@ -369,9 +379,12 @@ class GroupStorageMixin:
 
     def get_learned_keyword(self, group_id: str, keyword: str) -> Optional[dict]:
         with self._connect() as conn:
+            # 与 upsert_learned_candidate 一致按不区分大小写查找，否则大小写不同时自动审批找不到行
             row = conn.execute(
-                "SELECT id, status, category FROM learned_keywords WHERE group_id=? AND keyword=?",
-                (str(group_id), str(keyword)),
+                "SELECT id, status, category FROM learned_keywords "
+                "WHERE group_id=? AND lower(keyword)=lower(?) "
+                "ORDER BY keyword=? DESC LIMIT 1",
+                (str(group_id), str(keyword), str(keyword)),
             ).fetchone()
         if not row:
             return None

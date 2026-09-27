@@ -161,7 +161,7 @@ class LlmToolsMixin:
                 return
             # 此工具直接调 client.call_action 而非 _call_group_api，因为需要解析返回的列表数据；
             # _extract_list_result 从 OneBot 响应中提取数组（兼容 data.members / data / 直接数组等多种格式）
-            result = await client.call_action('get_group_member_list', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_member_list', group_id=gid)
             members = self._extract_list_result(result)
             if not members:
                 yield event.plain_result("群成员列表为空")
@@ -255,7 +255,7 @@ class LlmToolsMixin:
                 yield event.plain_result(err)
                 return
             # get_group_shut_list 为 OneBot 标准 API（部分实现），返回被禁言成员列表
-            result = await client.call_action('get_group_shut_list', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_shut_list', group_id=gid)
             shut_list = self._extract_list_result(result)
             if not shut_list:
                 yield event.plain_result("当前没有禁言成员")
@@ -384,7 +384,7 @@ class LlmToolsMixin:
                 yield event.plain_result(err)
                 return
             # get_group_root_files 获取群文件根目录，私有 API；取出 files 和 folders 两个列表
-            result = await client.call_action('get_group_root_files', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_root_files', group_id=gid)
             result = self._extract_data_result(result)
             files = (result.get('files') or []) if isinstance(result, dict) else []
             folders = (result.get('folders') or []) if isinstance(result, dict) else []
@@ -433,7 +433,7 @@ class LlmToolsMixin:
                 yield event.plain_result(err)
                 return
             # _get_group_notice 私有 API，返回公告列表数据
-            result = await client.call_action('_get_group_notice', group_id=gid)
+            result = await self._call_action_checked(client, '_get_group_notice', group_id=gid)
             notices = self._extract_list_result(result)
             if not notices:
                 yield event.plain_result("暂无公告")
@@ -493,9 +493,22 @@ class LlmToolsMixin:
                 return
             # 如果未指定上传文件名，则使用原文件名
             name = file_name or os.path.basename(normalized_path)
-            # 调用 upload_group_file（私有 API），并提取返回的 file_id 作为凭证
-            result = await client.call_action('upload_group_file', group_id=gid, file=normalized_path, name=name)
-            fid = result.get('file_id', '未知') if isinstance(result, dict) else '未知'
+            # 调用 upload_group_file（私有 API）。此前直接裸调 call_action：
+            # 不校验 status/retcode，协议端拒绝（群文件关闭/空间满/无权限）也回复「已上传」，
+            # 且没有超时，协议端不响应时工具永久挂起。改走统一的校验+超时封装。
+            ok, data, err = await self._call_group_api_result(
+                client, 'upload_group_file', "上传群文件",
+                group_id=gid, file=normalized_path, name=name,
+            )
+            if not ok:
+                if "超时" in (err or ""):
+                    yield event.plain_result(
+                        f"上传未在规定时间内得到协议端确认（{err}），文件可能仍在上传，请稍后在群文件中确认"
+                    )
+                else:
+                    yield event.plain_result(f"上传失败: {err}")
+                return
+            fid = data.get('file_id', '未知') if isinstance(data, dict) else '未知'
             yield event.plain_result(f"已上传，file_id: {fid}")
         except Exception as e:
             yield event.plain_result(f"上传失败: {e}")

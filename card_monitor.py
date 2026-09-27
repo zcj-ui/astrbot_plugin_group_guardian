@@ -26,8 +26,10 @@ from astrbot.api.event import AstrMessageEvent
 
 try:
     from .text_obfuscation import extract_obfuscated_url_evidence
+    from .link_whitelist import strip_whitelisted_links
 except ImportError:
     from text_obfuscation import extract_obfuscated_url_evidence
+    from link_whitelist import strip_whitelisted_links
 
 # 链接/店铺特征：命中即违规，直接还原（不经 LLM）。
 # 这是"仅拦链接"宽松模式唯一拦截的东西，所以只放【明确的网址/店铺域名/扫码下单】，
@@ -117,6 +119,19 @@ class CardMonitorMixin:
         key = (str(group_id), str(user_id))
         self._card_pending_members.discard(key)
         self._card_pending_misses.pop(key, None)
+
+    def _drop_card_pending_for_group(self, group_id: str) -> None:
+        """清掉某群全部待补审条目。
+
+        群被停用/拉黑/关闭同步后，周期同步会在拿到基线之前就跳过该群，
+        原本唯一的清理路径（未命中计数）随之不可达，条目会永久驻留内存。
+        """
+        self._ensure_card_sync_state()
+        gid = str(group_id)
+        stale = [item for item in self._card_pending_members if item[0] == gid]
+        for item in stale:
+            self._card_pending_members.discard(item)
+            self._card_pending_misses.pop(item, None)
 
     def _card_group_allowed(self, group_id: str) -> bool:
         """无 event 场景下复用群黑白名单判断（周期同步使用）。"""
@@ -439,7 +454,7 @@ class CardMonitorMixin:
                     and (link_only or full_audit) and not audit_exempt):
                 is_violation = False
                 reason = ""
-                if self._is_shop_link_card(card_new):
+                if self._card_has_blocked_link(card_new):
                     is_violation = True
                     reason = "含链接/店铺"
                 elif full_audit:
@@ -451,7 +466,7 @@ class CardMonitorMixin:
                         reason = "、".join(hit_types.keys()) if hit_types else "LLM 判定"
                 if is_violation:
                     target = card_old
-                    if self._is_shop_link_card(card_old) or (
+                    if self._card_has_blocked_link(card_old) or (
                         full_audit and self._card_lexicon_hit(group_id, card_old)
                     ):
                         target = ""
@@ -490,6 +505,21 @@ class CardMonitorMixin:
             return False
         value = str(text)
         return bool(_SHOP_LINK_RE.search(value) or extract_obfuscated_url_evidence(value))
+
+    def _card_has_blocked_link(self, text: str) -> bool:
+        """同 _is_shop_link_card，但先去掉链接白名单中的域名（Issue #89）。
+
+        字符伪装的链接不会被白名单正则匹配到，因此仍按原规则拦截。
+        """
+        if not text:
+            return False
+        value = str(text)
+        whitelist_fn = getattr(self, "_link_whitelist", None)
+        if callable(whitelist_fn):
+            whitelist = whitelist_fn()
+            if whitelist:
+                value = strip_whitelisted_links(value, whitelist)
+        return self._is_shop_link_card(value)
 
     def _card_lexicon_hit(self, group_id: str, text: str) -> dict:
         """名片文本词库/正则初筛，返回命中的可疑类型 dict（供 LLM 二判用），无命中返回 {}。"""
@@ -692,6 +722,7 @@ class CardMonitorMixin:
         white = {str(x) for x in (getattr(self, "_group_white_set", set()) or set())}
         if white:
             groups.update(white)
+        group_list_ok = False
         try:
             result = await self._call_card_sync_api(client, "get_group_list")
             ok, error = self._check_card_sync_api_result(result, "获取群列表")
@@ -700,6 +731,7 @@ class CardMonitorMixin:
             for item in self._extract_list_result(result):
                 if isinstance(item, dict) and item.get("group_id") is not None:
                     groups.add(str(item.get("group_id")))
+            group_list_ok = True
         except Exception as e:
             logger.debug(f"[GroupMgr] 获取群列表用于名片同步失败: {e}")
             groups.update(self._card_sync_known_groups)
@@ -715,13 +747,19 @@ class CardMonitorMixin:
         except Exception:
             pass
 
+        # 已不在候选集合中的群（机器人已退群、被移出白名单等）不会再被遍历，
+        # 其待补审条目也永远不会被清理，这里统一丢弃。仅在群列表拉取成功时执行：
+        # 拉取失败时 groups 只是旧的已知群，不完整，据此清理会误删正常条目。
+        if group_list_ok:
+            for stale_gid in {item[0] for item in self._card_pending_members} - groups:
+                self._drop_card_pending_for_group(stale_gid)
+
         changed = 0
         for group_id in sorted(groups):
-            if not self._card_group_allowed(group_id):
-                continue
-            if not self._card_monitor_active(group_id):
-                continue
-            if not self._cfg("card_sync_enabled", True, group_id=group_id):
+            if (not self._card_group_allowed(group_id)
+                    or not self._card_monitor_active(group_id)
+                    or not self._cfg("card_sync_enabled", True, group_id=group_id)):
+                self._drop_card_pending_for_group(group_id)
                 continue
             # 在发起 API 请求前保存比较基线。若等待响应期间扩展通知更新了
             # 快照，末尾合并时会保留较新的事件值，而不会被轮询结果覆盖。

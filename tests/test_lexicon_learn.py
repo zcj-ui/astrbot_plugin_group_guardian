@@ -256,6 +256,17 @@ class StorageCrudTests(unittest.TestCase):
         self.assertEqual(info["status"], "rejected")
         self.assertEqual(info["occurrences"], 2)
 
+    def test_case_variants_merge_into_one_candidate(self):
+        # 匹配器大小写不敏感，候选也必须按不区分大小写去重，否则出现次数被拆散
+        self.store.upsert_learned_candidate("g1", "AI中转", "ad", "r", "s", 0.8, 100)
+        info = self.store.upsert_learned_candidate("g1", "ai中转", "ad", "r", "s", 0.8, 200)
+        self.assertEqual(info["occurrences"], 2)
+        self.assertEqual(self.store.count_learned("g1", "pending"), 1)
+        # 保留首次写入的原始写法，且任意大小写都能查到同一行
+        rows = self.store.list_learned("g1")
+        self.assertEqual(rows[0]["keyword"], "AI中转")
+        self.assertIsNotNone(self.store.get_learned_keyword("g1", "Ai中转"))
+
     def test_delete_and_counts(self):
         self.store.upsert_learned_candidate("g1", "词A", "ad", "", "", 0.8, 100)
         self.store.upsert_learned_candidate("g1", "词B", "swear", "", "", 0.8, 100)

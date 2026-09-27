@@ -1871,12 +1871,60 @@ async function loadGroups(force) {
   var grid = $('#groupGrid');
   if (!isCurrentLoad('groups', epoch)) return;
   grid.innerHTML = '<p class="empty">加载中...</p>';
+  if (force) BOT_ROLES = {};
   var res = await safeGet('groups', force ? { force: 1 } : undefined);
   if (!isCurrentLoad('groups', epoch)) return;
   if (isApiError(res) || !Array.isArray(res)) { grid.innerHTML = '<p class="empty">' + esc(payloadFailure(res, '群列表')) + '</p>'; return; }
   if (res && res._api_meta && res._api_meta.message) toast(res._api_meta.message, res._api_meta.stale ? 'warning' : 'info');
   CONFIG._groups = res;
   renderGroups(res);
+}
+
+/* Issue #89：在群卡片上标出机器人在该群的身份。普通成员无法撤回/禁言，
+   自动审核会被跳过，需要在这里一眼看出来。 */
+var BOT_ROLES = {};
+var BOT_ROLE_CHUNK = 30;
+
+function botRoleBadge(role) {
+  if (role === 'owner') return '<span class="group-badge badge-white" data-bot-role="owner">机器人:群主</span>';
+  if (role === 'admin') return '<span class="group-badge badge-white" data-bot-role="admin">机器人:管理员</span>';
+  if (role === 'member') return '<span class="group-badge badge-black" data-bot-role="member" title="机器人不是管理员，无法撤回或禁言，该群自动审核已跳过">机器人非管理</span>';
+  return '';
+}
+
+function applyBotRoleBadges() {
+  $$('.group-card[data-gid]').forEach(function(card) {
+    var role = BOT_ROLES[card.dataset.gid];
+    var meta = card.querySelector('.group-meta');
+    if (!meta || !role || meta.querySelector('[data-bot-role]')) return;
+    var html = botRoleBadge(role);
+    if (html) meta.insertAdjacentHTML('beforeend', html);
+  });
+}
+
+async function fillBotRoles(groupIds, isRetry) {
+  var todo = groupIds.filter(function(gid) {
+    var r = BOT_ROLES[gid];
+    return !r || r === 'pending' || (isRetry && r === 'unknown');
+  });
+  applyBotRoleBadges();
+  var pending = [];
+  for (var i = 0; i < todo.length; i += BOT_ROLE_CHUNK) {
+    var chunk = todo.slice(i, i + BOT_ROLE_CHUNK);
+    var res = await safeGet('bot_roles', { group_ids: chunk.join(',') });
+    if (isApiError(res) || !res || typeof res !== 'object') continue;
+    chunk.forEach(function(gid) {
+      var role = res[gid];
+      if (!role) return;
+      BOT_ROLES[gid] = role;
+      if (role === 'pending') pending.push(gid);
+    });
+    applyBotRoleBadges();
+  }
+  // 后端超时未返回的群在后台继续查询，稍后重试一次即可命中缓存
+  if (pending.length && !isRetry) {
+    setTimeout(function() { fillBotRoles(pending, true); }, 6000);
+  }
 }
 
 function renderGroups(groups) {
@@ -1916,6 +1964,7 @@ function renderGroups(groups) {
       openMemberPanel(card.dataset.gid);
     });
   });
+  fillBotRoles(filtered.map(function(g) { return String(g.group_id); }));
 
   $$('[data-action]', grid).forEach(function(btn) {
     btn.addEventListener('click', async function(e) {
@@ -2813,6 +2862,12 @@ async function loadRules() {
   if (!res || isApiError(res) || typeof res !== 'object' || !Array.isArray(res.items)) { wrap.innerHTML = '<div class="empty">' + esc(payloadFailure(res, '规则')) + '</div>'; return; }
   var items = res.items;
   var total = res.total || 0;
+  // 删除/筛选后总页数变少时回到最后一页，否则会停在越界页显示空表（与 loadLogs 一致）
+  var rulesTotalPages = Math.max(1, Math.ceil(total / RULES_STATE.pageSize));
+  if (RULES_STATE.page > rulesTotalPages) {
+    RULES_STATE.page = rulesTotalPages;
+    return loadRules();
+  }
   var rows = items.map(function(item) {
     return '<tr>'
       + '<td><input type="checkbox" data-rule-id="' + escAttr(item.id) + '" /></td>'
@@ -2982,6 +3037,11 @@ async function loadKeywords() {
   if (!res || isApiError(res) || typeof res !== 'object' || !Array.isArray(res.items)) { wrap.innerHTML = '<div class="empty">' + esc(payloadFailure(res, '关键词')) + '</div>'; return; }
   var items = res.items;
   var total = res.total || 0;
+  var kwTotalPages = Math.max(1, Math.ceil(total / KEYWORDS_STATE.pageSize));
+  if (KEYWORDS_STATE.page > kwTotalPages) {
+    KEYWORDS_STATE.page = kwTotalPages;
+    return loadKeywords();
+  }
   wrap.innerHTML = '<div style="font-size:12px;color:var(--text-muted);margin-bottom:6px">分类 ' + esc(KEYWORDS_STATE.category) + '，共 ' + total + ' 个关键词</div>'
     + '<table class="log-table"><thead><tr><th><input type="checkbox" id="kwCheckAll" /></th><th>ID</th><th>关键词</th><th>操作</th></tr></thead><tbody>'
     + (items.map(function(item) {
@@ -3898,7 +3958,8 @@ function renderGroupCfgItems(items) {
       } else {
         ok = await postOrToast('group_config/set', { group_id: targetGroup, key: key, value: v === 'on' }, '已设置', '设置失败');
       }
-      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
+      // 保存失败也重新渲染：下拉框已经显示成新值，不刷新会与服务端实际状态不一致
+      if (GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
   // 整型保存/继承
@@ -3922,7 +3983,8 @@ function renderGroupCfgItems(items) {
       var ok = v === ''
         ? await postOrToast('group_config/delete', { group_id: targetGroup, key: key }, '已恢复继承', '恢复继承失败')
         : await postOrToast('group_config/set', { group_id: targetGroup, key: key, value: v }, '已保存', '保存失败');
-      if (ok && GC_CUR === targetGroup) openGroupCfg(targetGroup);
+      // 保存失败也重新渲染：下拉框已经显示成新值，不刷新会与服务端实际状态不一致
+      if (GC_CUR === targetGroup) openGroupCfg(targetGroup);
     });
   });
   $$('.gc-text-save', box).forEach(function(b) {

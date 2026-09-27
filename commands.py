@@ -70,7 +70,7 @@ class CommandsMixin:
         try:
             # 调用 OneBot get_group_msg_history 拉取最近 100 条消息（大部分 OneBot 实现支持）
             # _safe_int 用于防止 group_id 字符串转换为 int 时抛出异常
-            result = await client.call_action('get_group_msg_history', group_id=self._safe_int(group_id, 0), count=100)
+            result = await self._call_action_checked(client, 'get_group_msg_history', group_id=self._safe_int(group_id, 0), count=100)
             # _extract_data_result: 统一处理 OneBot API 的 data 字段嵌套（如 {status:ok, data:{...}}）
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
@@ -129,7 +129,7 @@ class CommandsMixin:
                 yield event.plain_result(err)
                 return
             # 调用 OneBot get_group_member_list 获取群成员列表，用于统计分析
-            result = await client.call_action('get_group_member_list', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_member_list', group_id=gid)
             # _extract_list_result: 从 OneBot 响应中提取列表（兼容 data 嵌套和直接返回列表两种格式）
             members = self._extract_list_result(result)
             total = len(members)
@@ -161,7 +161,7 @@ class CommandsMixin:
                 yield event.plain_result(err)
                 return
             # 获取全量群成员列表，在本地做模糊匹配（不依赖 OneBot 搜索 API，因为大部分实现不支持）
-            result = await client.call_action('get_group_member_list', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_member_list', group_id=gid)
             members = self._extract_list_result(result)
             matched = []
             for m in members:
@@ -199,7 +199,7 @@ class CommandsMixin:
         count = max(1, min(count, 10))
         try:
             # 拉取 count+1 条历史消息，确保即使最新消息是撤回目标也能获取到足够的历史
-            result = await client.call_action('get_group_msg_history', group_id=gid, count=count + 1)
+            result = await self._call_action_checked(client, 'get_group_msg_history', group_id=gid, count=count + 1)
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
             recalled = 0
@@ -209,7 +209,7 @@ class CommandsMixin:
                 if msg_id:
                     try:
                         # 调用 OneBot delete_msg 逐条撤回
-                        await client.call_action('delete_msg', message_id=msg_id)
+                        await self._call_action_checked(client, 'delete_msg', message_id=msg_id)
                         recalled += 1
                         # 每条撤回之间休眠 0.5 秒，防止 API 频率限制
                         await asyncio.sleep(0.5)
@@ -351,7 +351,7 @@ class CommandsMixin:
                 yield event.plain_result(err)
                 return
             # _send_group_notice: 下划线前缀表示 OneBot 扩展 API（非标准协议），不同实现可能有差异
-            r = await client.call_action('_send_group_notice', group_id=gid, content=content)
+            r = await self._call_action_checked(client, '_send_group_notice', group_id=gid, content=content)
             # _check_api_result: 解析 API 返回的 status/retcode 判断是否成功
             api_ok, err = self._check_api_result(r, "发公告")
             if not api_ok:
@@ -393,7 +393,7 @@ class CommandsMixin:
                 yield event.plain_result(err)
                 return
             # _get_group_notice: OneBot 扩展 API，获取群公告列表
-            result = await client.call_action('_get_group_notice', group_id=gid)
+            result = await self._call_action_checked(client, '_get_group_notice', group_id=gid)
             notices = self._extract_list_result(result)
             if not notices:
                 yield event.plain_result("暂无群公告")
@@ -419,7 +419,7 @@ class CommandsMixin:
                 yield event.plain_result(err)
                 return
             # get_group_root_files: OneBot API，获取群根目录下的文件和文件夹列表
-            result = await client.call_action('get_group_root_files', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_root_files', group_id=gid)
             result = self._extract_data_result(result)
             files = result.get("files", []) if isinstance(result, dict) else []
             folders = result.get("folders", []) if isinstance(result, dict) else []
@@ -469,7 +469,7 @@ class CommandsMixin:
             if not ok:
                 yield event.plain_result(err)
                 return
-            result = await client.call_action('get_group_member_list', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_member_list', group_id=gid)
             members = self._extract_list_result(result)
             # 按角色分组计数：owner（群主）、admin（管理员）、member（普通成员）
             role_count = {"owner": 0, "admin": 0, "member": 0}
@@ -495,7 +495,7 @@ class CommandsMixin:
                 yield event.plain_result(err)
                 return
             # get_group_shut_list: OneBot API，获取当前被禁言的成员列表及其剩余时长
-            result = await client.call_action('get_group_shut_list', group_id=gid)
+            result = await self._call_action_checked(client, 'get_group_shut_list', group_id=gid)
             banned = self._extract_list_result(result)
             if not banned:
                 yield event.plain_result("当前无人被禁言")
@@ -768,7 +768,7 @@ class CommandsMixin:
             elif not target_user and not arg.startswith('@'):
                 target_user = arg
         try:
-            result = await client.call_action('get_group_msg_history', group_id=gid, count=100)
+            result = await self._call_action_checked(client, 'get_group_msg_history', group_id=gid, count=100)
             result = self._extract_data_result(result)
             messages = result.get('messages', []) if isinstance(result, dict) else []
             recalled = 0
@@ -783,7 +783,7 @@ class CommandsMixin:
                 msg_id = msg.get('message_id')
                 if msg_id:
                     try:
-                        await client.call_action('delete_msg', message_id=msg_id)
+                        await self._call_action_checked(client, 'delete_msg', message_id=msg_id)
                         recalled += 1
                         # 每条撤回间隔 0.5 秒，避免 OneBot 频率限制导致后续消息撤回失败
                         await asyncio.sleep(0.5)

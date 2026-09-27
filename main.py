@@ -112,6 +112,16 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
             except asyncio.CancelledError:
                 logger.debug("[GroupMgr] 后台重建任务已取消")
         await self._stop_scheduler()
+        # WebUI 触发的一次性后台任务（立即学习挖掘、机器人角色补查）此前卸载时不取消，
+        # 热重载后会在旧实例上继续跑、写旧状态。这里统一取消并等待收尾。
+        adhoc = []
+        for attr in ("_learn_adhoc_tasks", "_bot_role_tasks"):
+            adhoc.extend(getattr(self, attr, None) or ())
+        for task in adhoc:
+            if not task.done():
+                task.cancel()
+        if adhoc:
+            await asyncio.gather(*adhoc, return_exceptions=True)
         await self._close_moderation_context_resources()
         await self._close_image_audit_resources()
         logger.info("[GroupMgr] 插件卸载，SQLite 存储已自动持久化")
@@ -658,6 +668,14 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
     async def _on_group_admin_change(self, event: AiocqhttpMessageEvent):
         if not self._is_group_admin_notice(event):
             return
+        # Issue #89：群管理员变动可能涉及机器人自己，失效该群的机器人角色缓存，
+        # 让「机器人被设为管理员后恢复审核」立即生效而不必等 5 分钟 TTL。
+        # 放在名片监控之前：名片监控关闭时下方处理器会提前返回。
+        try:
+            raw = self._get_raw_event(event) or {}
+            self._invalidate_bot_role(raw.get("group_id"))
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 失效机器人角色缓存失败: {e}")
         try:
             handled = await CardMonitorMixin._handle_group_admin_change(self, event)
             if handled:
