@@ -2237,8 +2237,25 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
 
     # ===== 拆分出的子方法 =====
 
+    @staticmethod
+    def _is_qq_official_bot_uid(user_id: str) -> bool:
+        """Issue #90：按虚拟号段识别 QQ 开放平台（官方）机器人。
+
+        QQ 开放平台机器人进群后，协议端（NapCat 等）会为其伪造 OneBot 身份：
+        user_id 是 288/388/389 开头的 10-11 位虚拟号，并非真实 QQ 号。
+        仅在 official_bot_exempt_enabled 开启时使用，避免对真实用户误伤。
+        """
+        uid = str(user_id or "").strip()
+        return len(uid) in (10, 11) and uid.startswith(("288", "388", "389"))
+
     def _pre_check_message(self, event: AiocqhttpMessageEvent, group_id: str, user_id: str) -> bool:
         if user_id and self._user_white_set and user_id in self._user_white_set:
+            return True
+        # Issue #90：QQ 开放平台机器人消息整体豁免内容审核与防刷屏（开关 + 按群覆盖）。
+        # 放在白名单之后、其余检查之前：官方机器人消息（含图片/转发）一律不进入审核管线。
+        if (user_id
+                and self._is_qq_official_bot_uid(user_id)
+                and self._cfg("official_bot_exempt_enabled", False, group_id=group_id)):
             return True
         if self._group_black_set and group_id in self._group_black_set:
             return True

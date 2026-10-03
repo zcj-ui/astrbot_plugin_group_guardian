@@ -268,6 +268,7 @@ LLM 找出反复出现、又不在现有词库里的引流词（带置信度/理
 | `auto_moderate_enabled`      | 自动审核开关                | `true`     |
 | `auto_moderate_notice`       | 撤回后发送说明               | `true`     |
 | `moderation_admin_exempt`    | 管理员内容审核豁免；开启后群主、群管理员和插件管理员跳过内容审核，防刷屏仍始终豁免（可按群覆盖） | `false` |
+| `official_bot_exempt_enabled` | 豁免QQ开放平台机器人消息检测；按 288/388/389 虚拟号段自动识别官方机器人并跳过内容审核与防刷屏（可按群覆盖；号段误伤真实用户时请关闭改用用户白名单） | `false` |
 | `scan_ad`                    | 广告检测；同时控制异形字符伪装链接的本地拦截（可按群覆盖） | `true` |
 | `moderation_llm_provider_id` | 审核专用LLM Provider ID   | 默认         |
 | `llm_moderation_always`    | 所有消息全量 AI 审核，带群聊/分段上下文并自动尝试识图（可按群覆盖） | `false`    |
