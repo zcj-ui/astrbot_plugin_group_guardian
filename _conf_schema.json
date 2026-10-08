@@ -70,6 +70,12 @@
         "default": false,
         "hint": "关闭时群主、群管理员和插件管理员也会进入消息内容审核，便于测试且避免管理员账号成为广告绕过通道；防刷屏仍始终豁免管理员。可按群覆盖"
     },
+    "official_bot_exempt_enabled": {
+        "description": "豁免QQ开放平台机器人消息检测",
+        "type": "bool",
+        "default": false,
+        "hint": "开启后自动识别 QQ 开放平台（官方）机器人的消息并跳过内容审核与防刷屏（Issue #90：官方机器人由协议端伪造为 288/388/389 开头的虚拟号）。群内如有真实 QQ 号恰好命中该号段且需要参与审核，请关闭本开关，改用用户白名单手动豁免。可按群覆盖"
+    },
     "moderation_require_bot_admin": {
         "description": "机器人非管理员时跳过自动审核",
         "type": "bool",
