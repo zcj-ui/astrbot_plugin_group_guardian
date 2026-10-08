@@ -70,7 +70,9 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         self._log_save_task = None
         # 管理员角色缓存：存"角色字符串"，TTL 10 秒（F5 下管理后最多 10 秒失效）
         self._admin_role_cache: Dict[str, Tuple[str, float]] = {}
-        self._admin_role_cache_ttl = 10.0
+        # 过期后先返回旧值并后台刷新（见 _get_member_role），管理员变动通知会立即失效，
+        # 因此不必用很短的 TTL 换取"下管理"及时生效。
+        self._admin_role_cache_ttl = 30.0
         # 当日统计缓存，reset 键是 today_start 时间戳，跨日自动清零
         self._stats_cache = {"today_start": 0, "blocked": 0, "passed": 0, "total": 0, "group_stats": {}, "user_stats": {}}
         # WebUI 慢接口缓存：群列表/成员列表依赖 OneBot API，短 TTL 避免页面切换时反复阻塞。
@@ -117,6 +119,9 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         adhoc = []
         for attr in ("_learn_adhoc_tasks", "_bot_role_tasks"):
             adhoc.extend(getattr(self, attr, None) or ())
+        # 热路径查询合并（single_flight）中尚未完成的协议端查询
+        for attr in ("_bot_role_inflight", "_member_role_inflight", "_official_bot_inflight"):
+            adhoc.extend((getattr(self, attr, None) or {}).values())
         for task in adhoc:
             if not task.done():
                 task.cancel()
@@ -135,6 +140,14 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         }
 
     def _rebuild_rule_matcher(self, category: str) -> None:
+        matcher = self._build_rule_matcher(category)
+        if category == "swear":
+            self._swear_matcher = matcher
+        elif category == "ad":
+            self._ad_matcher = matcher
+
+    def _build_rule_matcher(self, category: str) -> HybridMatcher:
+        """读取规则并构建匹配器，不修改实例状态，可在线程池中执行。"""
         patterns = self._storage.load_moderation_rules(category)
         # 合并配置中的用户自定义关键词（纯文本，直接进 AC 自动机）
         custom_key = "custom_swear_keywords" if category == "swear" else "custom_ad_keywords"
@@ -146,10 +159,21 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         matcher.add_regex_patterns(patterns)
         matcher.add_literal_keywords(custom)
         matcher.build()
-        if category == "swear":
-            self._swear_matcher = matcher
-        elif category == "ad":
-            self._ad_matcher = matcher
+        return matcher
+
+    def _build_full_matchers(self):
+        """全量读取词库/规则并编译匹配器，返回新对象而不修改实例状态。
+
+        内置词库约 6.7 万词、2.4 万条规则，编译要数百毫秒（未装 pyahocorasick 时更久）；
+        放在线程池执行，避免整段阻塞 AstrBot 事件循环，完成后再一次性替换。
+        """
+        lexicon = self._storage.load_lexicon()
+        compiled = {}
+        for cat_name, cat_data in lexicon.items():
+            ac = self._build_category_automaton(cat_name, cat_data)
+            if ac.count:
+                compiled[cat_name] = ac
+        return lexicon, compiled, self._build_rule_matcher("swear"), self._build_rule_matcher("ad")
 
     def _rebuild_lexicon_category(self, category: str) -> None:
         cat = self._storage.load_lexicon_category(category)
@@ -174,10 +198,11 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
             self._set_rebuild_status("running", "full", reason or "后台重建全部规则")
             try:
                 async with self._rebuild_lock:
-                    self._lexicon = self._storage.load_lexicon()
-                    self._compiled_lexicon = self._compile_lexicon()
-                    self._rebuild_rule_matcher("swear")
-                    self._rebuild_rule_matcher("ad")
+                    lexicon, compiled, swear, ad = await self._run_in_thread(self._build_full_matchers)
+                    self._lexicon = lexicon
+                    self._compiled_lexicon = compiled
+                    self._swear_matcher = swear
+                    self._ad_matcher = ad
                 self._set_rebuild_status("success", "full", "后台重建完成")
                 failures = 0
             except asyncio.CancelledError:
@@ -674,6 +699,7 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         try:
             raw = self._get_raw_event(event) or {}
             self._invalidate_bot_role(raw.get("group_id"))
+            self._invalidate_member_roles(raw.get("group_id"))
         except Exception as e:
             logger.debug(f"[GroupMgr] 失效机器人角色缓存失败: {e}")
         try:

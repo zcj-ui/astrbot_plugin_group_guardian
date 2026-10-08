@@ -291,7 +291,8 @@ class RuleMatcherCompositionTests(unittest.TestCase):
             node
             for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and node.name == "_rebuild_rule_matcher"
+            # 匹配器组装逻辑在 _build_rule_matcher（可在线程池执行），_rebuild_rule_matcher 只负责替换
+            and node.name == "_build_rule_matcher"
         )
         calls = {
             node.func.attr: node

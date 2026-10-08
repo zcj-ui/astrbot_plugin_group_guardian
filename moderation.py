@@ -15,6 +15,13 @@ LLM_CALL_TIMEOUT = 60.0
 LLM_QUEUE_TIMEOUT = 120.0
 STREAM_RULE_SCAN_MAX_CHARS = 100_000
 STREAM_RULE_EVIDENCE_MAX_CHARS = 4000
+# Issue #90：官方机器人判定缓存。is_robot 是账号属性基本不变，长缓存；
+# 查询失败只短缓存，避免协议端偶发故障时每条消息都重查。
+OFFICIAL_BOT_CACHE_TTL = 3600.0
+OFFICIAL_BOT_RETRY_TTL = 60.0
+OFFICIAL_BOT_CACHE_MAX = 5000
+# 消息热路径最多等待 is_robot 查询的秒数；超时本条照常审核，查询在后台完成后写缓存。
+OFFICIAL_BOT_HOT_WAIT = 1.5
 try:
     # 从词库迁移模块导入低置信度脏话字面量，避免与 lexicon_migration 双份真相源漂移。
     from .encoded_content import decode_base_evidence
@@ -22,6 +29,7 @@ try:
     from .image_audit import ImageAuditMixin
     from .text_obfuscation import extract_obfuscated_url_evidence
     from .link_whitelist import normalize_whitelist, strip_whitelisted_links
+    from .single_flight import shared_task, wait_shared
     from .moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -34,6 +42,7 @@ except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
     from image_audit import ImageAuditMixin
     from text_obfuscation import extract_obfuscated_url_evidence
     from link_whitelist import normalize_whitelist, strip_whitelisted_links
+    from single_flight import shared_task, wait_shared
     from moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -1945,6 +1954,10 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         if self._pre_check_message(event, group_id, user_id):
             return
 
+        # Issue #90：QQ 开放平台机器人消息整体豁免内容审核与防刷屏（开关 + 按群覆盖）。
+        if await self._is_exempt_official_bot(event, group_id, user_id):
+            return
+
         # Issue #89：机器人在该群只是普通成员时无法撤回/禁言，继续审核只会白耗 LLM
         # 调用并在群里虚报「已撤回」。确认是普通成员就整条跳过（防刷屏同样依赖禁言/撤回）。
         can_moderate = getattr(self, "_bot_can_moderate", None)
@@ -2243,19 +2256,93 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
 
         QQ 开放平台机器人进群后，协议端（NapCat 等）会为其伪造 OneBot 身份：
         user_id 是 288/388/389 开头的 10-11 位虚拟号，并非真实 QQ 号。
-        仅在 official_bot_exempt_enabled 开启时使用，避免对真实用户误伤。
+        10 位的 288/388/389 号段同样分配给真实 QQ 账号，因此这只是协议端不上报
+        is_robot 时的兜底判定，见 _is_exempt_official_bot。
         """
         uid = str(user_id or "").strip()
         return len(uid) in (10, 11) and uid.startswith(("288", "388", "389"))
 
+    async def _query_member_is_robot(self, event, group_id: str, user_id: str) -> Tuple[str, bool]:
+        """查询协议端成员信息中的 is_robot 标记。
+
+        返回 ("ok", 值) 表示协议端明确上报；("absent", False) 表示查询成功但协议端
+        不提供该字段；("error", False) 表示查询失败。
+        """
+        gid = self._safe_int(group_id, 0)
+        uid = self._safe_int(user_id, 0)
+        if not gid or not uid:
+            return "error", False
+        try:
+            client = await self._get_client(event)
+            if not client:
+                return "error", False
+            ok, info, error = await self._call_group_api_result(
+                client, "get_group_member_info", "获取群成员信息",
+                group_id=gid, user_id=uid, no_cache=False,
+            )
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 查询成员 is_robot 失败: {e}")
+            return "error", False
+        if not ok or not isinstance(info, dict):
+            if error:
+                logger.debug(f"[GroupMgr] 查询成员 is_robot 失败: {error}")
+            return "error", False
+        if "is_robot" not in info:
+            return "absent", False
+        value = info.get("is_robot")
+        if isinstance(value, str):
+            return "ok", value.strip().lower() in ("1", "true", "yes")
+        return "ok", bool(value)
+
+    async def _is_exempt_official_bot(self, event, group_id: str, user_id: str) -> bool:
+        """Issue #90：official_bot_exempt_enabled 开启时判断发送者是否为官方机器人。
+
+        协议端（NapCat 等）上报的 is_robot 为准：真实用户即使号码落在 288/388/389
+        号段也不会被豁免——否则这一段新注册的小号可整体绕过审核。协议端不提供
+        is_robot 或查询失败时，才退回号段判定。结果按群+用户缓存。
+        """
+        if not user_id or not self._cfg("official_bot_exempt_enabled", False, group_id=group_id):
+            return False
+        cache = getattr(self, "_official_bot_cache", None)
+        if cache is None:
+            cache = self._official_bot_cache = {}
+        key = f"{group_id}:{user_id}"
+        cached = cache.get(key)
+        if cached and time.time() - cached[1] < cached[2]:
+            return cached[0]
+        # 同一成员的并发查询合并；缓存过期时先沿用旧结论并后台刷新，消息不等协议端
+        task = shared_task(
+            self, "_official_bot_inflight", key,
+            lambda: self._resolve_official_bot(event, group_id, user_id, key),
+        )
+        if cached:
+            return cached[0]
+        ok, result = await wait_shared(task, OFFICIAL_BOT_HOT_WAIT)
+        return bool(result) if ok else False
+
+    async def _resolve_official_bot(self, event, group_id: str, user_id: str, key: str) -> bool:
+        """查询 is_robot 并按结果/兜底规则写入缓存。"""
+        cache = getattr(self, "_official_bot_cache", None)
+        if cache is None:
+            cache = self._official_bot_cache = {}
+        status, is_robot = await self._query_member_is_robot(event, group_id, user_id)
+        now = time.time()
+        if status == "ok":
+            result, ttl = is_robot, OFFICIAL_BOT_CACHE_TTL
+        elif status == "absent":
+            result, ttl = self._is_qq_official_bot_uid(user_id), OFFICIAL_BOT_CACHE_TTL
+        else:
+            result, ttl = self._is_qq_official_bot_uid(user_id), OFFICIAL_BOT_RETRY_TTL
+        if len(cache) >= OFFICIAL_BOT_CACHE_MAX:
+            for stale in [k for k, v in cache.items() if now - v[1] >= v[2]]:
+                cache.pop(stale, None)
+            if len(cache) >= OFFICIAL_BOT_CACHE_MAX:
+                cache.clear()
+        cache[key] = (result, now, ttl)
+        return result
+
     def _pre_check_message(self, event: AiocqhttpMessageEvent, group_id: str, user_id: str) -> bool:
         if user_id and self._user_white_set and user_id in self._user_white_set:
-            return True
-        # Issue #90：QQ 开放平台机器人消息整体豁免内容审核与防刷屏（开关 + 按群覆盖）。
-        # 放在白名单之后、其余检查之前：官方机器人消息（含图片/转发）一律不进入审核管线。
-        if (user_id
-                and self._is_qq_official_bot_uid(user_id)
-                and self._cfg("official_bot_exempt_enabled", False, group_id=group_id)):
             return True
         if self._group_black_set and group_id in self._group_black_set:
             return True

@@ -697,7 +697,7 @@ class CommandsMixin:
         # 自动审核是插件全局运行开关，影响所有群，必须由插件全局管理员操作，
         # 群主/群管的群角色授权不足以更改全局开关。
         if not await self._is_plugin_admin(event):
-            yield event.plain_result("仅插件管理员可以使用此功能")
+            yield event.plain_result(self._admin_denied_message(event, "仅插件管理员可以使用此功能"))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -724,7 +724,7 @@ class CommandsMixin:
         # 管理"全局插件管理员名单"是最高敏感操作（决定谁能跨群管理整个插件），
         # 必须仅限现有插件全局管理员，群主/群管的群角色授权严禁修改此名单（防提权）。
         if not await self._is_plugin_admin(event):
-            yield event.plain_result("仅插件管理员可以使用此功能")
+            yield event.plain_result(self._admin_denied_message(event, "仅插件管理员可以使用此功能"))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -876,7 +876,7 @@ class CommandsMixin:
         operator = self._try_get_sender_id(event)
         role = await self._get_member_role(event, group_id, operator)
         if role != "owner" and not await self._is_plugin_admin(event):
-            yield event.plain_result("仅群主或插件管理员可以管理本群的群管理授权")
+            yield event.plain_result(self._admin_denied_message(event, "仅群主或插件管理员可以管理本群的群管理授权"))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -913,7 +913,7 @@ class CommandsMixin:
         operator = self._try_get_sender_id(event)
         role = await self._get_member_role(event, group_id, operator)
         if role != "owner" and not await self._is_plugin_admin(event):
-            yield event.plain_result("仅群主或插件管理员可以管理本群的群管权限")
+            yield event.plain_result(self._admin_denied_message(event, "仅群主或插件管理员可以管理本群的群管权限"))
             return
         args = event.message_str.split()
         if len(args) < 2:
@@ -939,7 +939,7 @@ class CommandsMixin:
     async def cmd_add_rule_keyword(self, event: AstrMessageEvent):
         '''添加自定义违禁词。用法: /添加违禁词 <脏话|广告> <关键词>'''
         if not await self._is_plugin_admin(event):
-            yield event.plain_result("仅插件管理员可以管理违禁词")
+            yield event.plain_result(self._admin_denied_message(event, "仅插件管理员可以管理违禁词"))
             return
         args = event.message_str.split(maxsplit=2)
         if len(args) < 3:
@@ -970,7 +970,7 @@ class CommandsMixin:
     async def cmd_del_rule_keyword(self, event: AstrMessageEvent):
         '''删除自定义违禁词。用法: /删除违禁词 <脏话|广告> <关键词或规则ID>'''
         if not await self._is_plugin_admin(event):
-            yield event.plain_result("仅插件管理员可以管理违禁词")
+            yield event.plain_result(self._admin_denied_message(event, "仅插件管理员可以管理违禁词"))
             return
         args = event.message_str.split(maxsplit=2)
         if len(args) < 3:
@@ -1008,7 +1008,7 @@ class CommandsMixin:
     async def cmd_list_rule_keyword(self, event: AstrMessageEvent):
         '''查看指令添加的自定义违禁词。用法: /查看违禁词 [脏话|广告]'''
         if not await self._is_plugin_admin(event):
-            yield event.plain_result("仅插件管理员可以查看违禁词")
+            yield event.plain_result(self._admin_denied_message(event, "仅插件管理员可以查看违禁词"))
             return
         args = event.message_str.split()
         cats = ["swear", "ad"]

@@ -197,7 +197,9 @@ class MembershipMixin:
         for query in queries:
             safe_query = str(query or "").replace("\n", " ").strip()[:120]
             remaining = deadline - loop.time()
-            if remaining <= 0:
+            # 事件循环会提前一个时钟粒度（Windows 约 15.6ms）触发超时，上一条查询超时返回时
+            # 预算可能还剩几毫秒；不足 20ms 视为耗尽，避免再发起一条注定超时的查询。
+            if remaining <= 0.02:
                 logger.warning("[GroupMgr] 入群Web Search总时间预算已耗尽")
                 break
             logger.info(f"[GroupMgr] 入群Web Search开始 query={safe_query!r}")

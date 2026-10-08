@@ -8,6 +8,11 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
+try:
+    from .single_flight import shared_task, wait_shared
+except ImportError:  # 独立加载 onebot.py 的单元测试兼容路径
+    from single_flight import shared_task, wait_shared
+
 # OneBot API 调用统一超时（秒），防止协议端无响应导致协程永久挂起
 ONEBOT_CALL_TIMEOUT = 20.0
 
@@ -118,11 +123,33 @@ class OneBotMixin:
             logger.warning(f"[GroupMgr] 读取管理员名单失败: {e}")
             return set(self._get_admin_list())
 
+    # 权限表查询短缓存。防刷屏对每条消息都要调用 _is_admin，每次判定原本要新开 2~3 个
+    # SQLite 连接（群权限黑名单、群超管、F5 授权），同步阻塞事件循环。缓存与成员角色共用
+    # _admin_role_cache（键带 "|" 与 "群号:QQ" 角色键区分）：所有权限写入路径都会 clear()
+    # 它，写入后立即失效。
+    PERM_CACHE_TTL = 30.0
+
+    def _cached_perm(self, kind: str, key: str, loader):
+        cache = getattr(self, "_admin_role_cache", None)
+        if cache is None:
+            return loader()
+        cache_key = f"{kind}|{key}"
+        now = time.time()
+        hit = cache.get(cache_key)
+        if hit and now - hit[1] < self.PERM_CACHE_TTL:
+            return hit[0]
+        value = loader()
+        cache[cache_key] = (value, now)
+        return value
+
     def _is_group_admin_blocked(self, group_id: str, user_id: str) -> bool:
         if not group_id:
             return False
         try:
-            return self._storage.is_group_admin_blocked(group_id, user_id)
+            return self._cached_perm(
+                "blocked", f"{group_id}:{user_id}",
+                lambda: bool(self._storage.is_group_admin_blocked(group_id, user_id)),
+            )
         except Exception as e:
             logger.debug(f"[GroupMgr] 查询群权限黑名单失败: {e}")
             return False
@@ -151,7 +178,10 @@ class OneBotMixin:
 
         # ③ 群超管：在 WebUI 为该群单独设置的专属管理员
         try:
-            if self._storage.is_group_super_admin(group_id, user_id):
+            if self._cached_perm(
+                "super", f"{group_id}:{user_id}",
+                lambda: bool(self._storage.is_group_super_admin(group_id, user_id)),
+            ):
                 return True
         except Exception as e:
             logger.debug(f"[GroupMgr] 查询群超管失败: {e}")
@@ -172,7 +202,9 @@ class OneBotMixin:
 
         # F5 动态授权：若该群在授权表且启用，按 grant_owner/grant_admin 实时判定
         if self._cfg("group_admin_grant_enabled", False):
-            grant = self._storage.get_group_admin_grant(group_id)
+            grant = self._cached_perm(
+                "grant", str(group_id), lambda: self._storage.get_group_admin_grant(group_id),
+            )
             if grant and grant.get("enabled"):
                 if role == "owner" and grant.get("grant_owner"):
                     return True
@@ -195,44 +227,98 @@ class OneBotMixin:
             return False
         return user_id in self._get_all_admin_ids()
 
-    async def _get_member_role(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
-        """获取成员在群里的角色（member/admin/owner），带短 TTL 缓存。
+    # 成员角色缓存过期后、在 MEMBER_ROLE_STALE_MAX 内仍先返回旧值并后台刷新：防刷屏对每条消息
+    # 都要判定发送者是否管理员，同步等协议端会让协议端一慢、整群消息都跟着卡住。
+    # 查询失败后 MEMBER_ROLE_FAIL_BACKOFF 内不再重查，避免协议端变慢时形成请求风暴。
+    MEMBER_ROLE_STALE_MAX = 600.0
+    MEMBER_ROLE_FAIL_BACKOFF = 5.0
+    MEMBER_ROLE_CACHE_MAX = 1000
 
-        缓存存"角色字符串"而非"是否管理员"，使 F5 授权配置变更后无需等缓存过期即可反映；
-        TTL 较短（默认 10 秒），保证"下管理"后很快失效。
-        """
-        cache_key = f"{group_id}:{user_id}"
-        now = time.time()
-        # 容量保护：超过 1000 条时清理过期项
-        if len(self._admin_role_cache) > 1000:
-            self._admin_role_cache = {
-                k: v for k, v in self._admin_role_cache.items()
-                if now - v[1] < self._admin_role_cache_ttl
-            }
-        cached = self._admin_role_cache.get(cache_key)
-        if cached and now - cached[1] < self._admin_role_cache_ttl:
-            return cached[0]
-
-        group_id_int = self._safe_int(group_id, 0)
-        user_id_int = self._safe_int(user_id, 0)
-        if not group_id_int or not user_id_int:
-            return ""
+    async def _fetch_member_role(self, event, group_id: str, user_id: str, cache_key: str) -> str:
+        """实际查询成员角色并写缓存；失败返回 '' 并记录退避时间。"""
+        epoch = getattr(self, "_role_epoch", 0)
+        role = None
         try:
             client = await self._get_client(event)
             if client:
                 ok, info, error = await self._call_group_api_result(
                     client, 'get_group_member_info', '获取群成员信息',
-                    group_id=group_id_int, user_id=user_id_int, no_cache=False,
+                    group_id=self._safe_int(group_id, 0), user_id=self._safe_int(user_id, 0),
+                    no_cache=False,
                 )
                 if ok and isinstance(info, dict):
                     role = info.get('role', '') or ""
-                    self._admin_role_cache[cache_key] = (role, now)
-                    return role
-                if error:
+                elif error:
                     logger.debug(f"[GroupMgr] 获取群成员信息失败: {error}")
         except Exception as e:
             logger.debug(f"[GroupMgr] 获取群成员信息失败: {e}")
-        return ""
+        now = time.time()
+        if role is None:
+            fails = getattr(self, "_member_role_fail", None)
+            if fails is None or len(fails) >= self.MEMBER_ROLE_CACHE_MAX:
+                fails = self._member_role_fail = {}
+            fails[cache_key] = now
+            return ""
+        # 查询期间收到过管理员变动通知：结果可能是变动前的角色，不写缓存
+        if getattr(self, "_role_epoch", 0) == epoch:
+            self._admin_role_cache[cache_key] = (role, now)
+        return role
+
+    async def _get_member_role(self, event: AstrMessageEvent, group_id: str, user_id: str) -> str:
+        """获取成员在群里的角色（member/admin/owner），带缓存。
+
+        缓存存"角色字符串"而非"是否管理员"，使 F5 授权配置变更后无需等缓存过期即可反映。
+        同一成员的并发查询合并为一次；缓存过期但未太旧时先返回旧值并后台刷新。
+        群管理员变动通知会调用 _invalidate_member_roles 立即失效该群缓存，"下管理"不必等刷新。
+        """
+        cache_key = f"{group_id}:{user_id}"
+        now = time.time()
+        if len(self._admin_role_cache) > self.MEMBER_ROLE_CACHE_MAX:
+            self._admin_role_cache = {
+                k: v for k, v in self._admin_role_cache.items()
+                if now - v[1] < self.MEMBER_ROLE_STALE_MAX
+            }
+        cached = self._admin_role_cache.get(cache_key)
+        if cached and now - cached[1] < self._admin_role_cache_ttl:
+            return cached[0]
+        if not self._safe_int(group_id, 0) or not self._safe_int(user_id, 0):
+            return ""
+        stale = cached[0] if cached and now - cached[1] < self.MEMBER_ROLE_STALE_MAX else None
+        fails = getattr(self, "_member_role_fail", None)
+        if fails and now - fails.get(cache_key, 0) < self.MEMBER_ROLE_FAIL_BACKOFF:
+            return stale if stale is not None else ""
+        task = shared_task(
+            self, "_member_role_inflight", cache_key,
+            lambda: self._fetch_member_role(event, group_id, user_id, cache_key),
+        )
+        if stale is not None:
+            return stale
+        ok, role = await wait_shared(task)
+        return role if ok else ""
+
+    def _bump_role_epoch(self, inflight_attr: str, match=None) -> None:
+        """角色缓存失效：推进纪元，使进行中的旧查询结果不再写缓存，并让下次调用重新发起查询。
+
+        match 为 None 时丢弃全部进行中查询，否则只丢弃 match(key) 为真的。
+        """
+        self._role_epoch = getattr(self, "_role_epoch", 0) + 1
+        inflight = getattr(self, inflight_attr, None)
+        if inflight:
+            for key in [k for k in inflight if match is None or match(str(k))]:
+                inflight.pop(key, None)
+
+    def _invalidate_member_roles(self, group_id=None) -> None:
+        """群管理员变动后失效该群的成员角色缓存；group_id 为空时清空全部。"""
+        prefix = f"{group_id}:" if group_id else ""
+        self._bump_role_epoch("_member_role_inflight", (lambda k: k.startswith(prefix)) if prefix else None)
+        cache = getattr(self, "_admin_role_cache", None)
+        if not cache:
+            return
+        if not group_id:
+            cache.clear()
+            return
+        for key in [k for k in cache if k.startswith(prefix)]:
+            cache.pop(key, None)
 
     async def _get_bot_uin(self, client) -> int:
         """获取当前 bot 自身 QQ 号（带缓存）。失败返回 0。"""
@@ -277,23 +363,15 @@ class OneBotMixin:
     # 机器人自身群角色缓存（Issue #89）：角色很少变化，确认值缓存 5 分钟；
     # 查询失败只短缓存 30 秒，避免每条消息都重查两次 API，又能较快恢复。
     # 机器人被设/撤管理员时 group_admin 通知会调用 _invalidate_bot_role 立即失效。
+    # 消息热路径最多等 BOT_ROLE_HOT_WAIT 秒：同群并发查询合并为一次，缓存过期时先用旧值。
     BOT_ROLE_CACHE_TTL = 300.0
     BOT_ROLE_FAIL_TTL = 30.0
     BOT_ROLE_CACHE_MAX = 2000
+    BOT_ROLE_HOT_WAIT = 1.5
 
-    async def _get_bot_group_role(self, event, group_id) -> str:
-        """返回机器人在某群的角色（owner/admin/member），查询失败返回 ''。"""
-        gid = str(group_id or "")
-        if not gid:
-            return ""
-        cache = getattr(self, "_bot_role_cache", None)
-        if cache is None:
-            cache = {}
-            self._bot_role_cache = cache
-        now = time.time()
-        hit = cache.get(gid)
-        if hit and now - hit[1] < hit[2]:
-            return hit[0]
+    async def _fetch_bot_group_role(self, event, gid: str) -> str:
+        """实际查询机器人群角色并写缓存，失败返回 ''。"""
+        epoch = getattr(self, "_role_epoch", 0)
         role = ""
         try:
             client = await self._get_client(event)
@@ -304,13 +382,42 @@ class OneBotMixin:
         except Exception as e:
             logger.debug(f"[GroupMgr] 查询机器人群角色失败({gid}): {e}")
             role = ""
-        if len(cache) >= self.BOT_ROLE_CACHE_MAX:
+        if getattr(self, "_role_epoch", 0) != epoch:
+            return role  # 查询期间角色缓存被失效（机器人刚被设/撤管理员），结果可能过时，不写缓存
+        cache = getattr(self, "_bot_role_cache", None)
+        if cache is None:
+            cache = self._bot_role_cache = {}
+        if len(cache) >= self.BOT_ROLE_CACHE_MAX and gid not in cache:
             cache.clear()
-        cache[gid] = (role, now, self.BOT_ROLE_CACHE_TTL if role else self.BOT_ROLE_FAIL_TTL)
+        cache[gid] = (role, time.time(), self.BOT_ROLE_CACHE_TTL if role else self.BOT_ROLE_FAIL_TTL)
         return role
+
+    async def _get_bot_group_role(self, event, group_id, max_wait=None, allow_stale=False) -> str:
+        """返回机器人在某群的角色（owner/admin/member），查询失败或未及时返回时为 ''。
+
+        同一群的并发查询共享一个进行中的请求。allow_stale=True 时缓存过期也先返回
+        上次确认的角色并后台刷新；max_wait 限制本次最多等待的秒数，超时返回 ''，
+        查询在后台继续并写入缓存。
+        """
+        gid = str(group_id or "")
+        if not gid:
+            return ""
+        cache = getattr(self, "_bot_role_cache", None)
+        if cache is None:
+            cache = self._bot_role_cache = {}
+        hit = cache.get(gid)
+        if hit and time.time() - hit[1] < hit[2]:
+            return hit[0]
+        task = shared_task(self, "_bot_role_inflight", gid, lambda: self._fetch_bot_group_role(event, gid))
+        if allow_stale and hit and hit[0]:
+            return hit[0]
+        ok, role = await wait_shared(task, max_wait)
+        return role if ok else ""
 
     def _invalidate_bot_role(self, group_id=None) -> None:
         """机器人群角色变化后失效缓存；group_id 为空时清空全部。"""
+        gid = str(group_id) if group_id else ""
+        self._bump_role_epoch("_bot_role_inflight", (lambda k: k == gid) if gid else None)
         cache = getattr(self, "_bot_role_cache", None)
         if not cache:
             return
@@ -329,7 +436,9 @@ class OneBotMixin:
         gid = str(group_id or "")
         if not gid or not self._cfg("moderation_require_bot_admin", True, group_id=gid):
             return True
-        role = await self._get_bot_group_role(event, gid)
+        role = await self._get_bot_group_role(
+            event, gid, max_wait=self.BOT_ROLE_HOT_WAIT, allow_stale=True,
+        )
         if not role:
             return True
         if role in ("admin", "owner"):
@@ -421,10 +530,58 @@ class OneBotMixin:
                 return False, f"群 {group_id} 不在白名单中"
         return True, ""
 
+    def _event_platform_name(self, event: AstrMessageEvent) -> str:
+        """事件来源的平台适配器类型（aiocqhttp / qq_official 等），取不到返回空串。"""
+        for getter in (
+            lambda: event.get_platform_name(),
+            lambda: event.platform_meta.name,
+        ):
+            try:
+                name = getter()
+            except Exception:
+                continue
+            if isinstance(name, str) and name.strip():
+                return name.strip().lower()
+        return ""
+
+    def _onebot_unsupported_message(self, event: AstrMessageEvent) -> str:
+        """Issue #92：事件来自不提供 OneBot 接口的平台（如 QQ 官方机器人）时返回说明，否则返回空串。
+
+        群管操作全部依赖 OneBot 动作（set_group_ban / set_group_whole_ban 等），
+        QQ 官方机器人接口既不提供这些动作，也拿不到群主/管理员身份，旧行为只会给出
+        「仅管理员可以使用此功能」或「无法获取QQ客户端」，让人误以为是名单配置问题。
+        取不到平台名、或事件自带可 call_action 的客户端时一律放行，不影响 OneBot 及自定义适配器。
+        """
+        platform = self._event_platform_name(event)
+        if not platform or platform == "aiocqhttp":
+            return ""
+        if self._normalize_action_client(getattr(event, "bot", None)):
+            return ""
+        return (
+            f"当前平台（{platform}）不支持此功能：禁言、踢人、全体禁言、群公告等群管操作依赖 OneBot 协议接口，"
+            "需通过 aiocqhttp 适配器接入 NapCat / Lagrange 等协议端使用。"
+            "QQ 官方机器人接口不提供这些群管理能力，也无法识别群主/管理员身份。"
+        )
+
+    def _admin_denied_message(self, event: AstrMessageEvent, base: str) -> str:
+        """权限拒绝文案。发送者 ID 不是 QQ 号（如 QQ 官方机器人的 openid）时附上实际 ID，
+        便于加入管理员名单——名单按发送者 ID 原样比对，填 QQ 号匹配不上（Issue #92）。"""
+        user_id = self._try_get_sender_id(event)
+        if not user_id or user_id.isdigit():
+            return base
+        return (
+            f"{base}\n当前平台识别到的你的用户ID为：{user_id}（不是QQ号）。"
+            "如需授权，请将此ID加入插件管理员名单（WebUI「插件管理员」或 AstrBot 管理员 ID）。"
+        )
+
     async def _check_admin_cfg_access(self, event: AstrMessageEvent, cfg_key: str, feature_name: str, need_admin: bool = True) -> Tuple[bool, str]:
-        # 复合检查：管理员身份 → _cfg_check（插件/功能启用状态，按群）→ 群黑白名单，任一失败即拒绝。
+        # 复合检查：平台能力 → 管理员身份 → _cfg_check（插件/功能启用状态，按群）→ 群黑白名单，任一失败即拒绝。
+        # 本方法的调用方均为依赖 OneBot 接口的群操作，平台不支持时先说明，避免误导为权限问题。
+        unsupported = self._onebot_unsupported_message(event)
+        if unsupported:
+            return False, unsupported
         if need_admin and not await self._is_admin(event):
-            return False, "仅管理员可以使用此功能"
+            return False, self._admin_denied_message(event, "仅管理员可以使用此功能")
         gid = self._get_group_id(event)
         # Issue #31：可选严格模式，群管操作指令要求操作者本群角色为群主/群管理员，
         # 即使是插件全局管理员，在其非群管的群里也不能通过聊天指令禁言/踢人（防止跨群乱操作）。

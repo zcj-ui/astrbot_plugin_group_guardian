@@ -67,7 +67,7 @@ class OfficialBotUidTest(unittest.TestCase):
     def test_official_bot_prefixes(self):
         is_bot = self.moderation.ModerationMixin._is_qq_official_bot_uid
         self.assertTrue(is_bot("2880542731"))     # 群聊场景官方机器人
-        self.assertTrue(is_bot("3889xxxxxxxx") if False else is_bot("3882345678"))
+        self.assertTrue(is_bot("3882345678"))
         self.assertTrue(is_bot("38912345678"))    # 11 位
         self.assertTrue(is_bot(2880542731))       # int 输入也接受
 
@@ -79,38 +79,125 @@ class OfficialBotUidTest(unittest.TestCase):
         self.assertFalse(is_bot(""))
         self.assertFalse(is_bot(None))
 
-    def test_pre_check_skips_official_bot_when_enabled(self):
-        moderation = self.moderation
-        mixin = moderation.ModerationMixin
+    def test_pre_check_no_longer_decides_official_bot(self):
+        """号段判定已移到异步的 _is_exempt_official_bot，_pre_check_message 不再按号段放行。"""
+        mixin = self.moderation.ModerationMixin
 
         class FakePlugin:
             _user_white_set = set()
             _group_black_set = set()
             _group_white_set = set()
             _pre_check_message = mixin._pre_check_message
-            _is_qq_official_bot_uid = staticmethod(mixin._is_qq_official_bot_uid)
             _cfg = lambda self, key, default=True, group_id=None: (
                 True if key == "official_bot_exempt_enabled" else default
             )
             _should_scan_message = lambda self, event: True
             config = {"disclaimer_agreed": True}
-            _config_schema = {}
 
-        plugin = FakePlugin()
-        # 开关开启：官方机器人号段直接跳过（返回 True=不进入审核管线）
-        self.assertTrue(plugin._pre_check_message(None, "123456", "2880542731"))
-        # 普通用户不受影响
-        self.assertFalse(plugin._pre_check_message(None, "123456", "1234567890"))
+        self.assertFalse(FakePlugin()._pre_check_message(None, "123456", "2880542731"))
 
-        class DisabledPlugin(FakePlugin):
-            _cfg = lambda self, key, default=True, group_id=None: (
-                False if key == "official_bot_exempt_enabled" else default
-            )
 
-        # 开关关闭：号段命中也不豁免
-        self.assertFalse(
-            DisabledPlugin()._pre_check_message(None, "123456", "2880542731")
+class _MemberInfoClient:
+    def __init__(self, info=None, fail=False):
+        self.info = info
+        self.fail = fail
+        self.calls = 0
+
+
+def _make_plugin(moderation, client, enabled=True):
+    mixin = moderation.ModerationMixin
+
+    class FakePlugin:
+        _is_qq_official_bot_uid = staticmethod(mixin._is_qq_official_bot_uid)
+        _query_member_is_robot = mixin._query_member_is_robot
+        _is_exempt_official_bot = mixin._is_exempt_official_bot
+        _resolve_official_bot = mixin._resolve_official_bot
+
+        def _cfg(self, key, default=None, group_id=None):
+            if key == "official_bot_exempt_enabled":
+                return enabled
+            return default
+
+        @staticmethod
+        def _safe_int(value, default=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        async def _get_client(self, event=None):
+            return client
+
+        async def _call_group_api_result(self, cli, action, result_name="", **kwargs):
+            cli.calls += 1
+            if cli.fail:
+                return False, None, "timeout"
+            return True, cli.info, ""
+
+    return FakePlugin()
+
+
+class OfficialBotExemptTest(unittest.IsolatedAsyncioTestCase):
+    """_is_exempt_official_bot：协议端 is_robot 优先，号段仅作兜底。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.moderation = _load_moderation()
+
+    async def test_is_robot_true_exempts_any_uid(self):
+        client = _MemberInfoClient({"role": "member", "is_robot": True})
+        plugin = _make_plugin(self.moderation, client)
+        self.assertTrue(await plugin._is_exempt_official_bot(None, "123456", "1234567890"))
+
+    async def test_real_user_in_bot_number_range_not_exempt(self):
+        # 10 位 388/389 号段同样分配给真实账号：协议端明确 is_robot=false 时不得豁免
+        client = _MemberInfoClient({"role": "member", "is_robot": False})
+        plugin = _make_plugin(self.moderation, client)
+        self.assertFalse(await plugin._is_exempt_official_bot(None, "123456", "3882345678"))
+
+    async def test_missing_field_falls_back_to_number_range(self):
+        client = _MemberInfoClient({"role": "member"})
+        plugin = _make_plugin(self.moderation, client)
+        self.assertTrue(await plugin._is_exempt_official_bot(None, "123456", "2880542731"))
+        self.assertFalse(await plugin._is_exempt_official_bot(None, "123456", "1234567890"))
+        self.assertEqual(
+            plugin._official_bot_cache["123456:2880542731"][2],
+            self.moderation.OFFICIAL_BOT_CACHE_TTL,
         )
+
+    async def test_lookup_failure_uses_fallback_with_short_cache(self):
+        client = _MemberInfoClient(fail=True)
+        plugin = _make_plugin(self.moderation, client)
+        self.assertTrue(await plugin._is_exempt_official_bot(None, "123456", "2880542731"))
+        self.assertEqual(
+            plugin._official_bot_cache["123456:2880542731"][2],
+            self.moderation.OFFICIAL_BOT_RETRY_TTL,
+        )
+
+    async def test_disabled_switch_skips_lookup(self):
+        client = _MemberInfoClient({"is_robot": True})
+        plugin = _make_plugin(self.moderation, client, enabled=False)
+        self.assertFalse(await plugin._is_exempt_official_bot(None, "123456", "2880542731"))
+        self.assertEqual(client.calls, 0)
+
+    async def test_result_is_cached(self):
+        client = _MemberInfoClient({"is_robot": True})
+        plugin = _make_plugin(self.moderation, client)
+        for _ in range(3):
+            self.assertTrue(await plugin._is_exempt_official_bot(None, "123456", "2880542731"))
+        self.assertEqual(client.calls, 1)
+
+    async def test_string_flag_values(self):
+        plugin = _make_plugin(self.moderation, _MemberInfoClient({"is_robot": "true"}))
+        self.assertTrue(await plugin._is_exempt_official_bot(None, "1", "10001"))
+        plugin = _make_plugin(self.moderation, _MemberInfoClient({"is_robot": "0"}))
+        self.assertFalse(await plugin._is_exempt_official_bot(None, "1", "2880542731"))
+
+    async def test_non_numeric_ids_do_not_query(self):
+        client = _MemberInfoClient({"is_robot": True})
+        plugin = _make_plugin(self.moderation, client)
+        self.assertFalse(await plugin._is_exempt_official_bot(None, "123456", "abc"))
+        self.assertEqual(client.calls, 0)
 
 
 if __name__ == "__main__":

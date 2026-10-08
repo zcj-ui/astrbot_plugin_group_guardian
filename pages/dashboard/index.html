@@ -580,7 +580,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
         <div class="card">
           <div class="card-header"><h2>插件管理员</h2></div>
           <div class="admin-manage">
-            <div class="admin-add-row"><input type="text" class="input-sm" id="adminInput" placeholder="QQ号(可多个,逗号/空格分隔)..." /><button class="btn btn-primary btn-sm" id="btnAddAdmin">添加</button></div>
+            <div class="admin-add-row"><input type="text" class="input-sm" id="adminInput" placeholder="QQ号/用户ID(可多个,逗号/空格分隔)..." /><button class="btn btn-primary btn-sm" id="btnAddAdmin">添加</button></div>
             <div class="admin-list" id="adminList"><p class="empty">暂无管理员</p></div>
           </div>
         </div>
@@ -1884,6 +1884,9 @@ async function loadGroups(force) {
    自动审核会被跳过，需要在这里一眼看出来。 */
 var BOT_ROLES = {};
 var BOT_ROLE_CHUNK = 30;
+// 正在请求中的群：搜索框每次输入都会重新渲染群卡片，没有这个标记会对同一批群
+// 反复发起 bot_roles 请求，每次都让后端逐群查询协议端，叠加起来拖慢整个 AstrBot。
+var BOT_ROLE_INFLIGHT = {};
 
 function botRoleBadge(role) {
   if (role === 'owner') return '<span class="group-badge badge-white" data-bot-role="owner">机器人:群主</span>';
@@ -1904,14 +1907,22 @@ function applyBotRoleBadges() {
 
 async function fillBotRoles(groupIds, isRetry) {
   var todo = groupIds.filter(function(gid) {
+    if (BOT_ROLE_INFLIGHT[gid]) return false;
     var r = BOT_ROLES[gid];
-    return !r || r === 'pending' || (isRetry && r === 'unknown');
+    // pending/unknown 只在定时重试时补查，普通重渲染不重复请求
+    return !r || (isRetry && (r === 'pending' || r === 'unknown'));
   });
   applyBotRoleBadges();
   var pending = [];
   for (var i = 0; i < todo.length; i += BOT_ROLE_CHUNK) {
     var chunk = todo.slice(i, i + BOT_ROLE_CHUNK);
-    var res = await safeGet('bot_roles', { group_ids: chunk.join(',') });
+    chunk.forEach(function(gid) { BOT_ROLE_INFLIGHT[gid] = true; });
+    var res;
+    try {
+      res = await safeGet('bot_roles', { group_ids: chunk.join(',') });
+    } finally {
+      chunk.forEach(function(gid) { delete BOT_ROLE_INFLIGHT[gid]; });
+    }
     if (isApiError(res) || !res || typeof res !== 'object') continue;
     chunk.forEach(function(gid) {
       var role = res[gid];
@@ -3340,8 +3351,8 @@ function renderListSettings() {
   c.innerHTML =
     '<div class="list-section"><h3>群白名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addWhiteInput" placeholder="群号(可多个,逗号/空格分隔)..." /><button class="btn btn-primary btn-sm" id="btnAddWhite">添加</button></div><div class="list-items" id="whiteItems">' + renderListTags(whites, 'white') + '</div></div>' +
     '<div class="list-section"><h3>群黑名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addBlackInput" placeholder="群号(可多个,逗号/空格分隔)..." /><button class="btn btn-danger btn-sm" id="btnAddBlack">添加</button></div><div class="list-items" id="blackItems">' + renderListTags(blacks, 'black') + '</div></div>' +
-    '<div class="list-section"><h3>用户黑名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addUserInput" placeholder="QQ号(可多个,逗号/空格分隔)..." /><button class="btn btn-warning btn-sm" id="btnAddUser" style="background:var(--warning);color:#fff">添加</button></div><div class="list-items" id="userItems">' + renderListTags(users, 'user') + '</div></div>' +
-    '<div class="list-section"><h3>审核白名单用户</h3><div class="list-add-row"><input type="text" class="input-sm" id="addUserWhiteInput" placeholder="QQ号(可多个,逗号/空格分隔)..." /><button class="btn btn-primary btn-sm" id="btnAddUserWhite">添加</button></div><div class="setting-desc" style="margin-bottom:8px">白名单用户将跳过自动审核与防刷屏，优先级高于用户黑名单</div><div class="list-items" id="userWhiteItems">' + renderListTags(userWhites, 'userwhite') + '</div></div>';
+    '<div class="list-section"><h3>用户黑名单</h3><div class="list-add-row"><input type="text" class="input-sm" id="addUserInput" placeholder="QQ号/用户ID(可多个,逗号/空格分隔)..." /><button class="btn btn-warning btn-sm" id="btnAddUser" style="background:var(--warning);color:#fff">添加</button></div><div class="list-items" id="userItems">' + renderListTags(users, 'user') + '</div></div>' +
+    '<div class="list-section"><h3>审核白名单用户</h3><div class="list-add-row"><input type="text" class="input-sm" id="addUserWhiteInput" placeholder="QQ号/用户ID(可多个,逗号/空格分隔)..." /><button class="btn btn-primary btn-sm" id="btnAddUserWhite">添加</button></div><div class="setting-desc" style="margin-bottom:8px">白名单用户将跳过自动审核与防刷屏，优先级高于用户黑名单</div><div class="list-items" id="userWhiteItems">' + renderListTags(userWhites, 'userwhite') + '</div></div>';
 
   bindIfExists('btnAddWhite', async function() {
     var input = $('#addWhiteInput');
@@ -4179,8 +4190,13 @@ async function init() {
   });
 
   var searchGroupInput = document.getElementById('searchGroupInput');
+  var searchGroupTimer = null;
   if (searchGroupInput) searchGroupInput.addEventListener('input', function() {
-    if (CONFIG._groups) renderGroups(CONFIG._groups);
+    // 防抖：连续输入时只在停顿后重渲染一次，避免每个字符都重建全部群卡片和头像
+    clearTimeout(searchGroupTimer);
+    searchGroupTimer = setTimeout(function() {
+      if (CONFIG._groups) renderGroups(CONFIG._groups);
+    }, 200);
   });
   var searchMemberInput = document.getElementById('searchMemberInput');
   if (searchMemberInput) searchMemberInput.addEventListener('input', function() {
@@ -4245,6 +4261,13 @@ async function init() {
     }
   }
   updateThemeUI(savedTheme);
+  // 新版 AstrBot bridge SDK 会把 WebUI 的亮暗主题同步到 <html data-theme>；
+  // 跟随其变化刷新切换按钮的图标和文案，避免按钮显示与实际主题不一致。
+  if (window.MutationObserver) {
+    new MutationObserver(function() {
+      updateThemeUI(document.documentElement.getAttribute('data-theme') === 'dark' ? 'dark' : 'light');
+    }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+  }
   bindClick('themeToggle', async function() {
     var current = document.documentElement.getAttribute('data-theme');
     var next = current === 'dark' ? 'light' : 'dark';
