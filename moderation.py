@@ -31,6 +31,7 @@ try:
     from .text_obfuscation import extract_obfuscated_url_evidence
     from .link_whitelist import normalize_whitelist, strip_whitelisted_links
     from .single_flight import shared_task, wait_shared
+    from .llm_stream import collect_provider_stream, StreamingUnavailable, StreamingCallError
     from .moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -48,6 +49,7 @@ except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
     from text_obfuscation import extract_obfuscated_url_evidence
     from link_whitelist import normalize_whitelist, strip_whitelisted_links
     from single_flight import shared_task, wait_shared
+    from llm_stream import collect_provider_stream, StreamingUnavailable, StreamingCallError
     from moderation_context import (
         CONTEXT_IMAGE_EVIDENCE_MAX_CHARS,
         CONTEXT_MESSAGE_MAX_CHARS,
@@ -621,6 +623,10 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         每个方法都尝试多种参数签名以兼容不同 Provider 实现；
         参数签名不匹配（TypeError/ValueError）静默跳过，其它异常记入 errors。
         """
+        try:
+            return await collect_provider_stream(prov, system_prompt, prompt)
+        except StreamingUnavailable:
+            pass  # 仅未实现流式的旧 Provider 使用已有的非流式兼容路径。
         combined = system_prompt + "\n\n" + prompt
         # (方法名, [候选参数签名]) —— text_chat 优先用命名参数，其它方法用拼接字符串
         method_signatures = [
@@ -648,7 +654,13 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
 
     async def _call_llm_by_provider_id(self, pid: str, system_prompt: str,
                                        prompt: str, errors: "_LLMErrorBag") -> str:
-        """通过 Provider ID 调用 LLM：优先 context.llm_generate()，回退到实例方法。"""
+        """通过 Provider 的流式接口获取完整响应；未实现流式时兼容旧 Context。"""
+        prov = self.context.get_provider_by_id(pid) if hasattr(self.context, "get_provider_by_id") else None
+        if prov is not None:
+            try:
+                return await collect_provider_stream(prov, system_prompt, prompt)
+            except StreamingUnavailable:
+                pass
         if hasattr(self.context, "llm_generate"):
             try:
                 resp = await self.context.llm_generate(
@@ -657,7 +669,6 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                     return self._extract_llm_text(resp)
             except Exception as e:
                 errors.add(f"llm_generate({pid}): {str(e)[:120]}")
-        prov = self.context.get_provider_by_id(pid) if hasattr(self.context, "get_provider_by_id") else None
         if prov:
             result = await self._invoke_provider_methods(prov, pid, system_prompt, prompt, errors)
             if result:
@@ -679,6 +690,8 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 result = await self._call_llm_by_provider_id(configured_id, system_prompt, prompt, errors)
                 logger.info(f"[GroupMgr] LLM审核使用指定provider: {configured_id}")
                 return result
+            except StreamingCallError:
+                raise  # 交给外层 10/20/30 秒重试，不立即改用非流式或换 Provider。
             except Exception as e:
                 errors.add(f"指定{configured_id}: {str(e)[:120]}")
 
@@ -694,6 +707,8 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 result = await self._call_llm_by_provider_id(pid, system_prompt, prompt, errors)
                 logger.info(f"[GroupMgr] LLM审核使用provider: {pid}")
                 return result
+            except StreamingCallError:
+                raise
             except Exception as e:
                 errors.add(str(e)[:80])
                 continue
@@ -718,6 +733,8 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 if result:
                     logger.info("[GroupMgr] LLM审核使用当前provider")
                     return result
+        except StreamingCallError:
+            raise
         except Exception as e:
             errors.add(f"get_using_provider: {str(e)[:120]}")
 

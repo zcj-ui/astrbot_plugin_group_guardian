@@ -11,6 +11,11 @@ from urllib.parse import urljoin, urlparse
 from astrbot.api import logger
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
+try:
+    from .llm_stream import collect_provider_stream, StreamingUnavailable
+except ImportError:
+    from llm_stream import collect_provider_stream, StreamingUnavailable
+
 
 LLM_CALL_TIMEOUT = 60.0
 OCR_QUEUE_TIMEOUT = 300.0
@@ -441,6 +446,24 @@ class ImageAuditMixin:
             prompt += "\n注意：这是一个表情包/贴纸图片。表情包中常包含文字，请完整转录表情包中的所有文字，并判断文字内容是否违规（如侮辱性脏话、广告推广等）。"
 
         try:
+            provider = None
+            if configured_id and hasattr(self.context, "get_provider_by_id"):
+                provider = self.context.get_provider_by_id(configured_id)
+            elif not configured_id:
+                get_current_async = getattr(self.context, "get_using_provider_async", None)
+                if callable(get_current_async):
+                    provider = await get_current_async()
+                else:
+                    get_current = getattr(self.context, "get_using_provider", None)
+                    if callable(get_current):
+                        provider = get_current()
+            if provider is not None:
+                try:
+                    return await collect_provider_stream(
+                        provider, system_prompt, prompt, image_urls=[image_url]
+                    )
+                except StreamingUnavailable:
+                    pass
             if hasattr(self.context, "llm_generate"):
                 kwargs = {
                     "prompt": prompt,
