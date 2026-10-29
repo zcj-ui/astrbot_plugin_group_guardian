@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta http-equiv="Content-Security-Policy" content="img-src * data: blob:; default-src 'self' 'unsafe-inline' 'unsafe-eval'; connect-src *;" />
-  <title>Group Guardian - QQ群智能守护者</title>
+  <title>Group Guardian - AI 中转特殊版</title>
   <script>try{var t=localStorage.getItem('gg_theme');if(t==='dark')document.documentElement.setAttribute('data-theme','dark')}catch(e){}</script>
   <script src="/api/plugin/page/bridge-sdk.js"></script>
   <style>
@@ -838,6 +838,22 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
             <p class="lin-hint">同意后插件功能立即生效。<a href="javascript:void(0)" id="openDisclaimer2">了解详情</a></p>
           </div>
         </div>
+        <section class="card" id="aiRelayCard" data-settings-section="relay" aria-labelledby="aiRelayHeading">
+          <div class="card-header"><h2 id="aiRelayHeading">AI 中转特殊版 · 高风险数字检测</h2></div>
+          <div class="settings-list">
+            <div style="padding:14px;border:2px solid var(--danger);border-radius:var(--radius);line-height:1.8">
+              <strong style="color:var(--danger)">严厉警告：这不是 AI 语义识别，普通交流群不要开启。</strong>
+              <p>此规则直接撤回包含 <code>0.</code> 或特定前导零数字的消息，不经 LLM 复核。<code>0.0</code>、<code>0.2</code>、<code>10.5</code>、<code>100.0%</code>、<code>v1.0.1</code>、<code>012</code>、<code>0012</code> 都可能命中，误撤回无法自动恢复。</p>
+              <p>默认关闭；只适合明确禁止这些内容的 AI 中转群。不附加禁言或踢人，已有群白名单、用户白名单、管理员豁免与自动审核总开关仍生效。开启全局模式会作用于所有允许审核且未强制关闭本项的群。</p>
+            </div>
+            <p id="aiRelayStatus" role="status" style="padding:12px 0">状态：未启用</p>
+            <div style="display:flex;gap:10px;flex-wrap:wrap">
+              <button type="button" class="btn btn-danger" id="btnEnableAiRelay">三步确认并开启数字检测</button>
+              <button type="button" class="btn btn-outline" id="btnDisableAiRelay">关闭并撤销风险确认</button>
+            </div>
+            <p class="setting-desc" style="margin-top:12px">模式与数字规则可在「群配置」单独覆盖，但全局风险确认不能复制或按群覆盖。关闭全局模式会撤销确认，重新开启必须重新完成三步。</p>
+          </div>
+        </section>
         <div class="card" id="migrationCard" data-settings-section="advanced">
           <div class="card-header"><h2>SQLite 迁移助手</h2><button class="btn btn-ghost btn-sm" id="btnRefreshMigration">刷新状态</button></div>
           <div class="settings-list">
@@ -871,6 +887,16 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
       <div class="modal-footer" id="modalFooter"></div>
     </div>
   </div>
+  <dialog id="aiRelayRiskDialog" aria-labelledby="aiRelayRiskTitle" aria-describedby="aiRelayRiskBody" style="margin:auto;padding:24px;max-width:560px;width:calc(100% - 32px);background:var(--surface);color:var(--text-primary);border:2px solid var(--danger);border-radius:var(--radius-lg)">
+    <h2 id="aiRelayRiskTitle" style="font-size:18px;margin-bottom:16px"></h2>
+    <div id="aiRelayRiskBody" style="line-height:1.8"></div>
+    <p id="aiRelayRiskError" role="status" style="min-height:26px;color:var(--danger);margin:10px 0"></p>
+    <div style="display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap">
+      <button type="button" class="btn btn-ghost" id="aiRelayRiskCancel">取消开启</button>
+      <button type="button" class="btn btn-outline" id="aiRelayRiskBack">上一步</button>
+      <button type="button" class="btn btn-danger" id="aiRelayRiskNext" disabled>下一步</button>
+    </div>
+  </dialog>
   <div class="toast-container" id="toastContainer"></div>
 
   <nav class="mobile-nav" id="mobileNav">
@@ -2688,7 +2714,127 @@ var MANUAL_SETTING_KEYS = {
   group_black_list: true,
   user_black_list: true,
   user_white_list: true,
+  ai_relay_mode_enabled: true,
+  ai_relay_zero_guard_enabled: true,
+  ai_relay_ack_recall: true,
+  ai_relay_ack_false_positive: true,
+  ai_relay_risk_ack: true,
 };
+
+var AI_RELAY_BUSY = false;
+var AI_RELAY_ERROR = '';
+function aiRelayBool(value) {
+  return value === true || value === 1 || (typeof value === 'string' && /^(true|1|yes|on)$/i.test(value.trim()));
+}
+function aiRelayRiskReady() {
+  return aiRelayBool(CONFIG.ai_relay_ack_recall) && aiRelayBool(CONFIG.ai_relay_ack_false_positive) &&
+    CONFIG.ai_relay_risk_ack === CONFIG._ai_relay_ack_text;
+}
+function renderAiRelaySettings() {
+  var status = $('#aiRelayStatus');
+  if (!status) return;
+  var mode = aiRelayBool(CONFIG.ai_relay_mode_enabled);
+  var numeric = aiRelayBool(CONFIG.ai_relay_zero_guard_enabled);
+  status.textContent = AI_RELAY_ERROR || (!mode ? '状态：全局模式关闭，数字检测不生效（包括群覆盖）。' :
+    !aiRelayRiskReady() ? '状态：风险确认不完整，数字检测不生效。请重新完成三步确认。' :
+    numeric ? '状态：高风险数字检测已开启；允许审核的群默认生效，请谨慎检查群配置。' :
+    '状态：全局模式已确认，数字规则全局关闭；仅显式开启数字规则的群可能生效。');
+  $('#btnEnableAiRelay').disabled = AI_RELAY_BUSY;
+  $('#btnDisableAiRelay').disabled = AI_RELAY_BUSY;
+}
+function requestAiRelayRisk() {
+  var dialog = $('#aiRelayRiskDialog');
+  var phrase = CONFIG._ai_relay_ack_text;
+  if (!dialog || !phrase || typeof dialog.showModal !== 'function') {
+    toast('无法读取风险确认协议或浏览器不支持确认窗口，禁止开启。请刷新页面或更新浏览器。', 'error');
+    return Promise.resolve(null);
+  }
+  if (dialog.open) return Promise.resolve(null);
+  return new Promise(function(resolve) {
+    var origin = document.activeElement;
+    var step = 0, checked = [false, false], typed = '', finished = false;
+    var body = $('#aiRelayRiskBody'), next = $('#aiRelayRiskNext'), back = $('#aiRelayRiskBack');
+    var error = $('#aiRelayRiskError');
+    function finish(proof) {
+      if (finished) return;
+      finished = true;
+      dialog.removeEventListener('cancel', onCancel);
+      dialog.close();
+      if (origin && origin.isConnected) origin.focus();
+      resolve(proof);
+    }
+    function onCancel(event) { event.preventDefault(); finish(null); }
+    function valid() { return step < 2 ? checked[step] : typed === phrase; }
+    function sync() {
+      next.disabled = !valid();
+      error.textContent = valid() ? '' : step < 2 ? '必须明确勾选本项风险，才可继续。' : '确认句必须逐字一致（不要增加空格）。';
+    }
+    function render() {
+      $('#aiRelayRiskTitle').textContent = 'AI 特殊检测：风险确认 ' + (step + 1) + '/3';
+      back.style.display = step === 0 ? 'none' : '';
+      next.textContent = step === 2 ? '承担风险并立即开启' : '已知悉，下一步';
+      if (step < 2) {
+        var text = step === 0
+          ? '我已理解：这是确定性数字规则，不是 AI 语义审核；命中直接撤回，不经 LLM 复核，误撤回无法自动恢复。'
+          : '我已理解：0.0、0.2、10.5、100.0%、v1.0.1、012、0012 都可能命中；开启后会误伤正常讨论，不能用于普通交流群。';
+        body.innerHTML = '<p style="color:var(--danger);font-weight:600">' + (step === 0 ? '撤回无法自动恢复。' : '正常数字也会被删除！') + '</p>' +
+          '<label style="display:flex;gap:10px;align-items:flex-start;margin-top:12px"><input id="aiRelayStepCheck" type="checkbox"' + (checked[step] ? ' checked' : '') + ' style="margin-top:7px" /> <span>' + esc(text) + '</span></label>';
+        var box = $('#aiRelayStepCheck');
+        box.addEventListener('change', function() { checked[step] = box.checked; sync(); });
+        box.focus();
+      } else {
+        body.innerHTML = '<p>最后确认：仅限明确禁止这些数字的 AI 中转群。开启全局模式会作用于所有允许审核且未单独关闭本项的群；请先检查群白名单。</p>' +
+          '<label for="aiRelayRiskPhrase" style="display:block;margin-top:12px">请输入以下确认句：</label>' +
+          '<p><strong>' + esc(phrase) + '</strong></p>' +
+          '<input id="aiRelayRiskPhrase" type="text" class="input-md" autocomplete="off" aria-describedby="aiRelayRiskError" style="width:100%;margin-top:10px" />';
+        var input = $('#aiRelayRiskPhrase');
+        input.value = typed;
+        input.setAttribute('aria-invalid', typed !== phrase ? 'true' : 'false');
+        input.addEventListener('input', function() { typed = input.value; sync(); input.setAttribute('aria-invalid', typed !== phrase ? 'true' : 'false'); });
+        input.addEventListener('keydown', function(event) { if (event.key === 'Enter') { event.preventDefault(); if (valid()) next.click(); } });
+        input.focus();
+      }
+      sync();
+    }
+    $('#aiRelayRiskCancel').onclick = function() { finish(null); };
+    back.onclick = function() { if (step > 0) { step--; render(); } };
+    next.onclick = function() {
+      if (!valid()) return;
+      if (step < 2) { step++; render(); return; }
+      finish({ ai_relay_ack_recall: checked[0], ai_relay_ack_false_positive: checked[1], ai_relay_risk_ack: typed });
+    };
+    dialog.addEventListener('cancel', onCancel);
+    dialog.showModal();
+    render();
+  });
+}
+async function setAiRelayEnabled(enabled) {
+  if (AI_RELAY_BUSY) return;
+  AI_RELAY_BUSY = true;
+  AI_RELAY_ERROR = '';
+  renderAiRelaySettings();
+  try {
+    var proof = enabled ? await requestAiRelayRisk() : {
+      ai_relay_ack_recall: false, ai_relay_ack_false_positive: false, ai_relay_risk_ack: ''
+    };
+    if (!proof) return;
+    var payload = Object.assign({ ai_relay_mode_enabled: enabled, ai_relay_zero_guard_enabled: enabled }, proof);
+    var res = await safePost('config', payload);
+    if (apiCallFailed(res)) {
+      AI_RELAY_ERROR = '操作失败，未确认生效：' + apiErrMsg(res, '配置保存失败');
+      toast('AI 特殊检测设置失败：' + apiErrMsg(res, ''), 'error');
+      return;
+    }
+    Object.assign(CONFIG, payload);
+    CONFIG_PROMISE = null;
+    toast(enabled ? 'AI 特殊数字检测已开启，请注意误伤' : 'AI 特殊模式已关闭，风险确认已撤销', enabled ? 'warning' : 'success');
+  } finally {
+    AI_RELAY_BUSY = false;
+    renderAiRelaySettings();
+    var trigger = $(enabled ? '#btnEnableAiRelay' : '#btnDisableAiRelay');
+    if (trigger) trigger.focus();
+  }
+}
 
 function updateLinDisclaimerStatus(agreed) {
   var dot = document.getElementById('linStatusDot');
@@ -2710,6 +2856,7 @@ async function loadSettings() {
   var cb = $('#disclaimerAgreed');
   if (cb) cb.checked = agreed;
   updateLinDisclaimerStatus(agreed);
+  renderAiRelaySettings();
   renderToggles('settingsCore', CORE_TOGGLES);
   renderToggles('settingsAudit', AUDIT_TOGGLES);
   renderToggles('settingsOcr', OCR_TOGGLES);
@@ -2730,6 +2877,7 @@ function renderSettingsSectionTabs() {
   var items = [
     { key: 'core', label: '核心' },
     { key: 'audit', label: '审核' },
+    { key: 'relay', label: 'AI 特殊版（高风险）' },
     { key: 'ocr', label: 'OCR' },
     { key: 'lexicon', label: '词库' },
     { key: 'feature', label: '功能' },
@@ -4032,6 +4180,26 @@ function renderGroupCfgItems(items) {
       var targetGroup = GC_CUR;
       var key = sel.dataset.key, v = sel.value;
       var ok;
+      var protectedKey = key === 'ai_relay_mode_enabled' || key === 'ai_relay_zero_guard_enabled';
+      var inheritingEnabled = v === 'inherit' && aiRelayBool(CONFIG.ai_relay_mode_enabled) &&
+        ['ai_relay_mode_enabled', 'ai_relay_zero_guard_enabled'].every(function(name) {
+          var item = items.find(function(entry) { return entry.key === name; });
+          if (name !== key && item && item.override !== null && item.override !== undefined) {
+            return aiRelayBool(item.override);
+          }
+          return aiRelayBool(item ? item.global_value : CONFIG[name]);
+        });
+      if (protectedKey && (v === 'on' || inheritingEnabled)) {
+        if (!aiRelayRiskReady() || !aiRelayBool(CONFIG.ai_relay_mode_enabled)) {
+          toast('请先在「设置 → AI 特殊版」完成全局风险确认并开启模式。', 'error');
+          if (GC_CUR === targetGroup) openGroupCfg(targetGroup);
+          return;
+        }
+        if (!await requestAiRelayRisk()) {
+          if (GC_CUR === targetGroup) openGroupCfg(targetGroup);
+          return;
+        }
+      }
       if (v === 'inherit') {
         ok = await postOrToast('group_config/delete', { group_id: targetGroup, key: key }, '已恢复继承', '恢复继承失败');
       } else {
@@ -4114,6 +4282,8 @@ async function init() {
   bindClick('btnRefreshUsers', loadUsers);
   bindClick('btnRefreshLogs', loadLogs);
   bindClick('btnSaveSettings', saveSettings);
+  bindClick('btnEnableAiRelay', function() { setAiRelayEnabled(true); });
+  bindClick('btnDisableAiRelay', function() { setAiRelayEnabled(false); });
   bindClick('btnRefreshJoin', loadJoinRules);
   bindClick('btnSaveJoinRule', saveJoinRule);
   bindClick('btnRefreshPerms', function() { loadSuperAdmins(); loadGrants(); loadBlocks(); });

@@ -36,6 +36,10 @@ try:
         CONTEXT_TOTAL_MAX_CHARS,
         ModerationContextMixin,
     )
+    from .ai_relay import (
+        ai_relay_zero_guard_active,
+        ai_relay_zero_guard_hit,
+    )
 except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
     from encoded_content import decode_base_evidence
     from lexicon_migration import LOW_CONFIDENCE_LITERALS as LOW_CONFIDENCE_SWEAR_LITERALS
@@ -48,6 +52,10 @@ except ImportError:  # 独立加载 moderation.py 的单元测试兼容路径
         CONTEXT_MESSAGE_MAX_CHARS,
         CONTEXT_TOTAL_MAX_CHARS,
         ModerationContextMixin,
+    )
+    from ai_relay import (
+        ai_relay_zero_guard_active,
+        ai_relay_zero_guard_hit,
     )
 
 
@@ -2060,6 +2068,19 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
         if not moderation_enabled:
             return
 
+        # AI 特殊数字检测（默认关闭）：全局证明 + 群内双重开关全部满足才生效，
+        # 命中只撤回（不禁言/踢人/调用 LLM）。放在 OCR/LLM 之前，命中即短路，
+        # 不为已确认违规的消息再付出识图/语义成本。正文已按 scan_forward_msg
+        # 合并了远程转发文本，因此转发内容是否参与检测沿用既有开关。
+        # 无消息 ID 时无法撤回，放行到后续正常审核（不能空停事件）。
+        if (self._ai_relay_zero_guard_active(group_id)
+                and ai_relay_zero_guard_hit(text)
+                and self._ai_relay_message_id(event)):
+            async for item in self._execute_ai_relay_penalty(
+                    event, group_id, user_id, user_name, text):
+                yield item
+            return
+
         # 图片先以占位内容登记并保留 arrival；同一发送者的后续消息会等待更早
         # 图片完成 OCR，避免高并发下前后顺序倒置并丢失拆分上下文。
         has_images = bool(image_urls)
@@ -2517,6 +2538,52 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
                 await asyncio.sleep(0.3)
             except Exception:
                 pass
+
+    def _ai_relay_zero_guard_active(self, group_id: str) -> bool:
+        """AI 特殊数字检测运行时门控：全局证明 + 群内双重开关全部满足。
+
+        先看全局主开关（关闭即撤销证明）：关闭时直接返回，不读 ``self.config``，
+        让默认关闭的热路径零额外开销，也不依赖调用方一定具备 config 属性。
+        """
+        if not self._cfg("ai_relay_mode_enabled", False):
+            return False
+        return ai_relay_zero_guard_active(self._cfg, self.config, group_id)
+
+    @staticmethod
+    def _ai_relay_message_id(event) -> str:
+        """当前消息 ID；为空表示无法撤回，检测应放行到后续正常审核。"""
+        return str(getattr(getattr(event, 'message_obj', None), 'message_id', '') or '')
+
+    async def _execute_ai_relay_penalty(self, event: AiocqhttpMessageEvent,
+                                        group_id: str, user_id: str,
+                                        user_name: str, text: str,
+                                        extra_recall_ids: list = None):
+        """AI 特殊数字检测命中处罚：只撤回，不禁言/踢人/调用 LLM。
+
+        与规则/LLM 处罚一致地如实记录撤回结果：撤回被协议端拒绝时日志不写「撤回」
+        （统计把含「撤回」的记录计为已拦截，否则会虚增拦截数），也不在群内宣布已撤回。
+        调用方已确保存在消息 ID。
+        """
+        reason = "AI特殊检测命中"
+        try:
+            msg_id = self._ai_relay_message_id(event)
+            if not msg_id:
+                return
+            recall_ok = (await self._recall_msg(event, msg_id)) is True
+            await self._recall_extra_messages(event, extra_recall_ids)
+            action = "AI特殊检测撤回" if recall_ok else "AI特殊检测（未能删除消息）"
+            self._log_moderation(group_id, user_id, user_name, text, action, reason, None)
+            if recall_ok and self._cfg("auto_moderate_notice", True, group_id=group_id):
+                notice = "[群管] {name}({uid}) 的消息已被撤回（AI特殊检测）"
+                yield event.plain_result(
+                    notice.replace("{name}", user_name)
+                    .replace("{uid}", user_id)
+                    .replace("{group}", group_id)
+                    .replace("{reason}", reason)
+                )
+            event.stop_event()
+        except Exception as e:
+            logger.warning(f"[GroupMgr] AI特殊检测出错: {e}")
 
     async def _execute_rule_penalty(self, event: AiocqhttpMessageEvent, group_id: str,
                                     user_id: str, user_name: str, text: str,

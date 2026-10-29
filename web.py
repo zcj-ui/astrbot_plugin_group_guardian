@@ -18,6 +18,11 @@ except ImportError:
     jsonify = None
     quart_request = None
 
+from .ai_relay import (
+    AI_RELAY_ACK_TEXT,
+    AI_RELAY_CONFIRM_KEYS,
+    ai_relay_risk_acknowledged,
+)
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
 
 
@@ -929,6 +934,7 @@ class WebMixin:
         safe_config["_user_black_list"] = self.user_black_list
         safe_config["_user_white_list"] = self.user_white_list
         safe_config["_admin_list"] = self._get_admin_list()
+        safe_config["_ai_relay_ack_text"] = AI_RELAY_ACK_TEXT
         return jsonify(safe_config)
 
     async def _web_update_config(self):
@@ -947,6 +953,10 @@ class WebMixin:
             # 单群管理类名单（群白/群黑/用户黑/用户白/管理员）v2.4.0 起改由专用 API + DB 管理，
             # 配置保存接口跳过它们，避免 config 与 DB 双写不一致。
             db_managed_keys = {"group_white_list", "group_black_list", "user_black_list", "user_white_list", "admin_list"}
+            # AI 特殊检测风险确认门禁：任何改动前先校验，拒绝时不产生任何部分写入。
+            ai_relay_reject = self._ai_relay_config_gate(data)
+            if ai_relay_reject is not None:
+                return jsonify({"status": "error", "message": ai_relay_reject})
             updated = []
             for key, value in data.items():
                 if key not in schema:
@@ -975,6 +985,16 @@ class WebMixin:
                         continue
                     self.config[key] = str_value
                     updated.append(key)
+            # 显式关闭总开关：无论 payload 是否携带旧确认值，一律撤销三项全局确认。
+            # 撤销同样纳入 updated/old_values，持久化失败时随其余改动一并回滚。
+            if ("ai_relay_mode_enabled" in data
+                    and not self._parse_bool(data.get("ai_relay_mode_enabled"), False)):
+                for proof_key in self._AI_RELAY_PROOF_KEYS:
+                    if proof_key not in old_values:
+                        old_values[proof_key] = self.config[proof_key] if proof_key in self.config else missing
+                    self.config[proof_key] = self._ai_relay_proof_default(proof_key)
+                    if proof_key not in updated:
+                        updated.append(proof_key)
             if updated and not self._save_config_safe():
                 for key in updated:
                     previous = old_values.get(key, missing)
@@ -2453,7 +2473,83 @@ class WebMixin:
         "moderation_review_enabled", "moderation_review_interval",
         "moderation_review_min_samples", "llm_moderation_review_guidance",
         "group_white_list", "group_black_list", "user_black_list", "user_white_list", "admin_list",
+        "ai_relay_ack_recall", "ai_relay_ack_false_positive", "ai_relay_risk_ack",
     }
+
+    # ==================== AI 特殊检测（特殊数字）风险确认门禁 ====================
+    # 三项确认只允许在全局配置中维护，群覆盖仅能开启两个开关，且必须已有全局完整确认。
+    _AI_RELAY_ENABLE_KEYS = ("ai_relay_mode_enabled", "ai_relay_zero_guard_enabled")
+    _AI_RELAY_PROOF_KEYS = tuple(AI_RELAY_CONFIRM_KEYS)
+
+    def _ai_relay_payload_proof_ok(self, payload: dict) -> bool:
+        # 同一次 payload 必须完整携带三项确认且全部有效（不依赖已存储值）。
+        if not all(key in payload for key in self._AI_RELAY_PROOF_KEYS):
+            return False
+        return ai_relay_risk_acknowledged(
+            {key: payload.get(key) for key in self._AI_RELAY_PROOF_KEYS}
+        )
+
+    def _ai_relay_stored_proof_ok(self) -> bool:
+        # 已持久化的全局风险确认是否完整。
+        return ai_relay_risk_acknowledged(self.config)
+
+    def _ai_relay_payload_touches_proof(self, payload: dict) -> bool:
+        return any(key in payload for key in self._AI_RELAY_PROOF_KEYS)
+
+    def _ai_relay_proof_default(self, key: str):
+        # 撤销确认时写回的默认值（bool→False，string→""）。
+        meta = self._config_schema.get(key, {})
+        default = meta.get("default")
+        if meta.get("type", "bool") == "bool":
+            return self._parse_bool(default, False)
+        return "" if default is None else str(default)
+
+    def _ai_relay_effective_enabled(self, overrides: dict, removed_keys=()) -> bool:
+        # 计算「覆盖集合（可移除若干键以模拟删除/继承）+ 全局兜底」下的最终生效启用状态。
+        # 两个开关需同时为真；removed_keys 中的键强制回退到全局值。
+        enabled = True
+        for key in self._AI_RELAY_ENABLE_KEYS:
+            value = None
+            if key not in removed_keys:
+                value = overrides.get(key)
+            if value is None:
+                value = self.config.get(key, False)
+            enabled = enabled and self._parse_bool(value, False)
+        return enabled
+
+    def _ai_relay_config_gate(self, data: dict):
+        # 全局配置保存门禁：返回 None 放行，否则返回拒绝原因（调用方需在任何改动前返回）。
+        touches_enable = any(key in data for key in self._AI_RELAY_ENABLE_KEYS)
+        if not touches_enable and not self._ai_relay_payload_touches_proof(data):
+            # 与 AI 特殊检测无关的保存：仅当已启用却缺少完整确认时拒绝。
+            if self._ai_relay_effective_enabled({}) and not self._ai_relay_stored_proof_ok():
+                return "AI特殊检测已启用但全局风险确认不完整，请重新完成三项确认后再保存配置"
+            return None
+        # 显式关闭总开关：属于收紧操作，一律放行；后续无条件撤销三项确认。
+        # 必须早于激活校验——陈旧前端可能在同一 payload 里带上 detector=true。
+        if "ai_relay_mode_enabled" in data and not self._parse_bool(data.get("ai_relay_mode_enabled"), False):
+            return None
+        activating = False
+        for key in self._AI_RELAY_ENABLE_KEYS:
+            if key in data and self._parse_bool(data.get(key), False) and not self._parse_bool(self.config.get(key, False), False):
+                activating = True
+        if activating and not self._ai_relay_payload_proof_ok(data):
+            return "启用AI特殊检测需在本次保存中同时完成两项风险勾选并逐字输入确认句"
+        if self._ai_relay_payload_touches_proof(data):
+            if not self._ai_relay_payload_proof_ok(data):
+                return "AI特殊检测风险确认不完整：两项勾选与确认句缺一不可"
+            return None
+        mode_new = self._parse_bool(data["ai_relay_mode_enabled"], False) if "ai_relay_mode_enabled" in data else self._parse_bool(self.config.get("ai_relay_mode_enabled", False), False)
+        det_new = self._parse_bool(data["ai_relay_zero_guard_enabled"], False) if "ai_relay_zero_guard_enabled" in data else self._parse_bool(self.config.get("ai_relay_zero_guard_enabled", False), False)
+        if mode_new and det_new and not self._ai_relay_stored_proof_ok():
+            return "AI特殊检测已启用但全局风险确认不完整，请重新完成三项确认后再保存配置"
+        return None
+
+    def _ai_relay_group_guard(self, projected: dict, before: bool):
+        # 群覆盖门禁：仅当操作会让该群「由未启用变为启用」时才要求全局完整确认。
+        if not before and self._ai_relay_effective_enabled(projected) and not self._ai_relay_stored_proof_ok():
+            return jsonify({"status": "error", "message": "按群启用AI特殊检测需先完成全局三项风险确认"})
+        return None
 
     def _group_overridable_keys(self):
         # 动态计算可按群覆盖的配置项：schema 中除全局项外的通用配置。
@@ -2512,6 +2608,7 @@ class WebMixin:
         "join_llm_web_search_max_queries": "入群审核",
         "join_accept_overrides_lexicon": "入群审核",
         "join_default_action": "入群审核", "join_reject_reason": "入群审核",
+        "ai_relay_mode_enabled": "AI特殊检测", "ai_relay_zero_guard_enabled": "AI特殊检测",
     }
 
     async def _web_get_group_config(self):
@@ -2567,6 +2664,15 @@ class WebMixin:
                 options = meta.get("options") or []
                 if options and value not in [str(x) for x in options]:
                     return jsonify({"status": "error", "message": "配置值不在允许选项内"})
+            if key in self._AI_RELAY_ENABLE_KEYS:
+                overrides = self._storage.get_group_configs(group_id)
+                projected = dict(overrides)
+                projected[key] = value
+                rejected = self._ai_relay_group_guard(
+                    projected, self._ai_relay_effective_enabled(overrides)
+                )
+                if rejected is not None:
+                    return rejected
             self._storage.set_group_config(group_id, key, value)
             self._invalidate_group_cfg_cache(group_id)
             return jsonify({"status": "success", "group_id": group_id, "key": key, "value": value})
@@ -2581,6 +2687,12 @@ class WebMixin:
             key = str(data.get("key", "")).strip()
             if not group_id or not key:
                 return jsonify({"status": "error", "message": "缺少 group_id 或 key"})
+            if key in self._AI_RELAY_ENABLE_KEYS:
+                overrides = self._storage.get_group_configs(group_id)
+                before = self._ai_relay_effective_enabled(overrides)
+                after = self._ai_relay_effective_enabled(overrides, removed_keys=(key,))
+                if after and not before and not self._ai_relay_stored_proof_ok():
+                    return jsonify({"status": "error", "message": "删除该覆盖会使本群继承启用AI特殊检测，需先完成全局三项风险确认"})
             self._storage.delete_group_config(group_id, key)
             self._invalidate_group_cfg_cache(group_id)
             return jsonify({"status": "success", "group_id": group_id, "key": key})
@@ -2594,6 +2706,13 @@ class WebMixin:
             group_id = str(data.get("group_id", "")).strip()
             if not group_id:
                 return jsonify({"status": "error", "message": "缺少 group_id"})
+            overrides = self._storage.get_group_configs(group_id)
+            removed = tuple(key for key in self._AI_RELAY_ENABLE_KEYS if key in overrides)
+            if removed:
+                before = self._ai_relay_effective_enabled(overrides)
+                after = self._ai_relay_effective_enabled(overrides, removed_keys=removed)
+                if after and not before and not self._ai_relay_stored_proof_ok():
+                    return jsonify({"status": "error", "message": "清空该群配置会使本群继承启用AI特殊检测，需先完成全局三项风险确认"})
             n = self._storage.clear_group_configs(group_id)
             self._invalidate_group_cfg_cache(group_id)
             return jsonify({"status": "success", "group_id": group_id, "cleared": n})
@@ -2621,7 +2740,9 @@ class WebMixin:
             if not self._group_config_allowed(group_id):
                 return jsonify({"status": "error", "message": "仅白名单群可进行多群配置"})
             overridable = set(self._group_overridable_keys())
-            updated = []
+            overrides = self._storage.get_group_configs(group_id)
+            projected = dict(overrides)
+            pending = []
             for key, value in items.items():
                 if key not in overridable:
                     continue
@@ -2637,6 +2758,16 @@ class WebMixin:
                     options = meta.get("options") or []
                     if options and value not in [str(x) for x in options]:
                         continue
+                pending.append((key, value))
+                projected[key] = value
+            # 批量应用后若使该群由未启用变为启用，则要求全局完整确认（整批原子拒绝）。
+            rejected = self._ai_relay_group_guard(
+                projected, self._ai_relay_effective_enabled(overrides)
+            )
+            if rejected is not None:
+                return rejected
+            updated = []
+            for key, value in pending:
                 self._storage.set_group_config(group_id, key, value)
                 updated.append(key)
             self._invalidate_group_cfg_cache(group_id)
@@ -2659,9 +2790,20 @@ class WebMixin:
             if not source_configs:
                 return jsonify({"status": "error", "message": "源群没有独立配置"})
             overridable = set(self._group_overridable_keys())
+            overrides = self._storage.get_group_configs(target_id)
+            projected = dict(overrides)
+            for key, value in source_configs.items():
+                # 三项风险确认永不随复制下发（亦不在可覆盖集合内）。
+                if key in overridable and key not in self._AI_RELAY_PROOF_KEYS:
+                    projected[key] = value
+            rejected = self._ai_relay_group_guard(
+                projected, self._ai_relay_effective_enabled(overrides)
+            )
+            if rejected is not None:
+                return rejected
             copied = 0
             for key, value in source_configs.items():
-                if key in overridable:
+                if key in overridable and key not in self._AI_RELAY_PROOF_KEYS:
                     self._storage.set_group_config(target_id, key, value)
                     copied += 1
             self._invalidate_group_cfg_cache(target_id)
