@@ -867,7 +867,8 @@ class TimeoutBoundaryTests(unittest.IsolatedAsyncioTestCase):
     async def test_ocr_hanging_llm_is_cancelled_and_degrades_to_empty(self):
         harness = _HangingOcrHarness()
 
-        with patch.object(image_audit, "LLM_CALL_TIMEOUT", 0.01):
+        with patch.object(image_audit, "LLM_CALL_TIMEOUT", 0.01), \
+                patch.object(moderation, "LLM_RETRY_DELAYS", (0, 0, 0)):
             result = await harness._call_llm_ocr("https://example.com/image.png")
 
         self.assertEqual(result, "")

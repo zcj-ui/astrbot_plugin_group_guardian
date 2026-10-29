@@ -13,6 +13,7 @@ LLM_MESSAGE_MAX_CHARS = 6000
 LLM_MESSAGE_CHUNK_OVERLAP = 200
 LLM_CALL_TIMEOUT = 60.0
 LLM_QUEUE_TIMEOUT = 120.0
+LLM_RETRY_DELAYS = (10.0, 20.0, 30.0)
 STREAM_RULE_SCAN_MAX_CHARS = 100_000
 STREAM_RULE_EVIDENCE_MAX_CHARS = 4000
 # Issue #90：官方机器人判定缓存。is_robot 是账号属性基本不变，长缓存；
@@ -103,25 +104,38 @@ class ModerationMixin(ImageAuditMixin, ModerationContextMixin):
     _CARD_MAX_CHARS = 50000
 
     async def _run_llm_with_limits(self, factory, timeout: float = LLM_CALL_TIMEOUT):
-        """Run one LLM coroutine with bounded queueing and execution.
+        """每轮调用独立限流/超时；失败后等待 10/20/30 秒，最多额外重试三次。
 
-        ``factory`` is used instead of a pre-created coroutine so provider work
-        starts only after a permit is available. Normal bursts wait for capacity;
-        a prolonged overload eventually degrades explicitly instead of retaining
-        an unbounded number of event tasks forever.
+        工厂在获得许可后才创建协程。退避前释放全局并发许可，不阻塞其它消息；
+        排队超时尚未发起调用，不重试。取消直接传播，最终失败仍交由调用方降级。
         """
         semaphore = getattr(self, "_llm_semaphore", None)
-        acquired = False
-        if semaphore is not None:
-            await asyncio.wait_for(
-                semaphore.acquire(), timeout=LLM_QUEUE_TIMEOUT
-            )
-            acquired = True
-        try:
-            return await asyncio.wait_for(factory(), timeout=timeout)
-        finally:
-            if acquired:
-                semaphore.release()
+        for attempt in range(len(LLM_RETRY_DELAYS) + 1):
+            acquired = False
+            if semaphore is not None:
+                await asyncio.wait_for(
+                    semaphore.acquire(), timeout=LLM_QUEUE_TIMEOUT
+                )
+                acquired = True
+            try:
+                result = await asyncio.wait_for(factory(), timeout=timeout)
+                if result is None or (isinstance(result, str) and not result.strip()):
+                    raise RuntimeError("LLM未返回可用内容")
+                return result
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                if attempt >= len(LLM_RETRY_DELAYS):
+                    raise
+                delay = LLM_RETRY_DELAYS[attempt]
+                logger.warning(
+                    f"[GroupMgr] LLM调用失败({type(exc).__name__})，"
+                    f"{delay:g}秒后进行第{attempt + 1}/{len(LLM_RETRY_DELAYS)}次重试"
+                )
+            finally:
+                if acquired:
+                    semaphore.release()
+            await asyncio.sleep(delay)
 
     @staticmethod
     def _bounded_audit_text(text: str, max_chars: int) -> str:

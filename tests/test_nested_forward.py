@@ -1828,9 +1828,10 @@ class NestedForwardTests(unittest.TestCase):
         event = _Event([])
         harness = _Harness()
         for response in ("not-json", RuntimeError("provider down"), asyncio.TimeoutError()):
-            result = asyncio.run(_LLMHarness(response)._call_llm_for_moderation(
-                event, "cs", {"swear": True}, group_id="1"
-            ))
+            with patch.object(moderation, "LLM_RETRY_DELAYS", (0, 0, 0)):
+                result = asyncio.run(_LLMHarness(response)._call_llm_for_moderation(
+                    event, "cs", {"swear": True}, group_id="1"
+                ))
             self.assertTrue(result["fallback"])
             self.assertTrue(harness._llm_failure_requires_rule_penalty(
                 result, {"swear": True}, "cs"
