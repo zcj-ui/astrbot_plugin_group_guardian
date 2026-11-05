@@ -123,7 +123,7 @@ class UtilitiesMixin:
 
         迁移只执行一次（meta.lists_migrated 标记）。迁移只增不删 config 旧值，
         保证升级出问题时仍可回退。DB 为空且未迁移过时，回退读 config 旧值。
-        admin 名单不在此设置内存（由 main 的 admin 同步逻辑处理），仅做 DB 迁移与回填。
+        admin 名单仅在首次迁移前回退/导入旧 config；迁移完成后 SQLite 是唯一来源。
         """
         migrated_flag = self._storage.get_meta("lists_migrated", "")
         for list_type, (cfg_key, list_attr, set_attr) in self._MANAGED_LIST_MAP.items():
@@ -132,9 +132,12 @@ class UtilitiesMixin:
             # 首次迁移：DB 该类型为空时，把 config 旧值导入 DB
             if not migrated_flag and self._storage.count_managed_list(list_type) == 0 and cfg_values:
                 self._storage.seed_managed_list(list_type, cfg_values)
-            # 以 DB 为准读入；若 DB 为空（全新安装/无旧值）则回退 config
+            # admin 在迁移完成后必须保留 DB 的显式空名单，不能复活旧 config 值。
             db_values = self._storage.load_managed_list(list_type)
-            values = db_values if db_values else cfg_values
+            if list_type == "admin" and migrated_flag:
+                values = db_values
+            else:
+                values = db_values if db_values else cfg_values
             setattr(self, list_attr, list(values))
             if set_attr:
                 setattr(self, set_attr, set(values))
@@ -167,6 +170,40 @@ class UtilitiesMixin:
         if set_attr:
             getattr(self, set_attr).discard(value)
         return removed
+
+    @staticmethod
+    def _normalize_admin_list(value):
+        """Validate and normalize plugin-global platform user IDs."""
+        if isinstance(value, str):
+            items = value.replace("，", ",").split(",")
+        elif isinstance(value, list):
+            items = value
+        else:
+            raise ValueError("管理员列表必须是字符串或 ID 列表")
+        normalized = []
+        seen = set()
+        for item in items:
+            if isinstance(item, bool) or not isinstance(item, (str, int)):
+                raise ValueError("管理员 ID 必须是字符串或整数")
+            text = str(item).strip()
+            if not text:
+                continue
+            if text.casefold() in {"none", "null", "nan"}:
+                raise ValueError("管理员 ID 格式无效")
+            if text not in seen:
+                seen.add(text)
+                normalized.append(text)
+        return normalized
+
+    def _replace_admin_list(self, values):
+        """Persist before updating the live administrator list and its permission cache."""
+        normalized = self._normalize_admin_list(values)
+        self._storage.replace_managed_list("admin", normalized)
+        self.admin_list = normalized
+        cache = getattr(self, "_admin_role_cache", None)
+        if cache is not None:
+            cache.clear()
+        return normalized
 
 
     @staticmethod

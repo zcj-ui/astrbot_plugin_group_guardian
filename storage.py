@@ -1453,6 +1453,20 @@ class SQLiteStorage(ModerationReviewStorageMixin, GroupStorageMixin):
             conn.commit()
         return bool(cur.rowcount)
 
+    def replace_managed_list(self, list_type: str, values: Iterable[str]) -> None:
+        """Atomically replace one managed list without touching other list types."""
+        if list_type not in {"group_white", "group_black", "user_black", "user_white", "admin"}:
+            raise ValueError("unknown managed list type")
+        items = list(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            conn.execute("DELETE FROM managed_lists WHERE list_type=?", (list_type,))
+            conn.executemany(
+                "INSERT INTO managed_lists(list_type, value) VALUES(?, ?)",
+                [(list_type, value) for value in items],
+            )
+            conn.commit()
+
     def seed_managed_list(self, list_type: str, values: Iterable[str]) -> int:
         # 一次性迁移：把旧 config 名单导入 DB（INSERT OR IGNORE 去重）。
         items = [(str(list_type), str(v).strip()) for v in (values or []) if str(v).strip()]

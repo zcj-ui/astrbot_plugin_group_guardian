@@ -52,11 +52,11 @@
         "hint": "适合豁免其他机器人账号或可信成员。已迁移到 SQLite，请在 WebUI 中维护"
     },
     "admin_list": {
-        "description": "管理员 QQ 号列表",
+        "description": "插件全局管理员 ID 列表",
         "type": "list",
         "invisible": true,
         "default": [],
-        "hint": "必须填写！列表中的 QQ 号才能使用管理指令和 LLM 群管工具。按发送者 ID 原样比对：非 QQ 号平台（如 QQ 官方机器人）需填写该平台的用户 ID，被拒时机器人回复中会给出"
+        "hint": "可在「群管理 → 插件管理员」或此处维护；列表中的发送者 ID 获得插件全局管理员权限。非 QQ 平台填写该平台用户 ID。AstrBot 全局管理员仍有效；群权限黑名单优先。留空会清空此插件名单。"
     },
     "auto_moderate_enabled": {
         "description": "自动审核总开关（检测骂人和广告自动撤回）",

@@ -7,7 +7,7 @@ author: zhaisir # 作者
 astrbot_version: ">=4.24.2"
 support_platforms: 
   - aiocqhttp
-repo: https://github.com/zcj-ui/astrbot_plugin_group_guardian # 插件的仓库地址
+repo: https://github.com/shangzhimingge/astrbot_plugin_group_guardian # 插件的仓库地址
 tags:
   - 群管理
   - 内容审核

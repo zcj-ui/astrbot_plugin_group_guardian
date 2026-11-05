@@ -6,6 +6,8 @@
 ![astrbot](https://img.shields.io/badge/astrbot-%3E%3D4.24.2-cf6e34)
 ![stars](https://img.shields.io/github/stars/zcj-ui/astrbot_plugin_group_guardian?style=social)
 
+本仓库 fork 自 [上游项目](https://github.com/zcj-ui/astrbot_plugin_group_guardian)，并包含插件全局管理员持久化修复。安装此功能分支时，请使用 fork 地址：[shangzhimingge/astrbot_plugin_group_guardian](https://github.com/shangzhimingge/astrbot_plugin_group_guardian)。
+
 AstrBot 综合群管理插件，集 **28项群管功能**、**AI智能审核**、**违禁词热更新** 与 **WebUI 管理面板** 于一体，让机器人成为真正的群聊守护者。
 
 > 当前版本：**v2.8.11** | 最低 AstrBot 版本：**>=4.24.2**
@@ -37,6 +39,8 @@ AstrBot 综合群管理插件，集 **28项群管功能**、**AI智能审核**�
 ### 群管工具集（28项）
 
 所有管理命令仅限 **插件管理员或群管理员** 使用，危险写操作会在插件内进行权限校验；查询类指令可通过配置项控制是否开放。
+
+`admin_list` 是跨群生效的插件全局管理员名单，按发送者 ID 原样匹配；非 QQ 平台请填写对应平台用户 ID。可在 WebUI「群管理 → 插件管理员」或「全部设置」维护，数据保存在插件 SQLite 中；清空只会清除这份插件名单，不会移除 AstrBot 自身的全局管理员。群级权限黑名单仍优先于插件管理员权限。
 
 #### 管理操作指令（需管理员权限）
 
@@ -269,7 +273,7 @@ LLM 找出反复出现、又不在现有词库里的引流词（带置信度/理
 | 配置项                          | 说明                    | 默认值        |
 | ---------------------------- | --------------------- | ---------- |
 | `enabled`                    | 插件总开关                 | `true`     |
-| `admin_list`                 | 管理员QQ号列表（必填；非QQ号平台填该平台用户ID） | `[]`       |
+| `admin_list`                 | 插件全局管理员 ID 列表（可在全部设置或「群管理 → 插件管理员」中维护；留空仅清空插件名单，AstrBot 全局管理员仍有效） | `[]`       |
 | `group_white_list`           | 群白名单（空则全部）            | `[]`       |
 | `group_black_list`           | 群黑名单                  | `[]`       |
 | `user_black_list`            | 用户黑名单（自动拒绝加群）         | `[]`       |

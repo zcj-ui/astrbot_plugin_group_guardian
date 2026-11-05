@@ -928,6 +928,7 @@ class WebMixin:
                 safe_config[k] = self.config[k]
             else:
                 safe_config[k] = self._config_schema[k].get("default")
+        safe_config["admin_list"] = self._get_admin_list()
         safe_config["_schema"] = self._config_schema
         safe_config["_white_list"] = self.group_white_list
         safe_config["_black_list"] = self.group_black_list
@@ -943,6 +944,10 @@ class WebMixin:
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
             schema = self._config_schema
+            admin_values = (
+                self._normalize_admin_list(data["admin_list"])
+                if "admin_list" in data else None
+            )
             missing = object()
             old_values = {
                 key: self.config[key] if key in self.config else missing
@@ -1051,7 +1056,20 @@ class WebMixin:
                     wakeup = getattr(self, "_moderation_review_wakeup", None)
                     if wakeup is not None:
                         wakeup.set()
-            return jsonify({"status": "success", "updated": updated})
+            if admin_values is not None:
+                try:
+                    admin_values = self._replace_admin_list(admin_values)
+                except Exception:
+                    return jsonify({
+                        "status": "error",
+                        "updated": updated,
+                        "message": (
+                            "其他设置已保存，但管理员名单保存失败；管理员名单未更改"
+                            if updated else "管理员名单保存失败；名单未更改"
+                        ),
+                    })
+                updated.append("admin_list")
+            return jsonify({"status": "success", "updated": updated, "admin_list": self._get_admin_list()})
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)})
 
@@ -2098,9 +2116,10 @@ class WebMixin:
     async def _web_admin_add(self):
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
-            user_id = str(data.get("user_id", "")).strip()
-            if not user_id:
-                return jsonify({"status": "error", "message": "缺少 user_id"})
+            user_ids = self._normalize_admin_list([data.get("user_id", "")])
+            if len(user_ids) != 1:
+                return jsonify({"status": "error", "message": "缺少有效 user_id"})
+            user_id = user_ids[0]
             self._managed_list_add("admin", user_id)
             self._admin_role_cache.clear()
             return jsonify({"status": "success", "user_id": user_id, "admin_list": self._get_admin_list()})
@@ -2110,9 +2129,10 @@ class WebMixin:
     async def _web_admin_remove(self):
         try:
             data = await quart_request.get_json(force=True, silent=True) or {}
-            user_id = str(data.get("user_id", "")).strip()
-            if not user_id:
-                return jsonify({"status": "error", "message": "缺少 user_id"})
+            user_ids = self._normalize_admin_list([data.get("user_id", "")])
+            if len(user_ids) != 1:
+                return jsonify({"status": "error", "message": "缺少有效 user_id"})
+            user_id = user_ids[0]
             self._managed_list_remove("admin", user_id)
             self._admin_role_cache.clear()
             return jsonify({"status": "success", "user_id": user_id, "admin_list": self._get_admin_list()})
