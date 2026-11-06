@@ -578,7 +578,7 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
           <div class="member-list" id="memberList"><p class="empty">加载中...</p></div>
         </div>
         <div class="card">
-          <div class="card-header"><h2>插件管理员</h2></div>
+          <div class="card-header"><h2>插件全局管理员</h2></div>
           <div class="admin-manage">
             <div class="admin-add-row"><input type="text" class="input-sm" id="adminInput" placeholder="QQ号/用户ID(可多个,逗号/空格分隔)..." /><button class="btn btn-primary btn-sm" id="btnAddAdmin">添加</button></div>
             <div class="admin-list" id="adminList"><p class="empty">暂无管理员</p></div>
@@ -969,6 +969,7 @@ let REBUILD_STATUS_TIMER = null;
   var CONFIG_PROMISE = null;
   var CONFIG_REQUEST_EPOCH = 0;
   var API_TIMEOUT_MS = 12000;
+  var ADMIN_LIST_BASELINE = null;
   var LOAD_EPOCH = Object.create(null);
 
   function beginLoad(name) {
@@ -1385,12 +1386,28 @@ async function safeDownload(path, params, filename) {
   }
 }
 
+function syncAdminListConfig(values, canonicalize) {
+  var admins = Array.isArray(values) ? values.map(String) : [];
+  CONFIG.admin_list = admins.slice();
+  CONFIG._admin_list = admins.slice();
+  var input = document.querySelector('[data-all-key="admin_list"]');
+  if (!input) {
+    ADMIN_LIST_BASELINE = admins.join(',');
+    return;
+  }
+  var current = input.value || '';
+  var isDirty = ADMIN_LIST_BASELINE !== null && current !== ADMIN_LIST_BASELINE;
+  if (!isDirty || canonicalize) input.value = admins.join(',');
+  ADMIN_LIST_BASELINE = admins.join(',');
+}
+
 async function loadConfigCached(force) {
   if (!force && CONFIG_PROMISE) return CONFIG_PROMISE;
   var epoch = ++CONFIG_REQUEST_EPOCH;
   var request = safeGet('config').then(function(res) {
     if (epoch === CONFIG_REQUEST_EPOCH && !isApiError(res) && res && typeof res === 'object' && !Array.isArray(res)) {
       CONFIG = Object.assign({}, CONFIG, res);
+      syncAdminListConfig(res.admin_list || res._admin_list || []);
     }
     return res;
   }).catch(function(e) {
@@ -2175,7 +2192,7 @@ function renderMembers(members) {
 
 async function loadAdmins() {
   var epoch = beginLoad('admins');
-  var res = await loadConfigCached();
+  var res = await loadConfigCached(true);
   if (!isCurrentLoad('admins', epoch)) return;
   if (isApiError(res)) return;
   renderAdmins();
@@ -3446,7 +3463,7 @@ function renderAllSettings() {
     var def = schema[key] || {};
     var t = def.type || '';
     var val = (CONFIG[key] != null) ? CONFIG[key] : def.default;
-    var desc = def.description || key;
+    var desc = key === 'admin_list' ? '插件全局管理员 ID 列表' : (def.description || key);
     var hint = def.hint || '';
     var searchText = (key + ' ' + desc + ' ' + hint).toLowerCase();
     var keyAttr = escAttr(key);
@@ -3460,7 +3477,9 @@ function renderAllSettings() {
       return;
     }
     if (t === 'list') {
-      var listVal = Array.isArray(val) ? val.join(',') : (val == null ? '' : String(val));
+      var listVal = key === 'admin_list'
+        ? (Array.isArray(CONFIG.admin_list || CONFIG._admin_list) ? (CONFIG.admin_list || CONFIG._admin_list).join(',') : '')
+        : (Array.isArray(val) ? val.join(',') : (val == null ? '' : String(val)));
       rows.push('<div class="setting-item" data-search="' + searchAttr + '"><div class="setting-info"><div class="setting-label">' + esc(desc) + ' <span style="font-size:11px;color:var(--text-muted)">(' + esc(key) + ')</span></div>' + (hint ? '<div class="setting-desc">' + esc(hint) + '</div>' : '<div class="setting-desc">多个值请用英文逗号分隔</div>') + '</div><input type="text" class="input-sm" data-all-key="' + keyAttr + '" data-all-type="list" value="' + escAttr(listVal) + '" style="width:320px" /></div>');
       return;
     }
@@ -3839,7 +3858,12 @@ async function saveSettings() {
     if (!key) return;
     if (typ === 'bool') payload[key] = !!inp.checked;
     else if (typ === 'int') payload[key] = parseIntOrDefault(inp.value, 0);
-    else if (typ === 'list') payload[key] = (inp.value || '').split(',').map(function(x){ return x.trim(); }).filter(Boolean);
+    else if (typ === 'list') {
+      if (key !== 'admin_list' || (ADMIN_LIST_BASELINE !== null && (inp.value || '') !== ADMIN_LIST_BASELINE)) {
+        var separators = key === 'admin_list' ? /[,，]/ : /,/;
+        payload[key] = (inp.value || '').split(separators).map(function(x){ return x.trim(); }).filter(Boolean);
+      }
+    }
     else payload[key] = (inp.value || '').trim();
   });
   var res = await safePost('config', payload);
@@ -3847,6 +3871,8 @@ async function saveSettings() {
     toast('保存失败: ' + (res.message || ''), 'error');
   } else {
     CONFIG = Object.assign({}, CONFIG, payload);
+    if (Array.isArray(res.admin_list)) syncAdminListConfig(res.admin_list, true);
+    else if (Object.prototype.hasOwnProperty.call(payload, 'admin_list')) syncAdminListConfig(payload.admin_list, true);
     CONFIG_PROMISE = null;
     toast('设置已保存', 'success');
   }
