@@ -740,15 +740,21 @@ class CommandsMixin:
         admin_list = self._get_admin_list()
         if action == "移除":
             if user_id in admin_list:
-                self._managed_list_remove("admin", user_id)
-                self._admin_role_cache.clear()
+                try:
+                    self._managed_list_remove("admin", user_id)
+                except Exception as e:
+                    yield event.plain_result(f"移除插件管理员失败: {e}")
+                    return
                 yield event.plain_result(f"已移除插件管理员: {user_id}")
             else:
                 yield event.plain_result(f"{user_id} 不在管理员列表中")
         else:
             if user_id not in admin_list:
-                self._managed_list_add("admin", user_id)
-                self._admin_role_cache.clear()
+                try:
+                    self._managed_list_add("admin", user_id)
+                except Exception as e:
+                    yield event.plain_result(f"添加插件管理员失败: {e}")
+                    return
                 yield event.plain_result(f"已添加插件管理员: {user_id}")
             else:
                 yield event.plain_result(f"{user_id} 已是插件管理员")

@@ -79,22 +79,20 @@ class UtilitiesMixin:
     }
 
     def _sync_astrbot_admins(self) -> None:
-        # 从 AstrBot 主配置读取 admin_id，补充到插件管理员名单（DB managed_lists + 内存），统一管理员来源。
+        # 从 AstrBot 主配置读取 admin_id，补充到插件管理员名单。
         try:
             ab_config = getattr(self.context, 'astrbot_config', None)
             if not ab_config:
                 return
-            astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
-            if not astrbot_admin_ids:
-                return
-            current = set(getattr(self, "admin_list", []) or [])
-            new_admins = [a for a in astrbot_admin_ids if a not in current]
-            if new_admins:
-                for a in new_admins:
-                    self._managed_list_add("admin", a)
-                logger.info(f"[GroupMgr] 自动同步AstrBot管理员到插件admin名单: {new_admins}")
+            astrbot_admin_ids = self._normalize_admin_list(ab_config.get('admin_id', []) or [])
         except Exception as _e:
             logger.debug(f"[GroupMgr] 同步AstrBot管理员失败: {_e}")
+            return
+        current = self._get_admin_list()
+        new_admins = [admin_id for admin_id in astrbot_admin_ids if admin_id not in current]
+        if new_admins:
+            self._replace_admin_list(current + new_admins)
+            logger.info(f"[GroupMgr] 自动同步AstrBot管理员到插件admin名单: {new_admins}")
 
     def _save_config_safe(self) -> bool:
         # 安全保存配置：调用 AstrBotConfig.save_config()，失败时记录异常但不抛错。
@@ -127,8 +125,11 @@ class UtilitiesMixin:
         """
         migrated_flag = self._storage.get_meta("lists_migrated", "")
         for list_type, (cfg_key, list_attr, set_attr) in self._MANAGED_LIST_MAP.items():
-            cfg_values = self.config.get(cfg_key, [])
-            cfg_values = [str(v).strip() for v in (cfg_values if isinstance(cfg_values, list) else [cfg_values]) if str(v).strip()]
+            cfg_values = [] if list_type == "admin" and migrated_flag else self.config.get(cfg_key, [])
+            if list_type == "admin" and not migrated_flag:
+                cfg_values = self._normalize_admin_list(cfg_values)
+            elif list_type != "admin":
+                cfg_values = [str(v).strip() for v in (cfg_values if isinstance(cfg_values, list) else [cfg_values]) if str(v).strip()]
             # 首次迁移：DB 该类型为空时，把 config 旧值导入 DB
             if not migrated_flag and self._storage.count_managed_list(list_type) == 0 and cfg_values:
                 self._storage.seed_managed_list(list_type, cfg_values)
@@ -148,6 +149,14 @@ class UtilitiesMixin:
     def _managed_list_add(self, list_type: str, value: str) -> bool:
         """向 DB 名单添加一项并同步内存 list/set。返回是否实际新增。"""
         _, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
+        if list_type == "admin":
+            normalized = self._normalize_admin_list([value])
+            if not normalized:
+                return False
+            current = self._get_admin_list()
+            added = normalized[0] not in current
+            self._replace_admin_list(current + normalized)
+            return added
         value = str(value).strip()
         if not value:
             return False
@@ -162,6 +171,14 @@ class UtilitiesMixin:
     def _managed_list_remove(self, list_type: str, value: str) -> bool:
         """从 DB 名单移除一项并同步内存 list/set。返回是否实际移除。"""
         _, list_attr, set_attr = self._MANAGED_LIST_MAP[list_type]
+        if list_type == "admin":
+            normalized = self._normalize_admin_list([value])
+            if not normalized:
+                return False
+            current = self._get_admin_list()
+            removed = normalized[0] in current
+            self._replace_admin_list([item for item in current if item != normalized[0]])
+            return removed
         value = str(value).strip()
         removed = self._storage.remove_managed_list_value(list_type, value)
         lst = getattr(self, list_attr, None)
@@ -196,14 +213,70 @@ class UtilitiesMixin:
         return normalized
 
     def _replace_admin_list(self, values):
-        """Persist before updating the live administrator list and its permission cache."""
+        """Save native config first, then DB, and only then apply live permissions."""
         normalized = self._normalize_admin_list(values)
-        self._storage.replace_managed_list("admin", normalized)
+        missing = object()
+        previous = self.config.get("admin_list", missing)
+        self.config["admin_list"] = normalized
+        if not self._save_config_safe():
+            if previous is missing:
+                self.config.pop("admin_list", None)
+            else:
+                self.config["admin_list"] = previous
+            raise RuntimeError("原生插件配置保存失败，管理员名单及当前运行权限未更改")
+        try:
+            self._storage.replace_managed_list("admin", normalized)
+        except Exception as e:
+            raise RuntimeError(
+                "管理员配置已保存，但 SQLite 名单同步失败，当前权限尚未应用；请重试或重新加载插件"
+            ) from e
         self.admin_list = normalized
         cache = getattr(self, "_admin_role_cache", None)
         if cache is not None:
             cache.clear()
         return normalized
+
+    def _reconcile_admin_list_config(self) -> None:
+        """Adopt the existing DB once, then apply native config as startup intent."""
+        marker = "admin_config_sync_v1"
+        if not self._storage.get_meta(marker, ""):
+            # The prior DB is authoritative for this one-time adoption, including [];
+            # legacy IDs have already been imported by _migrate_and_load_managed_lists.
+            desired = self._normalize_admin_list(self._get_admin_list())
+            missing = object()
+            previous = self.config.get("admin_list", missing)
+            self.config["admin_list"] = desired
+            if not self._save_config_safe():
+                if previous is missing:
+                    self.config.pop("admin_list", None)
+                else:
+                    self.config["admin_list"] = previous
+                raise RuntimeError("原生插件配置保存失败，管理员名单同步标记未设置")
+            try:
+                self._storage.replace_managed_list("admin", desired)
+            except Exception as e:
+                raise RuntimeError("原生插件配置已保存，但首次 SQLite 管理员名单同步失败") from e
+            try:
+                self._storage.set_meta(marker, "1")
+            except Exception as e:
+                raise RuntimeError("管理员名单已投影，但原生配置同步标记保存失败") from e
+        else:
+            raw_values = self.config.get("admin_list", [])
+            desired = self._normalize_admin_list(raw_values)
+            if raw_values != desired:
+                previous = raw_values
+                self.config["admin_list"] = desired
+                if not self._save_config_safe():
+                    self.config["admin_list"] = previous
+                    raise RuntimeError("原生插件配置保存失败，管理员名单尚未应用")
+            try:
+                self._storage.replace_managed_list("admin", desired)
+            except Exception as e:
+                raise RuntimeError("原生管理员配置已保存，但 SQLite 名单同步失败，启动未应用新权限") from e
+        self.admin_list = desired
+        cache = getattr(self, "_admin_role_cache", None)
+        if cache is not None:
+            cache.clear()
 
 
     @staticmethod

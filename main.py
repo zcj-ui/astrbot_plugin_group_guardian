@@ -50,10 +50,11 @@ class Main(ModerationMixin, ModerationReviewMixin, AntiFloodMixin, AppealMixin, 
         self._group_cfg_cache = {}
         # bot 自身 QQ 号缓存（用于群管操作前置权限检测）
         self._bot_uin_cache = 0
-        # 单群管理类名单（群白/群黑/用户黑/用户白/管理员）：v2.4.0 起以 SQLite 为准，
-        # 首次启动自动从旧 config 迁移。下面会填充 group_white_list / _group_white_set 等内存结构。
+        # 单群管理类名单（群白/群黑/用户黑/用户白/管理员）及旧配置迁移。
         self._migrate_and_load_managed_lists()
-        # 同步 AstrBot 全局管理员到插件 admin_list（写入 DB managed_lists + 内存）
+        # 首次升级从现存 DB 安全接管；之后原生插件配置是 admin_list 的期望状态。
+        self._reconcile_admin_list_config()
+        # 同步 AstrBot 全局管理员到插件 admin_list（原生配置 + DB + 内存）
         self._sync_astrbot_admins()
         self.auto_moderate_enabled = self.config.get("auto_moderate_enabled", True)
         # 脏话/广告规则：AC 自动机优先，无法拆解的正则保留回退；合并配置中的自定义关键词

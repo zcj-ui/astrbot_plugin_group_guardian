@@ -1059,13 +1059,12 @@ class WebMixin:
             if admin_values is not None:
                 try:
                     admin_values = self._replace_admin_list(admin_values)
-                except Exception:
+                except Exception as e:
                     return jsonify({
                         "status": "error",
                         "updated": updated,
                         "message": (
-                            "其他设置已保存，但管理员名单保存失败；管理员名单未更改"
-                            if updated else "管理员名单保存失败；名单未更改"
+                            ("其他设置已保存；" if updated else "") + str(e)
                         ),
                     })
                 updated.append("admin_list")
