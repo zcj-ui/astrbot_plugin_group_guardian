@@ -359,6 +359,22 @@ class GlobalAdminConfigTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "SQLite"):
             h._sync_astrbot_admins()
 
+    def test_astrbot_admin_sync_reads_official_default_config_not_legacy_attribute(self):
+        h = Harness(self.store, Config({"admin_list": []}))
+        class OfficialContext:
+            astrbot_config = {"admin_id": ["stale-legacy"]}
+            def __init__(self): self.calls = []
+            def get_config(self, *args):
+                self.calls.append(args)
+                return {"admin_id": [" 654321 ", "official:openid"]}
+        context = OfficialContext()
+        h.context = context
+        h._sync_astrbot_admins()
+        self.assertEqual(context.calls, [()])
+        self.assertEqual(h.admin_list, ["654321", "official:openid"])
+        self.assertEqual(h.config["admin_list"], ["654321", "official:openid"])
+        self.assertEqual(self.store.load_managed_list("admin"), ["654321", "official:openid"])
+
     async def test_dedicated_admin_api_preserves_integer_user_ids(self):
         h = Harness(self.store)
         web.quart_request.body = {"user_id": 456}

@@ -9,6 +9,11 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import AiocqhttpMessageEvent
 
 try:
+    from .admin_ids import read_astrbot_admin_ids
+except ImportError:  # 独立加载 onebot.py 的单元测试兼容路径
+    from admin_ids import read_astrbot_admin_ids
+
+try:
     from .single_flight import shared_task, wait_shared
 except ImportError:  # 独立加载 onebot.py 的单元测试兼容路径
     from single_flight import shared_task, wait_shared
@@ -114,10 +119,7 @@ class OneBotMixin:
     def _get_all_admin_ids(self) -> set:
         # 合并插件管理员名单(DB) + AstrBot 全局 admin_id
         try:
-            astrbot_admin_ids = []
-            ab_config = getattr(self.context, 'astrbot_config', None)
-            if ab_config:
-                astrbot_admin_ids = [str(x).strip() for x in (ab_config.get('admin_id', []) or []) if str(x).strip()]
+            astrbot_admin_ids = read_astrbot_admin_ids(self.context)
             return set(self._get_admin_list()) | set(astrbot_admin_ids)
         except Exception as e:
             logger.warning(f"[GroupMgr] 读取管理员名单失败: {e}")
@@ -413,6 +415,51 @@ class OneBotMixin:
             return hit[0]
         ok, role = await wait_shared(task, max_wait)
         return role if ok else ""
+
+    async def _get_prompt_bot_context(self, event, group_id: str) -> tuple:
+        """Return cautious bot identity/role facts for prompt context only."""
+        platform = self._event_platform_name(event)
+        client = self._normalize_action_client(getattr(event, "bot", None))
+        compatible = platform == "aiocqhttp" or bool(
+            client and callable(getattr(client, "call_action", None))
+        )
+        if not compatible:
+            status = f"不支持 OneBot 管理接口（{platform}）" if platform else "平台/接口未知"
+            return "未知", "未知", status
+
+        bot_id = ""
+        try:
+            getter = getattr(event, "get_self_id", None)
+            value = getter() if callable(getter) else None
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                candidate = str(value).strip()
+                if candidate and candidate.casefold() not in {"none", "null", "nan", "0"}:
+                    bot_id = candidate
+        except Exception:
+            pass
+        if not bot_id:
+            cached = getattr(self, "_bot_uin_cache", 0)
+            if isinstance(cached, (str, int)) and not isinstance(cached, bool):
+                candidate = str(cached).strip()
+                if candidate and candidate.casefold() not in {"none", "null", "nan", "0"}:
+                    bot_id = candidate
+
+        role = "未知"
+        try:
+            result = await self._get_bot_group_role(
+                event, group_id, max_wait=self.BOT_ROLE_HOT_WAIT, allow_stale=False,
+            )
+            if result in ("owner", "admin", "member"):
+                role = result
+        except Exception as e:
+            logger.debug(f"[GroupMgr] 提示上下文查询机器人群角色失败: {e}")
+        if not bot_id:
+            cached = getattr(self, "_bot_uin_cache", 0)
+            if isinstance(cached, (str, int)) and not isinstance(cached, bool):
+                candidate = str(cached).strip()
+                if candidate and candidate.casefold() not in {"none", "null", "nan", "0"}:
+                    bot_id = candidate
+        return bot_id or "未知", role, "OneBot/兼容管理接口可用"
 
     def _invalidate_bot_role(self, group_id=None) -> None:
         """机器人群角色变化后失效缓存；group_id 为空时清空全部。"""

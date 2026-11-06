@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple
 
 from astrbot.api import logger
 from .automaton import KeywordAutomaton
+from .admin_ids import read_astrbot_admin_ids
 
 
 class UtilitiesMixin:
@@ -81,10 +82,7 @@ class UtilitiesMixin:
     def _sync_astrbot_admins(self) -> None:
         # 从 AstrBot 主配置读取 admin_id，补充到插件管理员名单。
         try:
-            ab_config = getattr(self.context, 'astrbot_config', None)
-            if not ab_config:
-                return
-            astrbot_admin_ids = self._normalize_admin_list(ab_config.get('admin_id', []) or [])
+            astrbot_admin_ids = read_astrbot_admin_ids(self.context)
         except Exception as _e:
             logger.debug(f"[GroupMgr] 同步AstrBot管理员失败: {_e}")
             return
