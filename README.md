@@ -6,11 +6,9 @@
 ![astrbot](https://img.shields.io/badge/astrbot-%3E%3D4.24.2-cf6e34)
 ![stars](https://img.shields.io/github/stars/zcj-ui/astrbot_plugin_group_guardian?style=social)
 
-本仓库 fork 自 [上游项目](https://github.com/zcj-ui/astrbot_plugin_group_guardian)，并包含插件全局管理员持久化修复。安装此功能分支时，请使用 fork 地址：[shangzhimingge/astrbot_plugin_group_guardian](https://github.com/shangzhimingge/astrbot_plugin_group_guardian)。
-
 AstrBot 综合群管理插件，集 **28项群管功能**、**AI智能审核**、**违禁词热更新** 与 **WebUI 管理面板** 于一体，让机器人成为真正的群聊守护者。
 
-> 当前版本：**v2.8.11** | 最低 AstrBot 版本：**>=4.24.2**
+> 当前版本：**v2.8.12** | 最低 AstrBot 版本：**>=4.24.2**
 
 ***
 
@@ -277,7 +275,7 @@ LLM 找出反复出现、又不在现有词库里的引流词（带置信度/理
 | 配置项                          | 说明                    | 默认值        |
 | ---------------------------- | --------------------- | ---------- |
 | `enabled`                    | 插件总开关                 | `true`     |
-| `admin_list`                 | 插件全局管理员 ID 列表（可在全部设置或「群管理 → 插件管理员」中维护；留空仅清空插件名单，AstrBot 全局管理员仍有效） | `[]`       |
+| `admin_list`                 | 插件全局管理员 ID 列表（可在 AstrBot 原生插件配置、全部设置或「群管理 → 插件管理员」中维护；首次升级保留 SQLite 名单，后续原生配置重载时应用；留空清空插件名单，AstrBot 全局管理员仍有效） | `[]`       |
 | `group_white_list`           | 群白名单（空则全部）            | `[]`       |
 | `group_black_list`           | 群黑名单                  | `[]`       |
 | `user_black_list`            | 用户黑名单（自动拒绝加群）         | `[]`       |
@@ -581,6 +579,7 @@ AI: 已开启全体禁言
 | AI 中转特殊版：0./前导零数字直接撤回、三步风险确认、默认关闭与全局撤销确认 | v2.8.9 |
 | AI 调用失败后三次重试（10/20/30 秒），等待释放全局名额、取消立即停止 | v2.8.10 |
 | 文字审核与 OCR 优先流式调用，完整响应校验与旧 Provider 兼容；恢复项目原显示名称 | v2.8.11 |
+| 插件全局管理员在 WebUI/原生配置/SQLite 间同步；修正 AstrBot 核心管理员读取来源；运行提示区分发送者权限与机器人群角色 | v2.8.12 |
 
 ## 未来规划
 
