@@ -94,6 +94,8 @@ class SchedulerMixin:
                 await asyncio.sleep(60)
             if self._scheduler_stop:
                 break
+            if not self._account_active():
+                continue
             try:
                 await self._run_due_unbans()
                 expire_fn = getattr(self, "_expire_appeals", None)
@@ -129,6 +131,8 @@ class SchedulerMixin:
                 continue
             if self._scheduler_stop:
                 break
+            if not self._account_active():
+                continue
             # 没有任何全局或单群启用项时不查询群列表，避免无意义 API 请求；
             # 标准入群通知仍由 `_on_group_increase_card_check` 即时处理。
             if not self._card_sync_any_group_enabled():
@@ -163,7 +167,7 @@ class SchedulerMixin:
                 continue
             if self._scheduler_stop:
                 break
-            if not self._lexicon_learn_any_group_enabled():
+            if not self._account_active() or not self._lexicon_learn_any_group_enabled():
                 continue
             try:
                 await self._run_lexicon_learning()
@@ -204,7 +208,7 @@ class SchedulerMixin:
                 continue
             if self._scheduler_stop:
                 break
-            if not self._cfg("moderation_review_enabled", False):
+            if not self._account_active() or not self._cfg("moderation_review_enabled", False):
                 continue
             try:
                 result = await self._run_moderation_feedback_review(

@@ -168,7 +168,7 @@ class PenaltyCooldownTests(unittest.TestCase):
         source = (ROOT / "main.py").read_text(encoding="utf-8")
         self.assertIn('raw.get("notice_type") == "group_ban"', source)
         self.assertIn('raw.get("sub_type") == "lift_ban"', source)
-        self.assertIn("self._on_member_unbanned(", source)
+        self.assertIn("runtime._on_member_unbanned(", source)
 
 
 # ---------------------------------------------------------------- #95

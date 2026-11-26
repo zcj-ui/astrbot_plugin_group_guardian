@@ -467,6 +467,11 @@ html,body{height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","P
     </aside>
 
     <main class="main-content">
+      <div class="page-header" style="justify-content:flex-start;gap:10px;flex-wrap:wrap">
+        <label for="guardianAccount">群管 Bot</label>
+        <select id="guardianAccount" class="input-sm" style="max-width:100%" disabled><option>正在读取账号…</option></select>
+        <button type="button" class="btn btn-ghost btn-sm" id="retryAccounts" hidden>重新读取账号</button>
+      </div>
       <div class="tab-panel active" id="tab-overview">
         <div class="page-header">
           <h1>总览</h1>
@@ -955,6 +960,57 @@ var bridge = null;
 var apiGet = null;
 var apiPost = null;
 var apiDownload = null;
+var accountId = '';
+var accountOnline = false;
+var formChanged = false;
+var pendingWrites = 0;
+
+async function chooseAccount() {
+  var select = document.getElementById('guardianAccount');
+  var retry = document.getElementById('retryAccounts');
+  var response = await safeGet('accounts');
+  var accounts = arrayPayload(response, 'Bot 账号');
+  if (!Array.isArray(accounts) || !accounts.length) {
+    select.replaceChildren(new Option(Array.isArray(accounts) ? '暂无已连接的 QQ 账号' : '读取账号失败'));
+    retry.hidden = false;
+    retry.onclick = function() { location.reload(); };
+    return false;
+  }
+  var remembered = window.name.startsWith('group-guardian:') ? window.name.slice(15) : '';
+  var active = accounts.find(function(row) { return row.bot_id === remembered; }) || accounts.find(function(row) { return row.online; }) || accounts[0];
+  accountId = active.bot_id;
+  accountOnline = active.online;
+  select.replaceChildren();
+  accounts.forEach(function(row) {
+    select.add(new Option((row.nickname ? row.nickname + ' (' + row.bot_id + ')' : row.bot_id) + (row.online ? '' : ' · 离线'), row.bot_id));
+  });
+  select.value = accountId;
+  select.disabled = false;
+  setInterval(async function() {
+    var rows = arrayPayload(await safeGet('accounts', {presence: '1'}), 'Bot 账号');
+    if (!Array.isArray(rows)) return;
+    rows.forEach(function(row) {
+      var option = Array.from(select.options).find(function(o) { return o.value === row.bot_id; });
+      if (!option) { option = new Option(row.bot_id, row.bot_id); select.add(option); }
+      option.text = option.text.replace(/ · 离线$/, '') + (row.online ? '' : ' · 离线');
+    });
+    accountOnline = rows.some(function(row) { return row.bot_id === accountId && row.online; });
+    document.querySelectorAll('[data-rm], #btnMemberBatch').forEach(function(button) { button.disabled = !accountOnline; });
+  }, 15000);
+  select.onchange = async function() {
+    var next = select.value;
+    select.value = accountId;
+    if (pendingWrites) { toast('正在保存，请稍后切换账号', 'error'); return; }
+    if (formChanged && !await confirmModal({title: '切换 Bot', body: '放弃当前未保存的输入？', okText: '放弃并切换'})) return;
+    // Keep the old document bound to its account until the frame reloads.
+    window.name = 'group-guardian:' + next;
+    location.reload();
+  };
+  document.querySelector('.main-content').addEventListener('input', function(e) {
+    if (e.target !== select && !['search', 'button'].includes(e.target.type)) formChanged = true;
+  });
+  return true;
+}
 var _memStore = {};
 var ls = {
   getItem: function(k) { try { return localStorage.getItem(k); } catch(e) { return _memStore[k] || null; } },
@@ -1341,7 +1397,8 @@ var ROLE_NAME = { owner: '群主', admin: '管理员', member: '成员' };
 async function safeGet(path, params) {
   try {
     if (!apiGet) return { status: 'error', message: 'API 不可用' };
-    var r = await withTimeout(apiGet(path, params), 'GET ' + path);
+    var scoped = path === 'accounts' ? params : Object.assign({}, params, {_bot_id: accountId});
+    var r = await withTimeout(apiGet(path, scoped), 'GET ' + path);
     return normalizeApiPayload(r, 'GET ' + path);
   } catch(e) {
     console.error('[safeGet]', path, e);
@@ -1349,19 +1406,22 @@ async function safeGet(path, params) {
   }
 }
 async function safePost(path, body, timeoutMs) {
+  pendingWrites++;
   try {
     if (!apiPost) return { status: 'error', message: 'API 不可用' };
-    var r = await withTimeout(apiPost(path, body), 'POST ' + path, timeoutMs || API_TIMEOUT_MS);
+    var r = await withTimeout(apiPost(path, Object.assign({}, body, {_bot_id: accountId})), 'POST ' + path, timeoutMs || API_TIMEOUT_MS);
     return normalizeApiPayload(r, 'POST ' + path);
   } catch(e) {
     console.error('[safePost]', path, e);
     return { status: 'error', message: String(e) };
+  } finally {
+    pendingWrites--;
   }
 }
 async function safeDownload(path, params, filename) {
   try {
     if (!apiDownload) return { status: 'error', message: '下载 API 不可用' };
-    var result = await withTimeout(apiDownload(path, params || {}, filename), 'DOWNLOAD ' + path, 30000);
+    var result = await withTimeout(apiDownload(path, Object.assign({}, params, {_bot_id: accountId}), filename), 'DOWNLOAD ' + path, 30000);
     // Most bridges throw for non-2xx downloads, but compatible bridges may
     // resolve an HTTP/JSON error envelope instead.  Do not report success in
     // that case; Blob/ArrayBuffer/undefined remain valid successful results.
@@ -2129,6 +2189,7 @@ function renderMembers(members) {
   });
   // 单个远程操作：禁言(读取同行时长输入)/解禁/踢
   $$('[data-rm]', $('#memberList')).forEach(function(btn) {
+    btn.disabled = !accountOnline;
     btn.addEventListener('click', async function() {
       var action = btn.dataset.rm;
       var uid = btn.dataset.uid;
@@ -2155,6 +2216,7 @@ function renderMembers(members) {
   });
   $$('.member-ck', $('#memberList')).forEach(function(c) { c.addEventListener('change', updateHint); });
   var btnBatch = $('#btnMemberBatch');
+  if (btnBatch) btnBatch.disabled = !accountOnline;
   if (btnBatch) btnBatch.addEventListener('click', async function() {
     var ids = $$('.member-ck:checked', $('#memberList')).map(function(c) { return c.dataset.uid; });
     if (!ids.length) { toast('请先勾选成员', 'error'); return; }
@@ -2496,7 +2558,7 @@ async function loadModerationReview() {
 }
 
 var CORE_TOGGLES = [
-  { key: 'enabled', label: '插件总开关', desc: '启用/禁用整个插件' },
+  { key: 'enabled', label: '当前 Bot 群管开关', desc: '关闭后，此账号跳过群管消息、指令和定时任务' },
   { key: 'auto_moderate_enabled', label: '自动审核', desc: '开启后自动审核群消息' },
   { key: 'auto_moderate_notice', label: '审核通知', desc: '审核结果通知管理员' },
 ];
@@ -3848,6 +3910,7 @@ async function saveSettings() {
   } else {
     CONFIG = Object.assign({}, CONFIG, payload);
     CONFIG_PROMISE = null;
+    formChanged = false;
     toast('设置已保存', 'success');
   }
 }
@@ -4565,7 +4628,7 @@ async function init() {
   if (bridge && bridge.download) apiDownload = bridge.download.bind(bridge);
   if (apiGet && apiPost) {
     try {
-      await init();
+      if (await chooseAccount()) await init();
     } catch(e) {
       console.error('[GG] init failed:', e);
       setStatus('初始化失败', 'var(--danger)');
