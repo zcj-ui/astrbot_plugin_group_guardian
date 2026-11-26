@@ -1,5 +1,11 @@
 # QQ群智能守护者 (GroupGuardian)
 
+### 多 Bot 配置（本地版）
+
+在插件管理页面顶部选择 QQ 账号。设置、群名单、单群规则、操作记录和定时任务按账号保存。要让同群的 A 负责群管，可将群号加入 A 的白名单，在 B 的「设置」中关闭「当前 Bot 群管开关」并保存。白名单留空表示允许所有未列入黑名单的群。
+
+每个账号的数据位于插件数据目录下的 `bots/<QQ号>/`。旧版的基础设置、名单和单群规则用于初始化账号。首次从旧数据库升级时，插件在 `before-bot-profiles/` 保存原数据库快照和基础设置。旧审核日志、申诉和待解禁任务保留在旧库，因缺少执行账号，不自动分配或重放。各账号后续的更改通过插件专页保存。
+
 ![version](https://img.shields.io/badge/dynamic/json?url=https://raw.githubusercontent.com/zcj-ui/astrbot_plugin_group_guardian/main/version.json&query=version&label=version&color=2563eb)
 ![python](https://img.shields.io/badge/python-3.10+-3776AB?logo=python&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-green)

@@ -24,6 +24,7 @@ from .ai_relay import (
     ai_relay_risk_acknowledged,
 )
 from .constants import PLUGIN_NAME, PLUGIN_VERSION
+from .bot_accounts import AccountClient, account_id, connected_accounts
 
 
 class WebMixin:
@@ -42,6 +43,18 @@ class WebMixin:
         async def _wrapped(*args, **kwargs):
             try:
                 self._check_quart_available()
+                if handler.__name__ != '_web_accounts' and hasattr(self, '_account'):
+                    if quart_request.method == 'POST':
+                        data = await quart_request.get_json(silent=True)
+                        qq = account_id(data.get('_bot_id')) if isinstance(data, dict) else ''
+                    else:
+                        qq = account_id(quart_request.args.get('_bot_id'))
+                    if not qq or qq not in self._known_accounts():
+                        return jsonify({'status': 'error', 'message': '请选择有效的 Bot 账号'})
+                    runtime = await self._account(qq)
+                    if handler.__name__ == '_web_remote_execute' and not runtime._account_active():
+                        return jsonify({'status': 'error', 'message': '所选 Bot 已离线或已关闭群管'})
+                    return await getattr(runtime, handler.__name__)(*args, **kwargs)
                 return await handler(*args, **kwargs)
             except asyncio.CancelledError:
                 raise
@@ -709,6 +722,25 @@ class WebMixin:
         enriched.sort(key=lambda x: (0 if x["is_plugin_admin"] else 1, x["display_name"].casefold()))
         return enriched
 
+    async def _web_accounts(self):
+        live = connected_accounts(self.context)
+        presence_only = quart_request.args.get('presence') == '1'
+
+        async def describe(qq):
+            nickname = ''
+            if qq in live and not presence_only:
+                try:
+                    result = await asyncio.wait_for(AccountClient(live[qq], qq).call_action('get_login_info'), 2)
+                    info = self._normalize_onebot_web_result(result)
+                    if isinstance(info, dict):
+                        nickname = str(info.get('nickname') or '')
+                except Exception as exc:
+                    logger.debug(f'[GroupMgr] 读取 Bot {qq} 昵称失败: {exc}')
+            return {'bot_id': qq, 'nickname': nickname, 'online': qq in live}
+
+        rows = await asyncio.gather(*(describe(qq) for qq in sorted(self._known_accounts())))
+        return jsonify({'status': 'success', 'data': rows})
+
     def _register_web_apis(self):
         # 遍历路由表，每项含 path / handler / methods / desc，统一注册到 self.context.register_web_api。
         # 认证说明：register_web_api 注册的路由挂载在 AstrBot Dashboard 的 /api/plug/ 下，
@@ -716,6 +748,7 @@ class WebMixin:
         # 因此插件层不重复实现认证；请勿将 AstrBot Dashboard 端口直接暴露公网或关闭其登录验证。
         try:
             routes = [
+                ("/accounts", self._web_accounts, ["GET"], "获取群管 Bot 账号"),
                 ("/stats", self._web_stats, ["GET"], "获取群管统计信息"),
                 ("/config", self._web_get_config, ["GET"], "获取当前配置"),
                 ("/config", self._web_update_config, ["POST"], "更新配置"),
